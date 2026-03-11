@@ -1,0 +1,32 @@
+audio:
+  remote_in: "VoiceMeeter Aux Output (VB-Audio VoiceMeeter AUX VAIO)"
+  local_mic_in: "Microphone (USB Audio Device)"
+  local_tts_out: "Headphones (Realtek Audio)"
+  meeting_tts_out: "VoiceMeeter AUX Input (VB-Audio VoiceMeeter AUX VAIO)"
+
+language:
+  remote_source: "en"
+  remote_target: "zh-TW"
+  local_source: "zh-TW"
+  local_target: "en"
+
+model:
+  asr_provider: "mock"
+  translate_provider: "mock"
+  tts_provider: "mock"
+
+openai:
+  api_key_env: "OPENAI_API_KEY"
+  base_url: "https://api.openai.com/v1"
+  asr_model: "gpt-4o-mini-transcribe"
+  translate_model: "gpt-4.1-mini"
+  tts_model: "gpt-4o-mini-tts"
+  tts_voice: "alloy"
+
+provider_test_last_success:
+  asr: ""
+  translate: ""
+  tts: ""
+
+sample_rate: 48000
+chunk_ms: 100

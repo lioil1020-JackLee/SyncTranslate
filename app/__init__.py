@@ -1,0 +1,2 @@
+"""SyncTranslate application package."""
+
