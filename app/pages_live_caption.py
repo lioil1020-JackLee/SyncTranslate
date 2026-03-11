@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from typing import Callable
+
 from PySide6.QtWidgets import QGridLayout, QLabel, QPushButton, QTextEdit, QVBoxLayout, QWidget
 
 
 class LiveCaptionPage(QWidget):
-    def __init__(self) -> None:
+    def __init__(self, on_clear_clicked: Callable[[], None] | None = None) -> None:
         super().__init__()
+        self._on_clear_clicked = on_clear_clicked
         self.remote_original = QTextEdit()
         self.remote_translated = QTextEdit()
         self.local_original = QTextEdit()
@@ -30,11 +33,16 @@ class LiveCaptionPage(QWidget):
         grid.addWidget(self.local_translated, 3, 1)
 
         clear_btn = QPushButton("清空字幕")
-        clear_btn.clicked.connect(self.clear)
+        clear_btn.clicked.connect(self._handle_clear_clicked)
 
         layout = QVBoxLayout(self)
         layout.addLayout(grid)
         layout.addWidget(clear_btn)
+
+    def _handle_clear_clicked(self) -> None:
+        self.clear()
+        if self._on_clear_clicked:
+            self._on_clear_clicked()
 
     def clear(self) -> None:
         self.remote_original.clear()

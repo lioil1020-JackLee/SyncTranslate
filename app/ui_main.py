@@ -81,10 +81,10 @@ class MainWindow(QMainWindow):
             on_apply_banana_preset=self.apply_banana_preset,
             on_save=self.persist_config,
             on_reload=self.reload_config,
-            on_route_changed=self.validate_current_routes,
+            on_route_changed=self._on_audio_routing_changed,
             on_start=self.start_session,
         )
-        self.live_caption_page = LiveCaptionPage()
+        self.live_caption_page = LiveCaptionPage(on_clear_clicked=self.clear_live_caption)
         self.models_page = ModelsPage(
             on_test_asr=self.test_asr_provider,
             on_test_translate=self.test_translate_provider,
@@ -122,12 +122,19 @@ class MainWindow(QMainWindow):
         self._remote_translated_line_cache: list[str] = []
         self._local_line_cache: list[str] = []
         self._local_translated_line_cache: list[str] = []
+        self._live_apply_ready = False
+        self._suspend_live_apply = False
+        self._live_apply_timer = QTimer(self)
+        self._live_apply_timer.setSingleShot(True)
+        self._live_apply_timer.setInterval(500)
+        self._live_apply_timer.timeout.connect(self._apply_live_config_now)
 
         self.caption_timer = QTimer(self)
         self.caption_timer.setInterval(300)
         self.caption_timer.timeout.connect(self.refresh_live_caption)
         self.caption_timer.start()
         self.refresh_from_system()
+        self._live_apply_ready = True
 
     def refresh_from_system(self) -> None:
         input_devices = self.device_manager.list_input_devices()
@@ -136,9 +143,13 @@ class MainWindow(QMainWindow):
         self.input_device_names = {d.name for d in input_devices}
         self.output_device_names = {d.name for d in output_devices}
 
-        self.audio_routing_page.set_devices(input_devices, output_devices)
-        self.audio_routing_page.apply_config(self.config)
-        self.models_page.apply_config(self.config)
+        self._suspend_live_apply = True
+        try:
+            self.audio_routing_page.set_devices(input_devices, output_devices)
+            self.audio_routing_page.apply_config(self.config)
+            self.models_page.apply_config(self.config)
+        finally:
+            self._suspend_live_apply = False
         self._update_model_runtime_status()
         self.diagnostics_page.set_input_devices(input_devices)
         self.quick_start_page.set_detected_voicemeeter_devices([d.name for d in voicemeeter_devices])
@@ -152,17 +163,13 @@ class MainWindow(QMainWindow):
         self.config.audio.remote_in = "VoiceMeeter Aux Output (VB-Audio VoiceMeeter AUX VAIO)"
         self.config.audio.meeting_tts_out = "VoiceMeeter AUX Input (VB-Audio VoiceMeeter AUX VAIO)"
         self.audio_routing_page.apply_config(self.config)
-        self.audio_routing_page.set_status("已套用 Banana 預設（請確認 local_mic_in / local_tts_out）")
+        self.audio_routing_page.set_status("已套用 Banana 預設（請確認本機麥克風輸入 / 本機收聽輸出）")
         self.validate_current_routes()
+        self._schedule_live_apply()
 
     def persist_config(self) -> None:
-        self._sync_ui_to_config()
-        self._build_pipelines_from_config()
-        self._update_model_runtime_status()
-        path = self._save_config_to_disk()
-        self.audio_routing_page.set_status(f"設定已儲存: {path}")
-        self.statusBar().showMessage(f"已儲存設定到 {path}")
-        self.validate_current_routes()
+        self._apply_live_config_now()
+        self.audio_routing_page.set_status(f"設定已儲存: {self.config_path}")
 
     def reload_config(self) -> None:
         if self.session_controller:
@@ -194,6 +201,42 @@ class MainWindow(QMainWindow):
             self.audio_routing_page.set_status("路由檢查: OK")
         else:
             self.audio_routing_page.set_status("路由檢查: Error，請到除錯與診斷頁查看")
+
+    def _on_audio_routing_changed(self) -> None:
+        self.validate_current_routes()
+        self._schedule_live_apply()
+
+    def _schedule_live_apply(self) -> None:
+        if not self._live_apply_ready or self._suspend_live_apply:
+            return
+        self._live_apply_timer.start()
+
+    def _apply_live_config_now(self) -> None:
+        if not self._live_apply_ready:
+            return
+        if self._live_apply_timer.isActive():
+            self._live_apply_timer.stop()
+
+        was_running = self.session_controller.is_running() if self.session_controller else False
+        route = self.audio_routing_page.selected_audio_routes()
+        mode = self.audio_routing_page.selected_mode()
+        try:
+            self._sync_ui_to_config()
+            self._build_pipelines_from_config()
+            self._update_model_runtime_status()
+            path = self._save_config_to_disk()
+
+            if was_running and self.session_controller:
+                result = self.session_controller.start(mode, route, sample_rate=self.config.sample_rate)
+                if not result.ok:
+                    raise ValueError(result.message)
+                self.statusBar().showMessage(f"設定已自動套用並儲存: {path}")
+            else:
+                self.statusBar().showMessage(f"設定已自動儲存: {path}")
+            self.validate_current_routes()
+        except Exception as exc:
+            self._report_error(f"auto_apply_config failed: {exc}")
+            self.statusBar().showMessage(f"設定自動套用失敗: {exc}")
 
     def start_session(self) -> None:
         if not self.session_controller:
@@ -259,6 +302,14 @@ class MainWindow(QMainWindow):
     def set_local_mute(self, muted: bool) -> None:
         self.local_capture.set_muted(muted)
         self.statusBar().showMessage("local_mic 已靜音" if muted else "local_mic 已解除靜音")
+
+    def clear_live_caption(self) -> None:
+        self.transcript_buffer.clear()
+        self._remote_line_cache = []
+        self._remote_translated_line_cache = []
+        self._local_line_cache = []
+        self._local_translated_line_cache = []
+        self.statusBar().showMessage("已清空字幕歷史")
 
     def rebind_local_capture(self) -> None:
         try:
@@ -348,10 +399,10 @@ class MainWindow(QMainWindow):
         remote_translated_items = self.transcript_buffer.latest("remote_translated", limit=20)
         local_original_items = self.transcript_buffer.latest("local_original", limit=20)
         local_translated_items = self.transcript_buffer.latest("local_translated", limit=20)
-        remote_original_lines = [self._format_transcript_line(item.text, item.is_final) for item in remote_original_items]
-        remote_translated_lines = [self._format_transcript_line(item.text, item.is_final) for item in remote_translated_items]
-        local_original_lines = [self._format_transcript_line(item.text, item.is_final) for item in local_original_items]
-        local_translated_lines = [self._format_transcript_line(item.text, item.is_final) for item in local_translated_items]
+        remote_original_lines = self._build_transcript_lines(remote_original_items)
+        remote_translated_lines = self._build_transcript_lines(remote_translated_items)
+        local_original_lines = self._build_transcript_lines(local_original_items)
+        local_translated_lines = self._build_transcript_lines(local_translated_items)
 
         if remote_original_lines != self._remote_line_cache:
             self.live_caption_page.set_remote_original_lines(remote_original_lines)
@@ -401,6 +452,10 @@ class MainWindow(QMainWindow):
     def _format_transcript_line(text: str, is_final: bool) -> str:
         state = "final" if is_final else "partial"
         return f"[{state}] {text}"
+
+    @classmethod
+    def _build_transcript_lines(cls, items) -> list[str]:
+        return [cls._format_transcript_line(item.text, item.is_final) for item in reversed(items)]
 
     def _report_error(self, message: str) -> None:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -569,7 +624,9 @@ class MainWindow(QMainWindow):
             if self.config.model.asr_provider == "local" or self.config.model.tts_provider == "edge_tts":
                 self.models_page.set_runtime_status("Runtime status: local/edge providers ready (no OpenAI key needed)")
             else:
-                self.models_page.set_runtime_status("Runtime status: mock providers ready")
+                self.models_page.set_runtime_status(
+                    "Runtime status: mock providers ready (placeholder text/audio only)"
+                )
             self._refresh_last_success_label()
             return
 
@@ -584,6 +641,7 @@ class MainWindow(QMainWindow):
     def _on_models_settings_changed(self) -> None:
         self.models_page.update_config(self.config)
         self._update_model_runtime_status()
+        self._schedule_live_apply()
 
     def _sync_ui_to_config(self) -> None:
         self.config.audio = self.audio_routing_page.selected_audio_routes()

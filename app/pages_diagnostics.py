@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.audio_device_selection import canonical_device_name, encode_device_selector
 from app.audio_capture import CaptureStats
 from app.schemas import DeviceInfo
 
@@ -127,11 +128,17 @@ class DiagnosticsPage(QWidget):
 
     def select_remote_in(self, name: str) -> None:
         index = self.remote_in_combo.findData(name)
-        self.remote_in_combo.setCurrentIndex(index if index >= 0 else 0)
+        if index >= 0:
+            self.remote_in_combo.setCurrentIndex(index)
+            return
+        self._select_by_device_name(self.remote_in_combo, name)
 
     def select_local_mic(self, name: str) -> None:
         index = self.local_mic_combo.findData(name)
-        self.local_mic_combo.setCurrentIndex(index if index >= 0 else 0)
+        if index >= 0:
+            self.local_mic_combo.setCurrentIndex(index)
+            return
+        self._select_by_device_name(self.local_mic_combo, name)
 
     def selected_remote_device_name(self) -> str:
         value = self.remote_in_combo.currentData()
@@ -176,12 +183,23 @@ class DiagnosticsPage(QWidget):
         combo.clear()
         combo.addItem("", "")
         for device in input_devices:
-            combo.addItem(f"[{device.index}] {device.name}", device.name)
+            selector = encode_device_selector(hostapi_name=device.hostapi_name, device_name=device.name)
+            combo.addItem(f"[{device.hostapi_label}] [{device.index}] {device.name}", selector)
         if current_name:
             index = combo.findData(current_name)
             if index >= 0:
                 combo.setCurrentIndex(index)
         combo.blockSignals(False)
+
+    @staticmethod
+    def _select_by_device_name(combo: QComboBox, selector_or_name: str) -> None:
+        target = canonical_device_name(selector_or_name).lower()
+        for idx in range(combo.count()):
+            value = combo.itemData(idx)
+            if isinstance(value, str) and canonical_device_name(value).lower() == target:
+                combo.setCurrentIndex(idx)
+                return
+        combo.setCurrentIndex(0)
 
     @staticmethod
     def _apply_stats(

@@ -7,7 +7,13 @@ from typing import Callable
 import numpy as np
 import sounddevice as sd
 
-from app.audio_device_selection import list_indexed_devices, pick_best_device
+from app.audio_device_selection import (
+    device_tokens,
+    normalize_device_text,
+    parse_device_selector,
+    preferred_hostapi_index_for_platform,
+    list_indexed_devices,
+)
 
 
 @dataclass(slots=True)
@@ -136,25 +142,53 @@ class AudioCapture:
 
     @staticmethod
     def _find_input_device(device_name: str) -> tuple[int, dict[str, object]]:
+        hostapi_name, requested_name = parse_device_selector(device_name)
         devices = list_indexed_devices()
-        exact_matches = [
-            (idx, item)
-            for idx, item in devices
-            if str(item["name"]) == device_name and int(item["max_input_channels"]) > 0
-        ]
-        best_exact = pick_best_device(exact_matches)
-        if best_exact:
-            return best_exact
+        preferred_hostapi = preferred_hostapi_index_for_platform()
+        normalized_target = normalize_device_text(requested_name)
+        target_tokens = device_tokens(requested_name)
+        ranked: list[tuple[int, int, int, int, dict[str, object]]] = []
 
-        partial_matches = [
-            (idx, item)
-            for idx, item in devices
-            if device_name.lower() in str(item["name"]).lower() and int(item["max_input_channels"]) > 0
-        ]
-        best_partial = pick_best_device(partial_matches)
-        if best_partial:
-            return best_partial
-        raise ValueError(f"Input device not found: {device_name}")
+        for idx, item in devices:
+            if int(item["max_input_channels"]) <= 0:
+                continue
+
+            item_name = str(item["name"])
+            item_hostapi = int(item.get("hostapi", -1))
+            normalized_name = normalize_device_text(item_name)
+            name_tokens = device_tokens(item_name)
+
+            score = 0
+            if item_name == requested_name:
+                score = 500
+            elif normalized_name == normalized_target:
+                score = 450
+            elif normalized_target and normalized_target in normalized_name:
+                score = 350
+            elif target_tokens and target_tokens.issubset(name_tokens):
+                score = 300 + len(target_tokens)
+            elif target_tokens:
+                overlap = len(target_tokens & name_tokens)
+                if overlap >= max(2, len(target_tokens) - 1):
+                    score = 200 + overlap
+
+            if score <= 0:
+                continue
+
+            if hostapi_name:
+                hostapi_matches = str(sd.query_hostapis()[item_hostapi].get("name", "")) == hostapi_name
+                hostapi_rank = 0 if hostapi_matches else 1
+            else:
+                hostapi_rank = 0 if item_hostapi == preferred_hostapi else 1
+            extra_token_penalty = max(0, len(name_tokens) - len(target_tokens))
+            ranked.append((hostapi_rank, -score, extra_token_penalty, idx, item))
+
+        if not ranked:
+            raise ValueError(f"Input device not found: {device_name}")
+
+        ranked.sort()
+        _, _, _, idx, item = ranked[0]
+        return idx, item
 
     @staticmethod
     def _resolve_supported_input_sample_rate(

@@ -15,6 +15,11 @@ import numpy as np
 
 from app.env_vars import get_env_var
 
+DEFAULT_HTTP_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 SyncTranslate/Stage6"
+)
+
 
 class AsrProvider(Protocol):
     def partial_text(self) -> str: ...
@@ -189,10 +194,7 @@ class OpenAITranslateProvider:
         req = request.Request(
             url=url,
             data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
+            headers=_openai_compatible_headers(api_key=api_key, content_type="application/json"),
             method="POST",
         )
 
@@ -240,10 +242,7 @@ class OpenAITtsProvider:
         req = request.Request(
             url=url,
             data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
+            headers=_openai_compatible_headers(api_key=api_key, content_type="application/json"),
             method="POST",
         )
         wav_bytes = _openai_request_bytes(req, timeout_sec=self.timeout_sec)
@@ -284,9 +283,13 @@ class OpenAIAsrProvider:
 
         wav_bytes = _audio_to_wav_bytes(audio=audio, sample_rate=sample_rate)
         boundary = "----SyncTranslateBoundary7MA4YWxkTrZu0gW"
+        normalized_language = _normalize_whisper_language(self.language)
+        fields = {"model": self.model}
+        if normalized_language:
+            fields["language"] = normalized_language
         body = _build_multipart_form_data(
             boundary=boundary,
-            fields={"model": self.model, "language": self.language},
+            fields=fields,
             file_field_name="file",
             filename=f"segment_{segment_index}.wav",
             file_bytes=wav_bytes,
@@ -296,15 +299,51 @@ class OpenAIAsrProvider:
         req = request.Request(
             url=url,
             data=body,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": f"multipart/form-data; boundary={boundary}",
-            },
+            headers=_openai_compatible_headers(
+                api_key=api_key,
+                content_type=f"multipart/form-data; boundary={boundary}",
+            ),
             method="POST",
         )
         payload = json.loads(_openai_request_bytes(req, timeout_sec=self.timeout_sec).decode("utf-8"))
         text = payload.get("text", "")
         return str(text).strip()
+
+
+@dataclass(slots=True)
+class HuggingFaceAsrProvider:
+    language: str
+    api_key_env: str
+    base_url: str
+    model: str
+    timeout_sec: float = 45.0
+
+    def partial_text(self) -> str:
+        return f"[huggingface-asr {self.language}] listening..."
+
+    def final_text(self, audio: np.ndarray, sample_rate: int, segment_index: int) -> str:
+        if audio.size == 0:
+            return ""
+        api_key = get_env_var(self.api_key_env, "").strip()
+        if not api_key:
+            raise ValueError(f"Environment variable {self.api_key_env} is not set.")
+
+        wav_bytes = _audio_to_wav_bytes(audio=audio, sample_rate=sample_rate)
+        root_url = self.base_url.rstrip("/")
+        if root_url.endswith("/v1"):
+            root_url = root_url[:-3]
+        url = f"{root_url}/hf-inference/models/{self.model}"
+        payload = _huggingface_request_json(
+            url=url,
+            api_key=api_key,
+            timeout_sec=self.timeout_sec,
+            request_bytes=wav_bytes,
+            content_type="audio/wav",
+        )
+        text = _extract_huggingface_asr_text(payload)
+        if text:
+            return text
+        raise ValueError("HuggingFace ASR returned empty text.")
 
 
 def _openai_request_bytes(req: request.Request, timeout_sec: float, retries: int = 2) -> bytes:
@@ -393,6 +432,111 @@ def _format_openai_http_error(status: int, body: bytes, retry_after_sec: float |
             "This is usually network/IP policy, not model name format."
         )
     return f"HTTP Error {status}: {message}{detail_suffix}"
+
+
+def _openai_compatible_headers(*, api_key: str, content_type: str | None) -> dict[str, str]:
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Accept": "application/json",
+        "User-Agent": DEFAULT_HTTP_USER_AGENT,
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    if content_type:
+        headers["Content-Type"] = content_type
+    return headers
+
+
+def _huggingface_headers(*, api_key: str, content_type: str | None) -> dict[str, str]:
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Accept": "application/json",
+        "User-Agent": DEFAULT_HTTP_USER_AGENT,
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    if content_type:
+        headers["Content-Type"] = content_type
+    return headers
+
+
+def _huggingface_request_json(
+    *,
+    url: str,
+    api_key: str,
+    timeout_sec: float,
+    request_json: dict[str, object] | None = None,
+    request_bytes: bytes | None = None,
+    content_type: str = "application/json",
+    retries: int = 3,
+) -> dict[str, object] | list[object]:
+    if request_json is not None:
+        data = json.dumps(request_json).encode("utf-8")
+    elif request_bytes is not None:
+        data = request_bytes
+    else:
+        data = b""
+
+    req = request.Request(
+        url=url,
+        data=data,
+        headers=_huggingface_headers(api_key=api_key, content_type=content_type),
+        method="POST",
+    )
+    for attempt in range(retries + 1):
+        try:
+            with request.urlopen(req, timeout=timeout_sec) as resp:
+                body = resp.read().decode("utf-8", errors="replace")
+                return json.loads(body)
+        except error.HTTPError as exc:
+            body = _read_http_error_body(exc)
+            body_text = body.decode("utf-8", errors="replace").strip()
+            retry_after = _parse_retry_after_seconds(exc.headers.get("Retry-After", "") if exc.headers else "")
+
+            estimated_wait = 0.0
+            if body_text:
+                try:
+                    payload = json.loads(body_text)
+                    if isinstance(payload, dict):
+                        estimated = payload.get("estimated_time")
+                        if isinstance(estimated, (int, float)) and estimated > 0:
+                            estimated_wait = float(estimated)
+                except Exception:
+                    estimated_wait = 0.0
+
+            if exc.code in {408, 409, 429, 500, 502, 503, 504} and attempt < retries:
+                wait_sec = retry_after if retry_after is not None else max(1.0, min(12.0, estimated_wait))
+                time.sleep(wait_sec)
+                continue
+            raise ValueError(_format_openai_http_error(exc.code, body, retry_after)) from exc
+        except error.URLError as exc:
+            if attempt < retries:
+                time.sleep(min(4.0, 0.8 * (2**attempt)))
+                continue
+            reason = getattr(exc, "reason", exc)
+            raise ValueError(f"Network error while calling HuggingFace: {reason}") from exc
+    raise ValueError("HuggingFace request failed after retries.")
+
+
+def _extract_huggingface_asr_text(payload: dict[str, object] | list[object]) -> str:
+    if isinstance(payload, dict):
+        if "error" in payload:
+            raise ValueError(str(payload.get("error", "")).strip() or "HuggingFace ASR request failed.")
+        text = payload.get("text")
+        if isinstance(text, str):
+            return text.strip()
+        generated_text = payload.get("generated_text")
+        if isinstance(generated_text, str):
+            return generated_text.strip()
+
+    if isinstance(payload, list):
+        for item in payload:
+            if isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str) and text.strip():
+                    return text.strip()
+                generated_text = item.get("generated_text")
+                if isinstance(generated_text, str) and generated_text.strip():
+                    return generated_text.strip()
+    return ""
 
 
 def _normalize_whisper_language(language: str) -> str:

@@ -3,7 +3,13 @@ from __future__ import annotations
 import numpy as np
 import sounddevice as sd
 
-from app.audio_device_selection import list_indexed_devices, pick_best_device
+from app.audio_device_selection import (
+    device_tokens,
+    normalize_device_text,
+    parse_device_selector,
+    list_indexed_devices,
+    preferred_hostapi_index_for_platform,
+)
 
 
 class AudioPlayback:
@@ -13,51 +19,95 @@ class AudioPlayback:
     def play(self, audio: np.ndarray, sample_rate: int, output_device_name: str) -> None:
         if audio.size == 0 or not output_device_name:
             return
-        device_index, device_info = self._find_output_device(output_device_name)
         requested_sample_rate = float(sample_rate)
-        default_sample_rate = float(device_info["default_samplerate"])
-        resolved_sample_rate = self._resolve_supported_output_sample_rate(
-            device_index=device_index,
-            requested_sample_rate=requested_sample_rate,
-            default_sample_rate=default_sample_rate,
+        errors: list[str] = []
+        for device_index, device_info in self._find_output_devices(output_device_name):
+            default_sample_rate = float(device_info["default_samplerate"])
+            max_output_channels = int(device_info["max_output_channels"])
+            for playback_audio, channels in self._candidate_audio_variants(
+                audio=audio,
+                max_output_channels=max_output_channels,
+            ):
+                try:
+                    resolved_sample_rate = self._resolve_supported_output_sample_rate(
+                        device_index=device_index,
+                        channels=channels,
+                        requested_sample_rate=requested_sample_rate,
+                        default_sample_rate=default_sample_rate,
+                    )
+                    playback_audio = self._resample_audio_if_needed(
+                        audio=playback_audio,
+                        source_sample_rate=requested_sample_rate,
+                        target_sample_rate=resolved_sample_rate,
+                    )
+                    sd.play(playback_audio, samplerate=resolved_sample_rate, device=device_index, blocking=False)
+                    self._last_play_device = str(device_info["name"])
+                    return
+                except Exception as exc:
+                    errors.append(
+                        f"{device_info['name']} [idx={device_index}, {channels}ch]: {exc}"
+                    )
+
+        if not errors:
+            raise ValueError(f"Output device not found: {output_device_name}")
+        raise ValueError(
+            "Unable to play TTS audio on the selected output device or compatible fallback. "
+            + " | ".join(errors[:6])
         )
-        playback_audio = self._resample_audio_if_needed(
-            audio=audio,
-            source_sample_rate=requested_sample_rate,
-            target_sample_rate=resolved_sample_rate,
-        )
-        sd.play(playback_audio, samplerate=resolved_sample_rate, device=device_index, blocking=False)
-        self._last_play_device = output_device_name
 
     def stop(self) -> None:
         sd.stop()
 
     @staticmethod
-    def _find_output_device(device_name: str) -> tuple[int, dict[str, object]]:
+    def _find_output_devices(device_name: str) -> list[tuple[int, dict[str, object]]]:
+        hostapi_name, requested_name = parse_device_selector(device_name)
         devices = list_indexed_devices()
-        exact_matches = [
-            (idx, item)
-            for idx, item in devices
-            if str(item["name"]) == device_name and int(item["max_output_channels"]) > 0
-        ]
-        best_exact = pick_best_device(exact_matches)
-        if best_exact:
-            return best_exact
+        preferred_hostapi = preferred_hostapi_index_for_platform()
+        normalized_target = normalize_device_text(requested_name)
+        target_tokens = device_tokens(requested_name)
+        ranked: list[tuple[int, int, int, int, dict[str, object]]] = []
 
-        partial_matches = [
-            (idx, item)
-            for idx, item in devices
-            if device_name.lower() in str(item["name"]).lower() and int(item["max_output_channels"]) > 0
-        ]
-        best_partial = pick_best_device(partial_matches)
-        if best_partial:
-            return best_partial
-        raise ValueError(f"Output device not found: {device_name}")
+        for idx, item in devices:
+            if int(item["max_output_channels"]) <= 0:
+                continue
+            name = str(item["name"])
+            normalized_name = normalize_device_text(name)
+            name_tokens = device_tokens(name)
+
+            score = 0
+            if name == requested_name:
+                score = 500
+            elif normalized_name == normalized_target:
+                score = 450
+            elif normalized_target and normalized_target in normalized_name:
+                score = 350
+            elif target_tokens and target_tokens.issubset(name_tokens):
+                score = 300 + len(target_tokens)
+            elif target_tokens:
+                overlap = len(target_tokens & name_tokens)
+                if overlap >= max(2, len(target_tokens) - 1):
+                    score = 200 + overlap
+
+            if score <= 0:
+                continue
+
+            hostapi = int(item.get("hostapi", -1))
+            if hostapi_name:
+                hostapi_matches = str(sd.query_hostapis()[hostapi].get("name", "")) == hostapi_name
+                hostapi_rank = 0 if hostapi_matches else 1
+            else:
+                hostapi_rank = 0 if hostapi == preferred_hostapi else 1
+            extra_token_penalty = max(0, len(name_tokens) - len(target_tokens))
+            ranked.append((hostapi_rank, -score, extra_token_penalty, idx, item))
+
+        ranked.sort()
+        return [(idx, item) for _, _, _, idx, item in ranked]
 
     @staticmethod
     def _resolve_supported_output_sample_rate(
         *,
         device_index: int,
+        channels: int,
         requested_sample_rate: float,
         default_sample_rate: float,
     ) -> float:
@@ -70,13 +120,41 @@ class AudioPlayback:
         errors: list[str] = []
         for rate in candidate_rates:
             try:
-                sd.check_output_settings(device=device_index, samplerate=rate)
+                sd.check_output_settings(
+                    device=device_index,
+                    samplerate=rate,
+                    channels=channels,
+                    dtype="float32",
+                )
                 return rate
             except Exception as exc:
                 errors.append(f"{int(round(rate))}Hz -> {exc}")
 
         details = "; ".join(errors) if errors else "no valid candidate sample rate"
         raise ValueError(f"Output device does not support requested sample rate(s): {details}")
+
+    @staticmethod
+    def _candidate_audio_variants(
+        *,
+        audio: np.ndarray,
+        max_output_channels: int,
+    ) -> list[tuple[np.ndarray, int]]:
+        if audio.size == 0 or max_output_channels <= 0:
+            return []
+
+        base = audio.astype(np.float32, copy=False)
+        if base.ndim == 1:
+            mono = base.reshape(-1, 1)
+        elif base.ndim == 2:
+            mono = base[:, :1]
+        else:
+            raise ValueError(f"Unsupported audio shape for playback: {audio.shape}")
+
+        variants: list[tuple[np.ndarray, int]] = [(mono, 1)]
+        if max_output_channels >= 2:
+            stereo = np.repeat(mono, 2, axis=1)
+            variants.append((stereo, 2))
+        return variants
 
     @staticmethod
     def _resample_audio_if_needed(

@@ -19,6 +19,7 @@ class ModelsPage(QWidget):
         "gpt-4o-mini-transcribe",
         "whisper-1",
         "whisper-large-v3",
+        "openai/whisper-large-v3",
         "openai/whisper-large-v3-turbo",
         "small",
         "medium",
@@ -261,15 +262,15 @@ class ModelsPage(QWidget):
         self._notify_settings_changed()
 
     def _apply_hf_free_preset(self) -> None:
-        self._select_by_data(self.asr_combo, "mock")
+        self._select_by_data(self.asr_combo, "huggingface")
         self._select_by_data(self.translate_combo, "huggingface")
         self._select_by_data(self.tts_combo, "edge_tts")
         self._set_editable_combo_value(self.openai_api_key_env_combo, "HF_TOKEN")
         self._set_editable_combo_value(self.openai_base_url_combo, "https://router.huggingface.co/v1")
-        self._set_editable_combo_value(self.openai_asr_model_combo, "openai/whisper-large-v3-turbo")
+        self._set_editable_combo_value(self.openai_asr_model_combo, "openai/whisper-large-v3")
         self._set_editable_combo_value(self.openai_translate_model_combo, "meta-llama/Llama-3.3-70B-Instruct")
         self._set_editable_combo_value(self.openai_tts_voice_combo, "zh-TW-HsiaoChenNeural")
-        self.set_test_status("Provider test: HuggingFace free preset applied (ASR=mock, Translate=huggingface, TTS=edge_tts).")
+        self.set_test_status("Provider test: HuggingFace free preset applied (ASR=huggingface, Translate=huggingface, TTS=edge_tts).")
         self._notify_settings_changed()
 
     def _apply_openai_default_preset(self) -> None:

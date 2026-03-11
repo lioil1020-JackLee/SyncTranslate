@@ -1,28 +1,29 @@
 audio:
-  remote_in: Voicemeeter Out B2 (VB-Audio Voicemeeter VAIO)
-  local_mic_in: 耳機 (WH-1000XM5)
-  local_tts_out: 耳機 (WH-1000XM5)
-  meeting_tts_out: Voicemeeter AUX Input (VB-Audio Voicemeeter VAIO)
+  remote_in: Windows DirectSound::Voicemeeter Out B2 (VB-Audio Voicemeeter VAIO)
+  local_mic_in: Windows WASAPI::耳機 (WH-1000XM5)
+  local_tts_out: Windows WASAPI::耳機 (WH-1000XM5)
+  meeting_tts_out: Windows DirectSound::Voicemeeter AUX Input (VB-Audio Voicemeeter
+    VAIO)
 language:
-  remote_source: en
-  remote_target: zh-TW
+  remote_source: zh-TW
+  remote_target: en
   local_source: zh-TW
   local_target: en
 model:
-  asr_provider: groq
-  translate_provider: groq
+  asr_provider: huggingface
+  translate_provider: huggingface
   tts_provider: edge_tts
 openai:
-  api_key_env: GROQ_API_KEY
-  base_url: https://api.groq.com/openai/v1
-  asr_model: whisper-large-v3
-  translate_model: llama-3.3-70b-versatile
+  api_key_env: HF_TOKEN
+  base_url: https://router.huggingface.co/v1
+  asr_model: openai/whisper-large-v3
+  translate_model: meta-llama/Llama-3.3-70B-Instruct
   tts_model: gpt-4o-mini-tts
   tts_voice: zh-TW-HsiaoChenNeural
 provider_test_last_success:
   asr: ''
   translate: ''
-  tts: 2026-03-11 22:18:18 samples=76608
+  tts: ''
 session_mode: bidirectional
 translate_mode: fast
 sample_rate: 48000

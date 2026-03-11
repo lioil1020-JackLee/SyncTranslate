@@ -59,7 +59,7 @@ The Models page now includes one-click presets:
   - ASR model: `whisper-large-v3`
   - Translate model: `llama-3.3-70b-versatile`
 
-- `HuggingFace Free`: ASR=`mock`, Translate=`huggingface`, TTS=`edge_tts`
+- `HuggingFace Free`: ASR=`huggingface`, Translate=`huggingface`, TTS=`edge_tts`
   - Base URL: `https://router.huggingface.co/v1`
   - API key env: `HF_TOKEN`
   - Translate model: `meta-llama/Llama-3.3-70B-Instruct`
@@ -67,6 +67,9 @@ The Models page now includes one-click presets:
 Notes:
 
 - `groq` and `huggingface` in this app use OpenAI-compatible HTTP APIs.
-- Hugging Face preset only uses the chat-compatible translate path in this app. ASR via the current `/audio/transcriptions` route is not wired to HF.
+- Hugging Face ASR uses router inference path
+  (`https://router.huggingface.co/hf-inference/models/{asr_model}`),
+  and Translate uses OpenAI-compatible chat path
+  (`https://router.huggingface.co/v1/chat/completions`).
 - `local` ASR requires optional package `faster-whisper`.
 - `edge_tts` requires optional packages `edge-tts` and `miniaudio`.

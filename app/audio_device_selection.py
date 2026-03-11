@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import platform
+import re
 from collections.abc import Sequence
 
 import sounddevice as sd
@@ -10,6 +11,67 @@ IndexedDevice = tuple[int, dict[str, object]]
 
 def list_indexed_devices() -> list[IndexedDevice]:
     return [(idx, item) for idx, item in enumerate(sd.query_devices())]
+
+
+def hostapi_name_by_index(index: int) -> str:
+    hostapis = sd.query_hostapis()
+    if 0 <= index < len(hostapis):
+        return str(hostapis[index].get("name", ""))
+    return ""
+
+
+def hostapi_label(hostapi_name: str) -> str:
+    normalized = (hostapi_name or "").strip().lower()
+    mapping = {
+        "windows wasapi": "WDM (WASAPI)",
+        "windows wdm-ks": "KS (Kernel Streaming)",
+        "mme": "MME (Multimedia)",
+        "windows directsound": "DirectSound",
+        "asio": "ASIO",
+    }
+    return mapping.get(normalized, hostapi_name or "Unknown")
+
+
+def hostapi_sort_key(hostapi_name: str) -> tuple[int, str]:
+    normalized = (hostapi_name or "").strip().lower()
+    priority = {
+        "windows wasapi": 0,
+        "windows wdm-ks": 1,
+        "mme": 2,
+        "windows directsound": 3,
+        "asio": 4,
+    }
+    return (priority.get(normalized, 99), normalized)
+
+
+def encode_device_selector(*, hostapi_name: str, device_name: str) -> str:
+    if not hostapi_name.strip():
+        return device_name
+    return f"{hostapi_name}::{device_name}"
+
+
+def parse_device_selector(selector: str) -> tuple[str, str]:
+    value = (selector or "").strip()
+    if "::" in value:
+        hostapi_name, device_name = value.split("::", 1)
+        return hostapi_name.strip(), device_name.strip()
+    return "", value
+
+
+def canonical_device_name(selector: str) -> str:
+    _, device_name = parse_device_selector(selector)
+    return device_name
+
+
+def normalize_device_text(value: str) -> str:
+    lowered = (value or "").strip().lower()
+    cleaned = re.sub(r"[^0-9a-z\u4e00-\u9fff]+", " ", lowered)
+    return " ".join(cleaned.split())
+
+
+def device_tokens(value: str) -> set[str]:
+    normalized = normalize_device_text(value)
+    return {token for token in normalized.split(" ") if token}
 
 
 def select_best_hostapi_devices(indexed_devices: Sequence[IndexedDevice]) -> list[IndexedDevice]:

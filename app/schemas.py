@@ -48,6 +48,9 @@ class ProviderTestStateConfig:
 class DeviceInfo:
     index: int
     name: str
+    hostapi_index: int
+    hostapi_name: str
+    hostapi_label: str
     max_input_channels: int
     max_output_channels: int
     default_samplerate: float

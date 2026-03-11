@@ -3,6 +3,7 @@ from __future__ import annotations
 from app.model_providers import (
     AsrProvider,
     EdgeTtsProvider,
+    HuggingFaceAsrProvider,
     LocalAsrProvider,
     MockAsrProvider,
     MockTranslateProvider,
@@ -15,6 +16,7 @@ from app.model_providers import (
 )
 
 OPENAI_COMPATIBLE_PROVIDERS = {"openai", "groq", "huggingface"}
+OPENAI_COMPATIBLE_ASR_PROVIDERS = {"openai", "groq"}
 
 
 def create_asr_provider(
@@ -28,7 +30,14 @@ def create_asr_provider(
     normalized = provider_name.strip().lower()
     if normalized == "mock":
         return MockAsrProvider(language=language)
-    if normalized in OPENAI_COMPATIBLE_PROVIDERS:
+    if normalized == "huggingface":
+        return HuggingFaceAsrProvider(
+            language=language,
+            api_key_env=openai_api_key_env,
+            base_url=openai_base_url,
+            model=openai_model,
+        )
+    if normalized in OPENAI_COMPATIBLE_ASR_PROVIDERS:
         return OpenAIAsrProvider(
             language=language,
             api_key_env=openai_api_key_env,
