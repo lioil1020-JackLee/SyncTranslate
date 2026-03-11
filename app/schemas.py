@@ -31,8 +31,8 @@ class ModelConfig:
 class OpenAIConfig:
     api_key_env: str = "OPENAI_API_KEY"
     base_url: str = "https://api.openai.com/v1"
-    asr_model: str = "gpt-4o-mini-transcribe"
-    translate_model: str = "gpt-4.1-mini"
+    asr_model: str = "gpt-4o-transcribe"
+    translate_model: str = "gpt-5-mini"
     tts_model: str = "gpt-4o-mini-tts"
     tts_voice: str = "alloy"
 
@@ -60,6 +60,8 @@ class AppConfig:
     model: ModelConfig = field(default_factory=ModelConfig)
     openai: OpenAIConfig = field(default_factory=OpenAIConfig)
     provider_test_last_success: ProviderTestStateConfig = field(default_factory=ProviderTestStateConfig)
+    session_mode: str = "remote_only"
+    translate_mode: str = "fast"
     sample_rate: int = 48000
     chunk_ms: int = 100
 
@@ -70,12 +72,20 @@ class AppConfig:
         model = ModelConfig(**raw.get("model", {}))
         openai = OpenAIConfig(**raw.get("openai", {}))
         provider_test_last_success = ProviderTestStateConfig(**raw.get("provider_test_last_success", {}))
+        session_mode = str(raw.get("session_mode", "remote_only"))
+        if session_mode not in {"remote_only", "local_only", "bidirectional"}:
+            session_mode = "remote_only"
+        translate_mode = str(raw.get("translate_mode", "fast"))
+        if translate_mode not in {"fast", "quality"}:
+            translate_mode = "fast"
         return cls(
             audio=audio,
             language=language,
             model=model,
             openai=openai,
             provider_test_last_success=provider_test_last_success,
+            session_mode=session_mode,
+            translate_mode=translate_mode,
             sample_rate=int(raw.get("sample_rate", 48000)),
             chunk_ms=int(raw.get("chunk_ms", 100)),
         )

@@ -1,0 +1,25 @@
+SyncTranslate Diagnostics
+timestamp: 2026-03-11T22:20:32.175288
+config_path: config.yaml
+asr_provider: groq
+translate_provider: groq
+tts_provider: edge_tts
+openai_asr_model: whisper-large-v3
+openai_translate_model: llama-3.3-70b-versatile
+openai_tts_model: gpt-4o-mini-tts
+openai_tts_voice: zh-TW-HsiaoChenNeural
+remote_in: Voicemeeter Out B2 (VB-Audio Voicemeeter VAIO)
+local_mic_in: 耳機 (WH-1000XM5)
+local_tts_out: 耳機 (WH-1000XM5)
+meeting_tts_out: Voicemeeter AUX Input (VB-Audio Voicemeeter VAIO)
+remote_running: True
+remote_level: 0.0000
+local_running: True
+local_level: 0.0005
+provider_test_last_success:
+ASR: -
+Translate: -
+TTS: 2026-03-11 22:18:18 samples=76608
+recent_errors:
+2026-03-11 22:18:10 test_asr_provider failed: HTTP Error 403: error code: 1010
+2026-03-11 22:18:15 test_translate_provider failed: HTTP Error 403: error code: 1010

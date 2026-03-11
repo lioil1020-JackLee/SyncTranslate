@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-import os
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Lock
@@ -16,11 +15,17 @@ from PySide6.QtWidgets import QMainWindow, QMessageBox, QScrollArea, QSizePolicy
 
 from app.audio_capture import AudioCapture
 from app.audio_playback import AudioPlayback
-from app.model_factory import create_asr_provider, create_translate_provider, create_tts_provider
+from app.model_factory import (
+    OPENAI_COMPATIBLE_PROVIDERS,
+    create_asr_provider,
+    create_translate_provider,
+    create_tts_provider,
+)
 from app.pipeline_local import LocalPipeline
 from app.pipeline_remote import RemotePipeline
 from app.debug_panel import DebugPanel
 from app.device_manager import DeviceManager
+from app.env_vars import get_env_var
 from app.pages_audio_routing import AudioRoutingPage
 from app.pages_diagnostics import DiagnosticsPage
 from app.pages_live_caption import LiveCaptionPage
@@ -86,6 +91,7 @@ class MainWindow(QMainWindow):
             on_test_tts=self.test_tts_provider_call,
             on_cancel_test=self.cancel_provider_test,
             on_clear_test_state=self.clear_provider_test_state,
+            on_settings_changed=self._on_models_settings_changed,
         )
         self.diagnostics_page = DiagnosticsPage(
             on_start_remote_capture=self.start_remote_capture,
@@ -150,11 +156,10 @@ class MainWindow(QMainWindow):
         self.validate_current_routes()
 
     def persist_config(self) -> None:
-        self.config.audio = self.audio_routing_page.selected_audio_routes()
-        self.models_page.update_config(self.config)
+        self._sync_ui_to_config()
         self._build_pipelines_from_config()
         self._update_model_runtime_status()
-        path = save_config(self.config, self.config_path)
+        path = self._save_config_to_disk()
         self.audio_routing_page.set_status(f"設定已儲存: {path}")
         self.statusBar().showMessage(f"已儲存設定到 {path}")
         self.validate_current_routes()
@@ -171,9 +176,15 @@ class MainWindow(QMainWindow):
 
     def validate_current_routes(self) -> None:
         current_routes = self.audio_routing_page.selected_audio_routes()
+        current_mode = self.audio_routing_page.selected_mode()
         self.diagnostics_page.select_remote_in(current_routes.remote_in)
         self.diagnostics_page.select_local_mic(current_routes.local_mic_in)
-        result = check_routes(current_routes, self.input_device_names, self.output_device_names)
+        result = check_routes(
+            current_routes,
+            self.input_device_names,
+            self.output_device_names,
+            mode=current_mode,
+        )
         self.debug_panel.update_route_result(result)
         self.debug_panel.update_recent_errors(self._get_recent_errors())
         is_running = self.session_controller.is_running() if self.session_controller else False
@@ -196,6 +207,10 @@ class MainWindow(QMainWindow):
         route = self.audio_routing_page.selected_audio_routes()
         mode = self.audio_routing_page.selected_mode()
         try:
+            self._sync_ui_to_config()
+            self._build_pipelines_from_config()
+            self._update_model_runtime_status()
+            self._save_config_to_disk()
             result = self.session_controller.start(mode, route, sample_rate=self.config.sample_rate)
             if not result.ok:
                 raise ValueError(result.message)
@@ -254,6 +269,11 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "重新綁定失敗", str(exc))
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        try:
+            self._sync_ui_to_config()
+            self._save_config_to_disk()
+        except Exception as exc:
+            self._report_error(f"save_on_close failed: {exc}")
         if self.session_controller:
             self.session_controller.stop()
         self.remote_capture.stop()
@@ -537,26 +557,41 @@ class MainWindow(QMainWindow):
             return list(self.recent_errors)
 
     def _update_model_runtime_status(self) -> None:
-        uses_openai = any(
-            provider == "openai"
+        uses_api_key_provider = any(
+            provider in OPENAI_COMPATIBLE_PROVIDERS
             for provider in (
                 self.config.model.asr_provider,
                 self.config.model.translate_provider,
                 self.config.model.tts_provider,
             )
         )
-        if not uses_openai:
-            self.models_page.set_runtime_status("Runtime status: mock providers ready")
+        if not uses_api_key_provider:
+            if self.config.model.asr_provider == "local" or self.config.model.tts_provider == "edge_tts":
+                self.models_page.set_runtime_status("Runtime status: local/edge providers ready (no OpenAI key needed)")
+            else:
+                self.models_page.set_runtime_status("Runtime status: mock providers ready")
             self._refresh_last_success_label()
             return
 
         env_name = self.config.openai.api_key_env
-        has_key = bool(os.getenv(env_name, "").strip())
+        has_key = bool(get_env_var(env_name, "").strip())
         if has_key:
-            self.models_page.set_runtime_status(f"Runtime status: OPENAI ready ({env_name} found)")
+            self.models_page.set_runtime_status(f"Runtime status: API key ready ({env_name} found)")
         else:
             self.models_page.set_runtime_status(f"Runtime status: WARNING - {env_name} not found")
         self._refresh_last_success_label()
+
+    def _on_models_settings_changed(self) -> None:
+        self.models_page.update_config(self.config)
+        self._update_model_runtime_status()
+
+    def _sync_ui_to_config(self) -> None:
+        self.config.audio = self.audio_routing_page.selected_audio_routes()
+        self.config.session_mode = self.audio_routing_page.selected_mode()
+        self.models_page.update_config(self.config)
+
+    def _save_config_to_disk(self) -> Path:
+        return save_config(self.config, self.config_path)
 
     def _start_provider_test(self, test_name: str, runner: Callable[[], str]) -> None:
         if self._provider_test_running:
@@ -635,10 +670,7 @@ class MainWindow(QMainWindow):
             openai_base_url=self.config.openai.base_url,
             openai_model=self.config.openai.asr_model,
         )
-        sample_rate = 16000
-        t = np.linspace(0.0, 1.2, int(sample_rate * 1.2), endpoint=False)
-        tone = 0.15 * np.sin(2 * np.pi * 220 * t)
-        audio = tone.reshape(-1, 1).astype(np.float32)
+        audio, sample_rate = self._build_asr_test_audio()
         text = provider.final_text(audio=audio, sample_rate=sample_rate, segment_index=1)
         if not text.strip():
             raise ValueError("ASR provider returned empty text.")
@@ -698,11 +730,12 @@ class MainWindow(QMainWindow):
         return lines
 
     def _persist_provider_test_state(self) -> None:
+        self._sync_ui_to_config()
         self.config.provider_test_last_success.asr = self._provider_test_last_success.get("ASR", "")
         self.config.provider_test_last_success.translate = self._provider_test_last_success.get("Translate", "")
         self.config.provider_test_last_success.tts = self._provider_test_last_success.get("TTS", "")
         try:
-            save_config(self.config, self.config_path)
+            self._save_config_to_disk()
         except Exception as exc:
             self._report_error(f"persist_provider_test_state failed: {exc}")
 
@@ -718,3 +751,21 @@ class MainWindow(QMainWindow):
         if len(text) <= self._last_success_preview_chars:
             return text
         return text[: self._last_success_preview_chars - 1] + "..."
+
+    def _build_asr_test_audio(self) -> tuple[np.ndarray, int]:
+        sample_rate = 24000
+        try:
+            edge_provider = create_tts_provider(
+                provider_name="edge_tts",
+                openai_voice="en-US-AvaMultilingualNeural",
+            )
+            audio = edge_provider.synthesize("Hello, this is an ASR provider test.", sample_rate=sample_rate)
+            if audio.size > 0:
+                return audio, sample_rate
+        except Exception:
+            pass
+
+        fallback_rate = 16000
+        t = np.linspace(0.0, 1.2, int(fallback_rate * 1.2), endpoint=False)
+        tone = 0.15 * np.sin(2 * np.pi * 220 * t)
+        return tone.reshape(-1, 1).astype(np.float32), fallback_rate

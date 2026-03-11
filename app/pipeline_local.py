@@ -61,6 +61,14 @@ class LocalPipeline:
     def _handle_asr_result(self, result: AsrResult) -> None:
         try:
             self._transcript_buffer.append(source="local_original", text=result.text, is_final=result.is_final)
+            self._on_original_transcript(result.text)
+
+            # Avoid sending partial/error text to downstream LLM/TTS to reduce request bursts.
+            if not result.is_final:
+                return
+            if result.text.strip().startswith("[asr-error]"):
+                return
+
             translated = self._translate_worker.translate(result.text)
             self._transcript_buffer.append(source="local_translated", text=translated, is_final=result.is_final)
 
@@ -68,7 +76,6 @@ class LocalPipeline:
             audio = self._tts_worker.synthesize(translated)
             self._audio_playback.play(audio=audio, sample_rate=24000, output_device_name=output_device)
 
-            self._on_original_transcript(result.text)
             self._on_translated_transcript(translated)
         except Exception as exc:
             if self._on_error:

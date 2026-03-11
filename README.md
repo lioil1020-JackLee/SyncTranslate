@@ -48,3 +48,25 @@ $env:OPENAI_API_KEY="你的金鑰"
 可按「清除測試狀態」重置 `Provider test` 與 `Last success` 顯示。
 `Last success` 會寫入 `config.yaml`，重啟程式後仍會保留。
 `Last success` 儲存為完整日期時間與結果文字，UI 會自動截短顯示避免過長。
+
+## Free Provider Presets
+
+The Models page now includes one-click presets:
+
+- `Groq Free`: ASR=`groq`, Translate=`groq`, TTS=`edge_tts`
+  - Base URL: `https://api.groq.com/openai/v1`
+  - API key env: `GROQ_API_KEY`
+  - ASR model: `whisper-large-v3`
+  - Translate model: `llama-3.3-70b-versatile`
+
+- `HuggingFace Free`: ASR=`mock`, Translate=`huggingface`, TTS=`edge_tts`
+  - Base URL: `https://router.huggingface.co/v1`
+  - API key env: `HF_TOKEN`
+  - Translate model: `meta-llama/Llama-3.3-70B-Instruct`
+
+Notes:
+
+- `groq` and `huggingface` in this app use OpenAI-compatible HTTP APIs.
+- Hugging Face preset only uses the chat-compatible translate path in this app. ASR via the current `/audio/transcriptions` route is not wired to HF.
+- `local` ASR requires optional package `faster-whisper`.
+- `edge_tts` requires optional packages `edge-tts` and `miniaudio`.

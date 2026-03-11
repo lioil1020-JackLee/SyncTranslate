@@ -10,3 +10,12 @@ dependencies = [
     "pyyaml>=6.0.3",
     "sounddevice>=0.5.2",
 ]
+
+[project.optional-dependencies]
+free = [
+    "edge-tts>=7.2.3",
+    "miniaudio>=1.61",
+]
+local = [
+    "faster-whisper>=1.1.1",
+]

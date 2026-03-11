@@ -7,6 +7,8 @@ from typing import Callable
 import numpy as np
 import sounddevice as sd
 
+from app.audio_device_selection import list_indexed_devices, pick_best_device
+
 
 @dataclass(slots=True)
 class CaptureStats:
@@ -44,14 +46,21 @@ class AudioCapture:
         if channels <= 0:
             raise ValueError(f"Device has no input channels: {device_name}")
 
-        resolved_sample_rate = float(sample_rate or device_info["default_samplerate"])
+        requested_sample_rate = float(sample_rate) if sample_rate else None
+        default_sample_rate = float(device_info["default_samplerate"])
+        resolved_sample_rate = self._resolve_supported_input_sample_rate(
+            device_index=device_index,
+            channels=channels,
+            requested_sample_rate=requested_sample_rate,
+            default_sample_rate=default_sample_rate,
+        )
         with self._lock:
             self._frame_count = 0
             self._level = 0.0
             self._sample_rate = resolved_sample_rate
             self._last_error = ""
             self._current_device_name = device_name
-            self._current_sample_rate = sample_rate
+            self._current_sample_rate = int(round(resolved_sample_rate))
 
         self._stream = sd.InputStream(
             device=device_index,
@@ -127,20 +136,47 @@ class AudioCapture:
 
     @staticmethod
     def _find_input_device(device_name: str) -> tuple[int, dict[str, object]]:
-        devices = sd.query_devices()
+        devices = list_indexed_devices()
         exact_matches = [
             (idx, item)
-            for idx, item in enumerate(devices)
+            for idx, item in devices
             if str(item["name"]) == device_name and int(item["max_input_channels"]) > 0
         ]
-        if exact_matches:
-            return exact_matches[0]
+        best_exact = pick_best_device(exact_matches)
+        if best_exact:
+            return best_exact
 
         partial_matches = [
             (idx, item)
-            for idx, item in enumerate(devices)
+            for idx, item in devices
             if device_name.lower() in str(item["name"]).lower() and int(item["max_input_channels"]) > 0
         ]
-        if partial_matches:
-            return partial_matches[0]
+        best_partial = pick_best_device(partial_matches)
+        if best_partial:
+            return best_partial
         raise ValueError(f"Input device not found: {device_name}")
+
+    @staticmethod
+    def _resolve_supported_input_sample_rate(
+        *,
+        device_index: int,
+        channels: int,
+        requested_sample_rate: float | None,
+        default_sample_rate: float,
+    ) -> float:
+        candidate_rates: list[float] = []
+        if requested_sample_rate and requested_sample_rate > 0:
+            candidate_rates.append(requested_sample_rate)
+        if default_sample_rate > 0 and default_sample_rate not in candidate_rates:
+            candidate_rates.append(default_sample_rate)
+
+        errors: list[str] = []
+        for rate in candidate_rates:
+            try:
+                sd.check_input_settings(device=device_index, channels=channels, samplerate=rate)
+                return rate
+            except Exception as exc:
+                errors.append(f"{int(round(rate))}Hz -> {exc}")
+
+        details = "; ".join(errors) if errors else "no valid candidate sample rate"
+        raise ValueError(f"Input device does not support requested sample rate(s): {details}")

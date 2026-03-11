@@ -27,9 +27,12 @@ def main() -> int:
     app = QApplication(sys.argv)
     window = MainWindow(args.config)
     window.show()
-    return app.exec()
+    try:
+        return app.exec()
+    except KeyboardInterrupt:
+        # Allow clean Ctrl+C exit without traceback spam in terminal runs.
+        return 130
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

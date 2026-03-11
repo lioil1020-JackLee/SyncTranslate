@@ -78,6 +78,7 @@ class AudioRoutingPage(QWidget):
         self._select_by_name(self.local_mic_in_combo, config.audio.local_mic_in)
         self._select_by_name(self.local_tts_out_combo, config.audio.local_tts_out)
         self._select_by_name(self.meeting_tts_out_combo, config.audio.meeting_tts_out)
+        self._select_by_mode(self.session_mode_combo, config.session_mode)
 
     def selected_audio_routes(self) -> AudioRouteConfig:
         return AudioRouteConfig(
@@ -122,4 +123,21 @@ class AudioRoutingPage(QWidget):
     @staticmethod
     def _select_by_name(combo: QComboBox, name: str) -> None:
         index = combo.findData(name)
-        combo.setCurrentIndex(index if index >= 0 else 0)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+            return
+
+        name_lower = name.lower()
+        for idx in range(combo.count()):
+            value = combo.itemData(idx)
+            if isinstance(value, str) and value.lower() == name_lower:
+                combo.setCurrentIndex(idx)
+                return
+
+        combo.setCurrentIndex(0)
+
+    @staticmethod
+    def _select_by_mode(combo: QComboBox, mode: str) -> None:
+        index = combo.findData(mode)
+        if index >= 0:
+            combo.setCurrentIndex(index)
