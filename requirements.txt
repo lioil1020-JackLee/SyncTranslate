@@ -1,0 +1,17 @@
+# Generated from pyproject.toml
+# Main dependencies
+numpy>=2.3.3
+pyside6>=6.9.3
+pyyaml>=6.0.3
+sounddevice>=0.5.2
+
+# Optional / extra dependencies (not required)
+# For TTS (Edge) and alternate audio backends
+edge-tts>=7.2.3
+miniaudio>=1.61
+
+# For local ASR (if using local models)
+faster-whisper>=1.1.1
+
+# To install:
+#   pip install -r requirements.txt
