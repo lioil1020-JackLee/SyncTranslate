@@ -1,75 +1,73 @@
 # SyncTranslate
 
-Windows 本地雙向口譯工具（開發中）。
+Desktop interpreter assistant for meetings.
 
-## 目前進度
+It captures meeting audio and microphone audio, runs local ASR + local LLM translation, and plays translated TTS to different output devices.
 
-- Stage 1-6: 專案骨架、設定檔、裝置列舉、路由檢查、分頁主控台
-- Stage 7-14: remote/local pipeline 架構、字幕緩衝、診斷匯出、模式切換
-- 目前 ASR/Translate/TTS 為 mock 實作（先驗證音訊與流程）
+## Features
 
-## 執行
+- Dual pipeline: `meeting -> local speaker` and `local mic -> meeting output`
+- Local ASR with `faster-whisper`
+- Local translation with `Ollama` or `LM Studio`
+- TTS per direction
+- `Piper` for offline local TTS
+- `Edge TTS` for selectable male/female cloud voices
+- Live captions with auto-scroll
+- Audio route diagnostics and output tests
+
+## Requirements
+
+- Windows
+- Python `3.11+`
+- `uv`
+- Optional GPU for faster ASR
+
+## Install
+
+```powershell
+uv sync --extra local
+```
+
+## Run
 
 ```powershell
 uv run python .\main.py
 ```
 
-## 快速檢查（不開視窗）
+## Quick Check
 
 ```powershell
 uv run python .\main.py --check
 ```
 
-## 設定檔
+## Config Files
 
-- 主要設定：`config.yaml`
-- 範例設定：`config.example.yaml`
-- `model.asr_provider` 支援 `mock`、`openai`
-- `model.translate_provider` 支援 `mock`、`openai`
-- `model.tts_provider` 支援 `mock`、`openai`
-- 使用 `openai` provider 時，請先設定環境變數 `OPENAI_API_KEY`
+- Main local config: `config.yaml`
+- Example config: `config.example.yaml`
 
-## OpenAI Provider 快速測試
+`config.yaml` is intentionally ignored by git because it contains machine-specific audio routes and local runtime settings.
 
-1. 設定環境變數（PowerShell）：
-```powershell
-$env:OPENAI_API_KEY="你的金鑰"
-```
-2. 啟動程式後到 `模型與語言` 分頁
-3. 將 `ASR` / `Translate` / `TTS` 切換為 `openai`（可分開切）
-4. 確認 OpenAI 相關欄位（base URL / models / voice）
-5. 回 `音訊路由` 按 `儲存設定`
-6. 在 `模型與語言` 可先按 `測試 ASR / 測試 Translate / 測試 TTS`
-7. 到 `音訊診斷` 按 `測試英文送出`
-8. 再按 `開始` 跑單向或雙向模式
+## TTS Notes
 
-補充：Provider 測試會在背景執行，不會卡住 UI；一次僅允許一個測試。
-可在模型頁按「取消測試」中止等待結果；若超過約 25 秒會標示逾時。
-可按「清除測試狀態」重置 `Provider test` 與 `Last success` 顯示。
-`Last success` 會寫入 `config.yaml`，重啟程式後仍會保留。
-`Last success` 儲存為完整日期時間與結果文字，UI 會自動截短顯示避免過長。
+- `meeting_tts`: played to your local speaker/headphones
+- `local_tts`: played to the meeting output device
+- For output-device testing, the app now prefers local playable TTS and falls back to a local tone if the configured cloud TTS fails
 
-## Free Provider Presets
+## Common Workflow
 
-The Models page now includes one-click presets:
+1. Open `音訊路由與診斷`
+2. Select input/output devices
+3. Open `本地 AI`
+4. Choose ASR / LLM / TTS settings
+5. Run health check in diagnostics
+6. Start the session from `即時字幕`
 
-- `Groq Free`: ASR=`groq`, Translate=`groq`, TTS=`edge_tts`
-  - Base URL: `https://api.groq.com/openai/v1`
-  - API key env: `GROQ_API_KEY`
-  - ASR model: `whisper-large-v3`
-  - Translate model: `llama-3.3-70b-versatile`
+## Project Files Not Meant For Git
 
-- `HuggingFace Free`: ASR=`huggingface`, Translate=`huggingface`, TTS=`edge_tts`
-  - Base URL: `https://router.huggingface.co/v1`
-  - API key env: `HF_TOKEN`
-  - Translate model: `meta-llama/Llama-3.3-70B-Instruct`
+These are ignored:
 
-Notes:
+- local virtual envs and uv cache
+- downloaded models and tools
+- machine-specific `config.yaml`
+- exported diagnostics / logs
 
-- `groq` and `huggingface` in this app use OpenAI-compatible HTTP APIs.
-- Hugging Face ASR uses router inference path
-  (`https://router.huggingface.co/hf-inference/models/{asr_model}`),
-  and Translate uses OpenAI-compatible chat path
-  (`https://router.huggingface.co/v1/chat/completions`).
-- `local` ASR requires optional package `faster-whisper`.
-- `edge_tts` requires optional packages `edge-tts` and `miniaudio`.

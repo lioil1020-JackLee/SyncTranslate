@@ -16,7 +16,7 @@ class AudioPlayback:
     def __init__(self) -> None:
         self._last_play_device: str = ""
 
-    def play(self, audio: np.ndarray, sample_rate: int, output_device_name: str) -> None:
+    def play(self, audio: np.ndarray, sample_rate: int, output_device_name: str, *, blocking: bool = False) -> None:
         if audio.size == 0 or not output_device_name:
             return
         requested_sample_rate = float(sample_rate)
@@ -40,7 +40,8 @@ class AudioPlayback:
                         source_sample_rate=requested_sample_rate,
                         target_sample_rate=resolved_sample_rate,
                     )
-                    sd.play(playback_audio, samplerate=resolved_sample_rate, device=device_index, blocking=False)
+                    sd.stop()
+                    sd.play(playback_audio, samplerate=resolved_sample_rate, device=device_index, blocking=blocking)
                     self._last_play_device = str(device_info["name"])
                     return
                 except Exception as exc:
@@ -57,6 +58,28 @@ class AudioPlayback:
 
     def stop(self) -> None:
         sd.stop()
+
+    def preview_resolved_sample_rate(self, output_device_name: str, requested_sample_rate: int) -> float:
+        requested = float(requested_sample_rate)
+        errors: list[str] = []
+        for device_index, device_info in self._find_output_devices(output_device_name):
+            max_output_channels = int(device_info["max_output_channels"])
+            if max_output_channels <= 0:
+                continue
+            channels = 2 if max_output_channels >= 2 else 1
+            default_rate = float(device_info["default_samplerate"])
+            try:
+                return self._resolve_supported_output_sample_rate(
+                    device_index=device_index,
+                    channels=channels,
+                    requested_sample_rate=requested,
+                    default_sample_rate=default_rate,
+                )
+            except Exception as exc:
+                errors.append(str(exc))
+        if errors:
+            raise ValueError(errors[0])
+        raise ValueError(f"Output device not found or unavailable: {output_device_name}")
 
     @staticmethod
     def _find_output_devices(device_name: str) -> list[tuple[int, dict[str, object]]]:
@@ -114,6 +137,10 @@ class AudioPlayback:
         candidate_rates: list[float] = []
         if requested_sample_rate > 0:
             candidate_rates.append(requested_sample_rate)
+        # Prefer common real-time voice sample rates across virtual/physical devices.
+        for rate in (48000.0, 44100.0, 32000.0, 24000.0, 22050.0, 16000.0):
+            if rate not in candidate_rates:
+                candidate_rates.append(rate)
         if default_sample_rate > 0 and default_sample_rate not in candidate_rates:
             candidate_rates.append(default_sample_rate)
 

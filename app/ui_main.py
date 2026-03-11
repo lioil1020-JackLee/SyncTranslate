@@ -6,33 +6,31 @@ from queue import Empty, Queue
 from threading import Lock
 from threading import Thread
 import time
-from typing import Callable
 
-import numpy as np
 from PySide6.QtCore import QTimer
-from PySide6.QtGui import QCloseEvent, QGuiApplication, QShowEvent
+from PySide6.QtGui import QCloseEvent, QGuiApplication, QIcon, QShowEvent
 from PySide6.QtWidgets import QMainWindow, QMessageBox, QScrollArea, QSizePolicy, QTabWidget, QWidget
+import numpy as np
 
 from app.audio_capture import AudioCapture
 from app.audio_playback import AudioPlayback
-from app.model_factory import (
-    OPENAI_COMPATIBLE_PROVIDERS,
-    create_asr_provider,
-    create_translate_provider,
-    create_tts_provider,
-)
-from app.pipeline_local import LocalPipeline
-from app.pipeline_remote import RemotePipeline
 from app.debug_panel import DebugPanel
 from app.device_manager import DeviceManager
-from app.env_vars import get_env_var
+from app.local_ai.faster_whisper_engine import FasterWhisperEngine
+from app.local_ai.healthcheck import run_local_healthcheck
+from app.local_ai.ollama_client import OllamaClient
+from app.local_ai.streaming_asr import StreamingAsr
+from app.local_ai.tts_factory import create_tts_engine
+from app.local_ai.translation_stitcher import TranslationStitcher
+from app.local_ai.vad_segmenter import VadConfig, VadSegmenter
 from app.pages_audio_routing import AudioRoutingPage
 from app.pages_diagnostics import DiagnosticsPage
+from app.pages_io_control import IoControlPage
 from app.pages_live_caption import LiveCaptionPage
-from app.pages_models import ModelsPage
-from app.pages_quick_start import QuickStartPage
+from app.pages_local_ai import LocalAiPage
+from app.pipeline_direction import DirectionalPipeline
 from app.router import check_routes
-from app.schemas import AppConfig
+from app.schemas import AppConfig, TtsConfig
 from app.session_controller import SessionController
 from app.settings import load_config, save_config
 from app.transcript_buffer import TranscriptBuffer
@@ -44,75 +42,57 @@ class MainWindow(QMainWindow):
         self.config_path = config_path
         self.config: AppConfig = load_config(self.config_path)
         self.device_manager = DeviceManager()
-        self.remote_capture = AudioCapture()
+        self.meeting_capture = AudioCapture()
         self.local_capture = AudioCapture()
-        self.audio_playback = AudioPlayback()
-        self.meeting_audio_playback = AudioPlayback()
+        self.speaker_playback = AudioPlayback()
+        self.meeting_playback = AudioPlayback()
         self.transcript_buffer = TranscriptBuffer(max_items=300)
         self.recent_errors: list[str] = []
         self._error_lock = Lock()
-        self.remote_pipeline: RemotePipeline | None = None
-        self.local_pipeline: LocalPipeline | None = None
+        self.meeting_pipeline: DirectionalPipeline | None = None
+        self.local_pipeline: DirectionalPipeline | None = None
         self.session_controller: SessionController | None = None
-        self._provider_test_running = False
-        self._provider_test_queue: Queue[tuple[int, str, bool, str]] = Queue()
-        self._provider_test_token = 0
-        self._provider_test_active_token: int | None = None
-        self._provider_test_started_at = 0.0
-        self._provider_test_timeout_sec = 25.0
-        self._last_success_preview_chars = 72
-        self._provider_test_last_success: dict[str, str] = {}
-        self._load_provider_test_state_from_config()
-        self.test_tts_provider = create_tts_provider(
-            provider_name=self.config.model.tts_provider,
-            openai_api_key_env=self.config.openai.api_key_env,
-            openai_base_url=self.config.openai.base_url,
-            openai_model=self.config.openai.tts_model,
-            openai_voice=self.config.openai.tts_voice,
-        )
+        self._health_check_running = False
+        self._health_check_queue: Queue[tuple[bool, object]] = Queue()
+        self._health_check_started_at = 0.0
+        self._health_check_timeout_sec = 45.0
+        self._session_action_running = False
+        self._session_action_queue: Queue[tuple[str, bool, object]] = Queue()
 
-        self.setWindowTitle("SyncTranslate - Stage 6 UI Skeleton")
+        self.setWindowTitle("SyncTranslate - Local AI Runtime")
+        self._set_window_icon()
         self._set_initial_window_geometry()
 
         self.tabs = QTabWidget()
         self.tabs.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
-        self.quick_start_page = QuickStartPage(self.apply_banana_preset)
         self.audio_routing_page = AudioRoutingPage(
             on_apply_banana_preset=self.apply_banana_preset,
             on_save=self.persist_config,
             on_reload=self.reload_config,
             on_route_changed=self._on_audio_routing_changed,
-            on_start=self.start_session,
         )
-        self.live_caption_page = LiveCaptionPage(on_clear_clicked=self.clear_live_caption)
-        self.models_page = ModelsPage(
-            on_test_asr=self.test_asr_provider,
-            on_test_translate=self.test_translate_provider,
-            on_test_tts=self.test_tts_provider_call,
-            on_cancel_test=self.cancel_provider_test,
-            on_clear_test_state=self.clear_provider_test_state,
-            on_settings_changed=self._on_models_settings_changed,
+        self.live_caption_page = LiveCaptionPage(
+            on_clear_clicked=self.clear_live_caption,
+            on_start_clicked=self.start_session,
+            on_settings_changed=self._on_live_caption_settings_changed,
+        )
+        self.local_ai_page = LocalAiPage(
+            on_settings_changed=self._on_local_ai_changed,
+            on_health_check=self.run_health_check,
         )
         self.diagnostics_page = DiagnosticsPage(
-            on_start_remote_capture=self.start_remote_capture,
-            on_stop_remote_capture=self.stop_remote_capture,
-            on_start_local_capture=self.start_local_capture,
-            on_stop_local_capture=self.stop_local_capture,
-            on_set_local_mute=self.set_local_mute,
-            on_rebind_local_capture=self.rebind_local_capture,
+            on_health_check=self.run_health_check,
             on_test_meeting_tts=self.test_meeting_tts_output,
+            on_test_speaker_tts=self.test_speaker_tts_output,
             on_export_diagnostics=self.export_diagnostics,
-            remote_stats_provider=self.remote_capture.stats,
-            local_stats_provider=self.local_capture.stats,
         )
+        self.io_control_page = IoControlPage(self.audio_routing_page, self.diagnostics_page)
         self.debug_panel = DebugPanel()
 
-        self.tabs.addTab(self._wrap_in_scroll_area(self.quick_start_page), "快速開始")
-        self.tabs.addTab(self._wrap_in_scroll_area(self.audio_routing_page), "音訊路由")
+        self.tabs.addTab(self._wrap_in_scroll_area(self.io_control_page), "音訊路由與診斷")
         self.tabs.addTab(self._wrap_in_scroll_area(self.live_caption_page), "即時字幕")
-        self.tabs.addTab(self._wrap_in_scroll_area(self.models_page), "模型與語言")
-        self.tabs.addTab(self._wrap_in_scroll_area(self.diagnostics_page), "音訊診斷")
-        self.tabs.addTab(self._wrap_in_scroll_area(self.debug_panel), "除錯與診斷")
+        self.tabs.addTab(self.local_ai_page, "本地 AI")
+        self.tabs.addTab(self._wrap_in_scroll_area(self.debug_panel), "除錯")
         self.setCentralWidget(self.tabs)
         self._build_pipelines_from_config()
 
@@ -126,20 +106,29 @@ class MainWindow(QMainWindow):
         self._suspend_live_apply = False
         self._live_apply_timer = QTimer(self)
         self._live_apply_timer.setSingleShot(True)
-        self._live_apply_timer.setInterval(500)
+        self._live_apply_timer.setInterval(150)
         self._live_apply_timer.timeout.connect(self._apply_live_config_now)
 
         self.caption_timer = QTimer(self)
         self.caption_timer.setInterval(300)
         self.caption_timer.timeout.connect(self.refresh_live_caption)
         self.caption_timer.start()
+        self.health_timer = QTimer(self)
+        self.health_timer.setInterval(120)
+        self.health_timer.timeout.connect(self._drain_health_check_results)
+        self.health_timer.start()
+        self.session_timer = QTimer(self)
+        self.session_timer.setInterval(120)
+        self.session_timer.timeout.connect(self._drain_session_results)
+        self.session_timer.start()
         self.refresh_from_system()
         self._live_apply_ready = True
+        if self.config.runtime.warmup_on_start:
+            QTimer.singleShot(100, lambda: self.run_health_check(True))
 
     def refresh_from_system(self) -> None:
         input_devices = self.device_manager.list_input_devices()
         output_devices = self.device_manager.list_output_devices()
-        voicemeeter_devices = self.device_manager.find_voicemeeter_devices()
         self.input_device_names = {d.name for d in input_devices}
         self.output_device_names = {d.name for d in output_devices}
 
@@ -147,23 +136,21 @@ class MainWindow(QMainWindow):
         try:
             self.audio_routing_page.set_devices(input_devices, output_devices)
             self.audio_routing_page.apply_config(self.config)
-            self.models_page.apply_config(self.config)
+            self.live_caption_page.apply_config(self.config)
+            self.local_ai_page.apply_config(self.config)
         finally:
             self._suspend_live_apply = False
-        self._update_model_runtime_status()
-        self.diagnostics_page.set_input_devices(input_devices)
-        self.quick_start_page.set_detected_voicemeeter_devices([d.name for d in voicemeeter_devices])
+
         self.statusBar().showMessage(
-            f"Config: {self.config_path} | input={len(input_devices)} output={len(output_devices)} "
-            f"voicemeeter={len(voicemeeter_devices)}"
+            f"Config: {self.config_path} | input={len(input_devices)} output={len(output_devices)}"
         )
         self.validate_current_routes()
 
     def apply_banana_preset(self) -> None:
-        self.config.audio.remote_in = "VoiceMeeter Aux Output (VB-Audio VoiceMeeter AUX VAIO)"
-        self.config.audio.meeting_tts_out = "VoiceMeeter AUX Input (VB-Audio VoiceMeeter AUX VAIO)"
+        self.config.audio.meeting_in = "Windows DirectSound::Voicemeeter Out B2 (VB-Audio Voicemeeter VAIO)"
+        self.config.audio.meeting_out = "Windows DirectSound::Voicemeeter AUX Input (VB-Audio Voicemeeter VAIO)"
         self.audio_routing_page.apply_config(self.config)
-        self.audio_routing_page.set_status("已套用 Banana 預設（請確認本機麥克風輸入 / 本機收聽輸出）")
+        self.audio_routing_page.set_status("已套用 Banana 預設（請確認麥克風輸入 / 喇叭輸出）")
         self.validate_current_routes()
         self._schedule_live_apply()
 
@@ -175,17 +162,13 @@ class MainWindow(QMainWindow):
         if self.session_controller:
             self.session_controller.stop()
         self.config = load_config(self.config_path)
-        self._load_provider_test_state_from_config()
         self._build_pipelines_from_config()
-        self._update_model_runtime_status()
         self.refresh_from_system()
         self.audio_routing_page.set_status(f"已重載設定: {self.config_path}")
 
     def validate_current_routes(self) -> None:
         current_routes = self.audio_routing_page.selected_audio_routes()
         current_mode = self.audio_routing_page.selected_mode()
-        self.diagnostics_page.select_remote_in(current_routes.remote_in)
-        self.diagnostics_page.select_local_mic(current_routes.local_mic_in)
         result = check_routes(
             current_routes,
             self.input_device_names,
@@ -195,15 +178,20 @@ class MainWindow(QMainWindow):
         self.debug_panel.update_route_result(result)
         self.debug_panel.update_recent_errors(self._get_recent_errors())
         is_running = self.session_controller.is_running() if self.session_controller else False
-        self.audio_routing_page.set_start_enabled(result.ok or is_running)
-        self.audio_routing_page.set_start_label("停止" if is_running else "開始")
+        self.live_caption_page.set_start_enabled(result.ok or is_running)
+        self.live_caption_page.set_start_label("停止" if is_running else "開始")
         if result.ok:
             self.audio_routing_page.set_status("路由檢查: OK")
         else:
-            self.audio_routing_page.set_status("路由檢查: Error，請到除錯與診斷頁查看")
-
+            self.audio_routing_page.set_status("路由檢查: Error，請到除錯頁查看")
     def _on_audio_routing_changed(self) -> None:
         self.validate_current_routes()
+        self._schedule_live_apply()
+
+    def _on_local_ai_changed(self) -> None:
+        self._schedule_live_apply()
+
+    def _on_live_caption_settings_changed(self) -> None:
         self._schedule_live_apply()
 
     def _schedule_live_apply(self) -> None:
@@ -223,28 +211,30 @@ class MainWindow(QMainWindow):
         try:
             self._sync_ui_to_config()
             self._build_pipelines_from_config()
-            self._update_model_runtime_status()
             path = self._save_config_to_disk()
 
             if was_running and self.session_controller:
-                result = self.session_controller.start(mode, route, sample_rate=self.config.sample_rate)
+                result = self.session_controller.start(
+                    mode,
+                    route,
+                    sample_rate=self.config.runtime.sample_rate,
+                    chunk_ms=self.config.runtime.chunk_ms,
+                )
                 if not result.ok:
                     raise ValueError(result.message)
-                self.statusBar().showMessage(f"設定已自動套用並儲存: {path}")
+                self.statusBar().showMessage(f"設定已套用並重新啟動: {path}")
             else:
-                self.statusBar().showMessage(f"設定已自動儲存: {path}")
+                self.statusBar().showMessage(f"設定已套用: {path}")
             self.validate_current_routes()
         except Exception as exc:
             self._report_error(f"auto_apply_config failed: {exc}")
-            self.statusBar().showMessage(f"設定自動套用失敗: {exc}")
+            self.statusBar().showMessage(f"設定套用失敗: {exc}")
 
     def start_session(self) -> None:
-        if not self.session_controller:
+        if not self.session_controller or self._session_action_running:
             return
         if self.session_controller.is_running():
-            self.session_controller.stop()
-            self.statusBar().showMessage("已停止 session")
-            self.validate_current_routes()
+            self._run_session_action("stop")
             return
 
         route = self.audio_routing_page.selected_audio_routes()
@@ -252,56 +242,17 @@ class MainWindow(QMainWindow):
         try:
             self._sync_ui_to_config()
             self._build_pipelines_from_config()
-            self._update_model_runtime_status()
             self._save_config_to_disk()
-            result = self.session_controller.start(mode, route, sample_rate=self.config.sample_rate)
-            if not result.ok:
-                raise ValueError(result.message)
-            self.statusBar().showMessage(result.message)
-            self.validate_current_routes()
+            self._run_session_action(
+                "start",
+                mode=mode,
+                route=route,
+                sample_rate=self.config.runtime.sample_rate,
+                chunk_ms=self.config.runtime.chunk_ms,
+            )
         except Exception as exc:
             self._report_error(f"start_session failed: {exc}")
             QMessageBox.critical(self, "啟動失敗", str(exc))
-
-    def start_remote_capture(self, device_name: str) -> None:
-        if self.session_controller and self.session_controller.is_running():
-            self.statusBar().showMessage("session 執行中，請先按「停止」")
-            return
-        try:
-            self.remote_capture.start(device_name, sample_rate=self.config.sample_rate)
-            self.statusBar().showMessage(f"開始擷取 remote_in: {device_name}")
-        except Exception as exc:
-            self._report_error(f"start_remote_capture failed: {exc}")
-            QMessageBox.critical(self, "啟動失敗", str(exc))
-
-    def stop_remote_capture(self) -> None:
-        if self.session_controller and self.session_controller.is_running():
-            self.statusBar().showMessage("session 執行中，請先按「停止」")
-            return
-        self.remote_capture.stop()
-        self.statusBar().showMessage("已停止 remote_in 擷取")
-
-    def start_local_capture(self, device_name: str) -> None:
-        if self.session_controller and self.session_controller.is_running():
-            self.statusBar().showMessage("session 執行中，請先按「停止」")
-            return
-        try:
-            self.local_pipeline.start(device_name, sample_rate=self.config.sample_rate)
-            self.statusBar().showMessage(f"開始 local pipeline: {device_name}")
-        except Exception as exc:
-            self._report_error(f"start_local_capture failed: {exc}")
-            QMessageBox.critical(self, "啟動失敗", str(exc))
-
-    def stop_local_capture(self) -> None:
-        if self.session_controller and self.session_controller.is_running():
-            self.statusBar().showMessage("session 執行中，請先按「停止」")
-            return
-        self.local_pipeline.stop()
-        self.statusBar().showMessage("已停止 local pipeline")
-
-    def set_local_mute(self, muted: bool) -> None:
-        self.local_capture.set_muted(muted)
-        self.statusBar().showMessage("local_mic 已靜音" if muted else "local_mic 已解除靜音")
 
     def clear_live_caption(self) -> None:
         self.transcript_buffer.clear()
@@ -309,15 +260,7 @@ class MainWindow(QMainWindow):
         self._remote_translated_line_cache = []
         self._local_line_cache = []
         self._local_translated_line_cache = []
-        self.statusBar().showMessage("已清空字幕歷史")
-
-    def rebind_local_capture(self) -> None:
-        try:
-            self.local_capture.rebind()
-            self.statusBar().showMessage("local_mic 重新綁定成功")
-        except Exception as exc:
-            self._report_error(f"rebind_local_capture failed: {exc}")
-            QMessageBox.critical(self, "重新綁定失敗", str(exc))
+        self.statusBar().showMessage("字幕已清空")
 
     def closeEvent(self, event: QCloseEvent) -> None:
         try:
@@ -327,10 +270,10 @@ class MainWindow(QMainWindow):
             self._report_error(f"save_on_close failed: {exc}")
         if self.session_controller:
             self.session_controller.stop()
-        self.remote_capture.stop()
+        self.meeting_capture.stop()
         self.local_capture.stop()
-        self.audio_playback.stop()
-        self.meeting_audio_playback.stop()
+        self.speaker_playback.stop()
+        self.meeting_playback.stop()
         super().closeEvent(event)
 
     def showEvent(self, event: QShowEvent) -> None:
@@ -338,8 +281,8 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self._fit_window_to_screen)
 
     def _set_initial_window_geometry(self) -> None:
-        default_width = 1140
-        default_height = 780
+        default_width = 1180
+        default_height = 800
         screen = self._current_screen()
         if screen is None:
             self.resize(default_width, default_height)
@@ -355,6 +298,11 @@ class MainWindow(QMainWindow):
         x = available.x() + (available.width() - width) // 2
         y = available.y() + (available.height() - height) // 2
         self.setGeometry(x, y, width, height)
+
+    def _set_window_icon(self) -> None:
+        icon = QIcon("lioil.ico")
+        if not icon.isNull():
+            self.setWindowIcon(icon)
 
     @staticmethod
     def _wrap_in_scroll_area(widget: QWidget) -> QScrollArea:
@@ -392,11 +340,11 @@ class MainWindow(QMainWindow):
         self.move(x, y)
 
     def refresh_live_caption(self) -> None:
-        self._check_provider_test_timeout()
-        self._drain_provider_test_results()
+        self._drain_health_check_results()
         self.debug_panel.update_recent_errors(self._get_recent_errors())
-        remote_original_items = self.transcript_buffer.latest("remote_original", limit=20)
-        remote_translated_items = self.transcript_buffer.latest("remote_translated", limit=20)
+        self.debug_panel.update_runtime_stats(self._build_runtime_stats_text())
+        remote_original_items = self.transcript_buffer.latest("meeting_original", limit=20)
+        remote_translated_items = self.transcript_buffer.latest("meeting_translated", limit=20)
         local_original_items = self.transcript_buffer.latest("local_original", limit=20)
         local_translated_items = self.transcript_buffer.latest("local_translated", limit=20)
         remote_original_lines = self._build_transcript_lines(remote_original_items)
@@ -420,32 +368,46 @@ class MainWindow(QMainWindow):
             self.live_caption_page.set_local_translated_lines(local_translated_lines)
             self._local_translated_line_cache = local_translated_lines
 
-    def _on_remote_original_transcript(self, _text: str) -> None:
-        return
+    def _get_speaker_output_device(self) -> str:
+        return self.audio_routing_page.selected_audio_routes().speaker_out
 
-    def _on_remote_translated_transcript(self, _text: str) -> None:
-        return
-
-    def _on_local_original_transcript(self, _text: str) -> None:
-        return
-
-    def _on_local_translated_transcript(self, _text: str) -> None:
-        return
-
-    def _get_local_tts_output_device(self) -> str:
-        return self.audio_routing_page.selected_audio_routes().local_tts_out
-
-    def _get_meeting_tts_output_device(self) -> str:
-        return self.audio_routing_page.selected_audio_routes().meeting_tts_out
+    def _get_meeting_output_device(self) -> str:
+        return self.audio_routing_page.selected_audio_routes().meeting_out
 
     def test_meeting_tts_output(self) -> None:
-        device_name = self._get_meeting_tts_output_device()
+        device_name = self._get_meeting_output_device()
         try:
-            audio = self.test_tts_provider.synthesize("Hello this is a meeting output test")
-            self.meeting_audio_playback.play(audio=audio, sample_rate=24000, output_device_name=device_name)
-            self.statusBar().showMessage(f"已測試英文送出: {device_name}")
+            audio, sample_rate, engine_label = self._build_output_test_audio(
+                primary_tts=self.config.local_tts,
+                text="會議輸出測試",
+            )
+            self.meeting_playback.play(
+                audio=audio,
+                sample_rate=sample_rate,
+                output_device_name=device_name,
+                blocking=True,
+            )
+            self.statusBar().showMessage(f"遠端輸出測試完成: {device_name} ({engine_label})")
         except Exception as exc:
             self._report_error(f"test_meeting_tts_output failed: {exc}")
+            QMessageBox.critical(self, "測試失敗", str(exc))
+
+    def test_speaker_tts_output(self) -> None:
+        device_name = self._get_speaker_output_device()
+        try:
+            audio, sample_rate, engine_label = self._build_output_test_audio(
+                primary_tts=self.config.meeting_tts,
+                text="喇叭測試",
+            )
+            self.speaker_playback.play(
+                audio=audio,
+                sample_rate=sample_rate,
+                output_device_name=device_name,
+                blocking=True,
+            )
+            self.statusBar().showMessage(f"本地喇叭測試完成: {device_name} ({engine_label})")
+        except Exception as exc:
+            self._report_error(f"test_speaker_tts_output failed: {exc}")
             QMessageBox.critical(self, "測試失敗", str(exc))
 
     @staticmethod
@@ -455,7 +417,7 @@ class MainWindow(QMainWindow):
 
     @classmethod
     def _build_transcript_lines(cls, items) -> list[str]:
-        return [cls._format_transcript_line(item.text, item.is_final) for item in reversed(items)]
+        return [cls._format_transcript_line(item.text, item.is_final) for item in items]
 
     def _report_error(self, message: str) -> None:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -466,364 +428,401 @@ class MainWindow(QMainWindow):
         now = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_path = Path(f"diagnostics_{now}.txt")
         routes = self.audio_routing_page.selected_audio_routes()
-        remote_stats = self.remote_capture.stats()
-        local_stats = self.local_capture.stats()
         content = "\n".join(
             [
                 "SyncTranslate Diagnostics",
                 f"timestamp: {datetime.now().isoformat()}",
                 f"config_path: {self.config_path}",
-                f"asr_provider: {self.config.model.asr_provider}",
-                f"translate_provider: {self.config.model.translate_provider}",
-                f"tts_provider: {self.config.model.tts_provider}",
-                f"openai_asr_model: {self.config.openai.asr_model}",
-                f"openai_translate_model: {self.config.openai.translate_model}",
-                f"openai_tts_model: {self.config.openai.tts_model}",
-                f"openai_tts_voice: {self.config.openai.tts_voice}",
-                f"remote_in: {routes.remote_in}",
-                f"local_mic_in: {routes.local_mic_in}",
-                f"local_tts_out: {routes.local_tts_out}",
-                f"meeting_tts_out: {routes.meeting_tts_out}",
-                f"remote_running: {remote_stats.running}",
-                f"remote_level: {remote_stats.level:.4f}",
-                f"local_running: {local_stats.running}",
-                f"local_level: {local_stats.level:.4f}",
-                "provider_test_last_success:",
-                *self._provider_test_last_success_lines(),
+                f"mode: {self.config.direction.mode}",
+                f"meeting_language: {self.config.language.meeting_source} -> {self.config.language.meeting_target}",
+                f"local_language: {self.config.language.local_source} -> {self.config.language.local_target}",
+                f"meeting_in: {routes.meeting_in}",
+                f"microphone_in: {routes.microphone_in}",
+                f"speaker_out: {routes.speaker_out}",
+                f"meeting_out: {routes.meeting_out}",
+                f"asr_model: {self.config.asr.model}",
+                f"asr_device: {self.config.asr.device}",
+                f"asr_compute_type: {self.config.asr.compute_type}",
+                f"llm_backend: {self.config.llm.backend}",
+                f"llm_url: {self.config.llm.base_url}",
+                f"llm_model: {self.config.llm.model}",
+                f"meeting_tts_engine: {self.config.meeting_tts.engine}",
+                f"meeting_tts_model: {self.config.meeting_tts.model_path}",
+                f"meeting_tts_voice: {self.config.meeting_tts.voice_name}",
+                f"local_tts_engine: {self.config.local_tts.engine}",
+                f"local_tts_model: {self.config.local_tts.model_path}",
+                f"local_tts_voice: {self.config.local_tts.voice_name}",
+                f"sample_rate: {self.config.runtime.sample_rate}",
+                "runtime_stats:",
+                self._build_runtime_stats_text(),
                 "recent_errors:",
-                *self._get_recent_errors()[-20:],
+                *self._get_recent_errors()[-30:],
             ]
         )
         output_path.write_text(content, encoding="utf-8")
         self.statusBar().showMessage(f"已匯出診斷資訊: {output_path}")
 
-    def test_asr_provider(self) -> None:
-        self._start_provider_test("ASR", self._run_test_asr_provider)
-
-    def test_translate_provider(self) -> None:
-        self._start_provider_test("Translate", self._run_test_translate_provider)
-
-    def test_tts_provider_call(self) -> None:
-        self._start_provider_test("TTS", self._run_test_tts_provider)
-
     def _build_pipelines_from_config(self) -> None:
         if self.session_controller and self.session_controller.is_running():
             self.session_controller.stop()
 
-        try:
-            remote_asr_provider = create_asr_provider(
-                provider_name=self.config.model.asr_provider,
-                language=self.config.language.remote_source,
-                openai_api_key_env=self.config.openai.api_key_env,
-                openai_base_url=self.config.openai.base_url,
-                openai_model=self.config.openai.asr_model,
-            )
-            remote_translate_provider = create_translate_provider(
-                provider_name=self.config.model.translate_provider,
-                source_lang=self.config.language.remote_source,
-                target_lang=self.config.language.remote_target,
-                openai_api_key_env=self.config.openai.api_key_env,
-                openai_base_url=self.config.openai.base_url,
-                openai_model=self.config.openai.translate_model,
-            )
-            remote_tts_provider = create_tts_provider(
-                provider_name=self.config.model.tts_provider,
-                openai_api_key_env=self.config.openai.api_key_env,
-                openai_base_url=self.config.openai.base_url,
-                openai_model=self.config.openai.tts_model,
-                openai_voice=self.config.openai.tts_voice,
-            )
-            local_asr_provider = create_asr_provider(
-                provider_name=self.config.model.asr_provider,
-                language=self.config.language.local_source,
-                openai_api_key_env=self.config.openai.api_key_env,
-                openai_base_url=self.config.openai.base_url,
-                openai_model=self.config.openai.asr_model,
-            )
-            local_translate_provider = create_translate_provider(
-                provider_name=self.config.model.translate_provider,
-                source_lang=self.config.language.local_source,
-                target_lang=self.config.language.local_target,
-                openai_api_key_env=self.config.openai.api_key_env,
-                openai_base_url=self.config.openai.base_url,
-                openai_model=self.config.openai.translate_model,
-            )
-            local_tts_provider = create_tts_provider(
-                provider_name=self.config.model.tts_provider,
-                openai_api_key_env=self.config.openai.api_key_env,
-                openai_base_url=self.config.openai.base_url,
-                openai_model=self.config.openai.tts_model,
-                openai_voice=self.config.openai.tts_voice,
-            )
-            self.test_tts_provider = create_tts_provider(
-                provider_name=self.config.model.tts_provider,
-                openai_api_key_env=self.config.openai.api_key_env,
-                openai_base_url=self.config.openai.base_url,
-                openai_model=self.config.openai.tts_model,
-                openai_voice=self.config.openai.tts_voice,
-            )
-        except Exception as exc:
-            self._report_error(f"model provider build failed, fallback to mock: {exc}")
-            remote_asr_provider = create_asr_provider(provider_name="mock", language=self.config.language.remote_source)
-            remote_translate_provider = create_translate_provider(
-                provider_name="mock",
-                source_lang=self.config.language.remote_source,
-                target_lang=self.config.language.remote_target,
-            )
-            remote_tts_provider = create_tts_provider(provider_name="mock")
-            local_asr_provider = create_asr_provider(provider_name="mock", language=self.config.language.local_source)
-            local_translate_provider = create_translate_provider(
-                provider_name="mock",
-                source_lang=self.config.language.local_source,
-                target_lang=self.config.language.local_target,
-            )
-            local_tts_provider = create_tts_provider(provider_name="mock")
-            self.test_tts_provider = create_tts_provider(provider_name="mock")
+        self.meeting_pipeline = self._create_pipeline(
+            source_lang=self.config.language.meeting_source,
+            target_lang=self.config.language.meeting_target,
+            source_channel="meeting_original",
+            translated_channel="meeting_translated",
+            capture=self.meeting_capture,
+            playback=self.speaker_playback,
+            get_output_device=self._get_speaker_output_device,
+            tts_config=self.config.meeting_tts,
+        )
+        self.local_pipeline = self._create_pipeline(
+            source_lang=self.config.language.local_source,
+            target_lang=self.config.language.local_target,
+            source_channel="local_original",
+            translated_channel="local_translated",
+            capture=self.local_capture,
+            playback=self.meeting_playback,
+            get_output_device=self._get_meeting_output_device,
+            tts_config=self.config.local_tts,
+        )
+        self.session_controller = SessionController(self.meeting_pipeline, self.local_pipeline)
 
-        self.remote_pipeline = RemotePipeline(
-            audio_capture=self.remote_capture,
+    def _create_pipeline(
+        self,
+        *,
+        source_lang: str,
+        target_lang: str,
+        source_channel: str,
+        translated_channel: str,
+        capture: AudioCapture,
+        playback: AudioPlayback,
+        get_output_device,
+        tts_config: TtsConfig,
+    ) -> DirectionalPipeline:
+        asr_engine = FasterWhisperEngine(
+            model=self.config.asr.model,
+            device=self.config.asr.device,
+            compute_type=self.config.asr.compute_type,
+            beam_size=self.config.asr.beam_size,
+            condition_on_previous_text=self.config.asr.condition_on_previous_text,
+            language=source_lang,
+        )
+        vad = VadSegmenter(
+            VadConfig(
+                enabled=self.config.asr.vad.enabled,
+                min_speech_duration_ms=self.config.asr.vad.min_speech_duration_ms,
+                min_silence_duration_ms=self.config.asr.vad.min_silence_duration_ms,
+                max_speech_duration_s=self.config.asr.vad.max_speech_duration_s,
+                speech_pad_ms=self.config.asr.vad.speech_pad_ms,
+                rms_threshold=self.config.asr.vad.rms_threshold,
+            )
+        )
+        stream = StreamingAsr(
+            engine=asr_engine,
+            vad=vad,
+            partial_interval_ms=self.config.asr.streaming.partial_interval_ms,
+            queue_maxsize=self.config.runtime.asr_queue_maxsize,
+            on_debug=self._report_error,
+        )
+        llm = OllamaClient(
+            backend=self.config.llm.backend,
+            base_url=self.config.llm.base_url,
+            model=self.config.llm.model,
+            temperature=self.config.llm.temperature,
+            top_p=self.config.llm.top_p,
+            request_timeout_sec=self.config.llm.request_timeout_sec,
+        )
+        stitcher = TranslationStitcher(
+            translator=llm,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            trigger_tokens=self.config.llm.sliding_window.trigger_tokens,
+            max_context_items=self.config.llm.sliding_window.max_context_items,
+        )
+        return DirectionalPipeline(
+            audio_capture=capture,
             transcript_buffer=self.transcript_buffer,
-            audio_playback=self.audio_playback,
-            asr_provider=remote_asr_provider,
-            translate_provider=remote_translate_provider,
-            tts_provider=remote_tts_provider,
-            get_local_tts_output_device=self._get_local_tts_output_device,
-            on_original_transcript=self._on_remote_original_transcript,
-            on_translated_transcript=self._on_remote_translated_transcript,
+            audio_playback=playback,
+            asr_stream=stream,
+            stitcher=stitcher,
+            tts=self._create_tts_engine(tts_config),
+            source_channel=source_channel,
+            translated_channel=translated_channel,
+            get_output_device=get_output_device,
+            tts_sample_rate=tts_config.sample_rate,
             on_error=self._report_error,
         )
-        self.local_pipeline = LocalPipeline(
-            audio_capture=self.local_capture,
-            transcript_buffer=self.transcript_buffer,
-            audio_playback=self.meeting_audio_playback,
-            asr_provider=local_asr_provider,
-            translate_provider=local_translate_provider,
-            tts_provider=local_tts_provider,
-            get_meeting_tts_output_device=self._get_meeting_tts_output_device,
-            on_original_transcript=self._on_local_original_transcript,
-            on_translated_transcript=self._on_local_translated_transcript,
-            on_error=self._report_error,
+
+    @staticmethod
+    def _create_tts_engine(tts_config: TtsConfig):
+        return create_tts_engine(tts_config)
+
+    def run_health_check(self, warmup: bool) -> None:
+        if self._health_check_running:
+            self.statusBar().showMessage("health check 進行中")
+            return
+        self._sync_ui_to_config()
+        asr = FasterWhisperEngine(
+            model=self.config.asr.model,
+            device=self.config.asr.device,
+            compute_type=self.config.asr.compute_type,
+            beam_size=self.config.asr.beam_size,
+            condition_on_previous_text=self.config.asr.condition_on_previous_text,
+            language=self.config.language.meeting_source,
         )
-        self.session_controller = SessionController(self.remote_pipeline, self.local_pipeline)
-        self._update_model_runtime_status()
+        llm = OllamaClient(
+            backend=self.config.llm.backend,
+            base_url=self.config.llm.base_url,
+            model=self.config.llm.model,
+            temperature=self.config.llm.temperature,
+            top_p=self.config.llm.top_p,
+            request_timeout_sec=self.config.llm.request_timeout_sec,
+        )
+        tts = self._create_tts_engine(self.config.meeting_tts)
+        self._health_check_running = True
+        self._health_check_started_at = time.monotonic()
+        self.local_ai_page.set_runtime_status("health: RUNNING")
+        self.diagnostics_page.set_health_summary("health: RUNNING")
+        self.diagnostics_page.set_health_details("health check running...")
+        self.statusBar().showMessage("health check running...")
+
+        def _worker() -> None:
+            try:
+                report = run_local_healthcheck(asr_engine=asr, llm_client=llm, tts_engine=tts, warmup=warmup)
+                self._health_check_queue.put((True, report))
+            except Exception as exc:
+                self._health_check_queue.put((False, exc))
+
+        Thread(target=_worker, daemon=True).start()
+
+    def _drain_health_check_results(self) -> None:
+        if not self._health_check_running:
+            return
+        elapsed = time.monotonic() - self._health_check_started_at if self._health_check_started_at else 0.0
+        if elapsed >= self._health_check_timeout_sec:
+            self._health_check_running = False
+            self._health_check_started_at = 0.0
+            summary = "health: FAILED"
+            message = f"health check timeout after {int(self._health_check_timeout_sec)}s"
+            self.local_ai_page.set_runtime_status(summary)
+            self.diagnostics_page.set_health_summary(summary)
+            self.diagnostics_page.set_health_details(message)
+            self.statusBar().showMessage(message)
+            self._report_error(message)
+            return
+        try:
+            ok, payload = self._health_check_queue.get_nowait()
+        except Empty:
+            return
+        self._health_check_running = False
+        self._health_check_started_at = 0.0
+        if not ok:
+            message = str(payload)
+            summary = "health: FAILED"
+            self.local_ai_page.set_runtime_status(summary)
+            self.diagnostics_page.set_health_summary(summary)
+            self.diagnostics_page.set_health_details(message)
+            self.statusBar().showMessage(summary)
+            self._report_error(f"health_check failed: {message}")
+            return
+
+        report = payload
+        summary = "health: OK" if report.ok else "health: FAILED"
+        detail = "\n".join(
+            [
+                f"ASR: {'OK' if report.asr_ok else 'FAIL'} - {report.asr_message}",
+                f"LLM: {'OK' if report.llm_ok else 'FAIL'} - {report.llm_message}",
+                f"TTS: {'OK' if report.tts_ok else 'FAIL'} - {report.tts_message}",
+            ]
+        )
+        self.local_ai_page.set_runtime_status(summary)
+        self.diagnostics_page.set_health_summary(summary)
+        self.diagnostics_page.set_health_details(detail)
+        self.statusBar().showMessage(summary)
+
+    def _run_session_action(
+        self,
+        action: str,
+        *,
+        mode: str | None = None,
+        route=None,
+        sample_rate: int | None = None,
+        chunk_ms: int | None = None,
+    ) -> None:
+        if not self.session_controller or self._session_action_running:
+            return
+        self._session_action_running = True
+        self.live_caption_page.set_start_enabled(False)
+        if action == "stop":
+            self.live_caption_page.set_start_label("停止中...")
+            self.statusBar().showMessage("正在停止 session...")
+        else:
+            self.live_caption_page.set_start_label("啟動中...")
+            self.statusBar().showMessage("正在啟動 session...")
+
+        def _worker() -> None:
+            try:
+                if action == "stop":
+                    result = self.session_controller.stop()
+                else:
+                    if mode is None or route is None or sample_rate is None:
+                        raise ValueError("missing session start parameters")
+                    result = self.session_controller.start(
+                        mode,
+                        route,
+                        sample_rate=sample_rate,
+                        chunk_ms=chunk_ms or self.config.runtime.chunk_ms,
+                    )
+                self._session_action_queue.put((action, True, result))
+            except Exception as exc:
+                self._session_action_queue.put((action, False, exc))
+
+        Thread(target=_worker, daemon=True).start()
+
+    def _drain_session_results(self) -> None:
+        if not self._session_action_running:
+            return
+        try:
+            action, ok, payload = self._session_action_queue.get_nowait()
+        except Empty:
+            return
+
+        self._session_action_running = False
+        if not ok:
+            message = str(payload)
+            self._report_error(f"session_{action} failed: {message}")
+            self.statusBar().showMessage(f"session {action} failed")
+            QMessageBox.critical(self, "Session 錯誤", message)
+            self.validate_current_routes()
+            return
+
+        result = payload
+        if not result.ok:
+            self._report_error(f"session_{action} failed: {result.message}")
+            self.statusBar().showMessage(result.message)
+            if action == "start":
+                QMessageBox.critical(self, "啟動失敗", result.message)
+            self.validate_current_routes()
+            return
+
+        self.statusBar().showMessage(result.message)
+        self.validate_current_routes()
 
     def _get_recent_errors(self) -> list[str]:
         with self._error_lock:
             return list(self.recent_errors)
 
-    def _update_model_runtime_status(self) -> None:
-        uses_api_key_provider = any(
-            provider in OPENAI_COMPATIBLE_PROVIDERS
-            for provider in (
-                self.config.model.asr_provider,
-                self.config.model.translate_provider,
-                self.config.model.tts_provider,
-            )
-        )
-        if not uses_api_key_provider:
-            if self.config.model.asr_provider == "local" or self.config.model.tts_provider == "edge_tts":
-                self.models_page.set_runtime_status("Runtime status: local/edge providers ready (no OpenAI key needed)")
-            else:
-                self.models_page.set_runtime_status(
-                    "Runtime status: mock providers ready (placeholder text/audio only)"
+    def _build_runtime_stats_text(self) -> str:
+        lines = [
+            f"saved meeting: {self.config.language.meeting_source} -> {self.config.language.meeting_target}",
+            f"saved local: {self.config.language.local_source} -> {self.config.language.local_target}",
+            f"meeting_tts: {self.config.meeting_tts.engine} voice={self.config.meeting_tts.voice_name or self.config.meeting_tts.model_path}",
+            f"local_tts: {self.config.local_tts.engine} voice={self.config.local_tts.voice_name or self.config.local_tts.model_path}",
+        ]
+        for label, pipeline in (("meeting", self.meeting_pipeline), ("local", self.local_pipeline)):
+            if not pipeline:
+                lines.append(f"{label}: pipeline not built")
+                continue
+            stats = pipeline.stats()
+            lines.append(
+                (
+                    f"{label}: running={stats['running']} capture={stats['capture_running']} "
+                    f"rate={int(stats['capture_rate']) if stats['capture_rate'] else 0} "
+                    f"frames={stats['capture_frames']} level={stats['capture_level']:.5f} "
+                    f"queue={stats['asr_queue']} dropped={stats['asr_dropped']} "
+                    f"partials={stats['asr_partials']} finals={stats['asr_finals']} "
+                    f"vad_rms={stats['vad_rms']:.5f} vad_th={stats['vad_threshold']:.5f}"
                 )
-            self._refresh_last_success_label()
-            return
-
-        env_name = self.config.openai.api_key_env
-        has_key = bool(get_env_var(env_name, "").strip())
-        if has_key:
-            self.models_page.set_runtime_status(f"Runtime status: API key ready ({env_name} found)")
-        else:
-            self.models_page.set_runtime_status(f"Runtime status: WARNING - {env_name} not found")
-        self._refresh_last_success_label()
-
-    def _on_models_settings_changed(self) -> None:
-        self.models_page.update_config(self.config)
-        self._update_model_runtime_status()
-        self._schedule_live_apply()
+            )
+            if stats["capture_error"]:
+                lines.append(f"{label}: capture_error={stats['capture_error']}")
+            if stats["asr_last"]:
+                lines.append(f"{label}: asr_last={stats['asr_last']}")
+        return "\n".join(lines)
 
     def _sync_ui_to_config(self) -> None:
         self.config.audio = self.audio_routing_page.selected_audio_routes()
-        self.config.session_mode = self.audio_routing_page.selected_mode()
-        self.models_page.update_config(self.config)
+        self.config.direction.mode = self.audio_routing_page.selected_mode()
+        self.live_caption_page.update_config(self.config)
+        self.local_ai_page.update_config(self.config)
 
     def _save_config_to_disk(self) -> Path:
         return save_config(self.config, self.config_path)
 
-    def _start_provider_test(self, test_name: str, runner: Callable[[], str]) -> None:
-        if self._provider_test_running:
-            self.statusBar().showMessage("已有測試進行中，請稍候")
-            return
-        self.models_page.update_config(self.config)
-        self._provider_test_token += 1
-        token = self._provider_test_token
-        self._provider_test_active_token = token
-        self._provider_test_running = True
-        self._provider_test_started_at = time.monotonic()
-        self.models_page.set_test_running(True)
-        self.models_page.set_test_status(f"Provider test: {test_name} RUNNING...")
-
-        def _worker() -> None:
+    def _build_output_test_audio(self, *, primary_tts: TtsConfig, text: str) -> tuple[np.ndarray, int, str]:
+        errors: list[str] = []
+        for label, config in self._candidate_test_tts_configs(primary_tts):
             try:
-                message = runner()
-                self._provider_test_queue.put((token, test_name, True, message))
+                tts = self._create_tts_engine(config)
+                audio = tts.synthesize(text)
+                if audio.size == 0:
+                    raise ValueError("tts returned empty audio")
+                return audio, config.sample_rate, label
             except Exception as exc:
-                self._provider_test_queue.put((token, test_name, False, str(exc)))
+                errors.append(f"{label}: {exc}")
 
-        Thread(target=_worker, daemon=True).start()
+        self._report_error("test_tts_fallback_tone: " + " | ".join(errors[:4]))
+        return self._build_test_tone_audio(), 24000, "fallback tone"
 
-    def _drain_provider_test_results(self) -> None:
-        while True:
-            try:
-                token, test_name, ok, message = self._provider_test_queue.get_nowait()
-            except Empty:
-                break
-
-            if token != self._provider_test_active_token:
-                continue
-            self._provider_test_running = False
-            self._provider_test_active_token = None
-            self.models_page.set_test_running(False)
-            if ok:
-                self.models_page.set_test_status(f"Provider test: {test_name} OK ({message[:120]})")
-                self.statusBar().showMessage(f"{test_name} provider 測試成功")
-                stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                self._provider_test_last_success[test_name] = f"{stamp} {message}"
-                self._refresh_last_success_label()
-                self._persist_provider_test_state()
-            else:
-                self._report_error(f"test_{test_name.lower()}_provider failed: {message}")
-                self.models_page.set_test_status(f"Provider test: {test_name} FAILED ({message})")
-                QMessageBox.critical(self, f"{test_name} 測試失敗", message)
-
-    def cancel_provider_test(self) -> None:
-        if not self._provider_test_running:
-            return
-        self._provider_test_running = False
-        self._provider_test_active_token = None
-        self.models_page.set_test_running(False)
-        self.models_page.set_test_status("Provider test: CANCELLED")
-        self.statusBar().showMessage("已取消目前測試")
-
-    def _check_provider_test_timeout(self) -> None:
-        if not self._provider_test_running:
-            return
-        elapsed = time.monotonic() - self._provider_test_started_at
-        if elapsed < self._provider_test_timeout_sec:
-            return
-        self._provider_test_running = False
-        self._provider_test_active_token = None
-        self.models_page.set_test_running(False)
-        message = f"timeout after {int(self._provider_test_timeout_sec)}s"
-        self.models_page.set_test_status(f"Provider test: FAILED ({message})")
-        self._report_error(f"provider_test timeout: {message}")
-        self.statusBar().showMessage("Provider 測試逾時")
-
-    def _run_test_asr_provider(self) -> str:
-        provider = create_asr_provider(
-            provider_name=self.config.model.asr_provider,
-            language=self.config.language.remote_source,
-            openai_api_key_env=self.config.openai.api_key_env,
-            openai_base_url=self.config.openai.base_url,
-            openai_model=self.config.openai.asr_model,
-        )
-        audio, sample_rate = self._build_asr_test_audio()
-        text = provider.final_text(audio=audio, sample_rate=sample_rate, segment_index=1)
-        if not text.strip():
-            raise ValueError("ASR provider returned empty text.")
-        return text
-
-    def _run_test_translate_provider(self) -> str:
-        provider = create_translate_provider(
-            provider_name=self.config.model.translate_provider,
-            source_lang=self.config.language.remote_source,
-            target_lang=self.config.language.remote_target,
-            openai_api_key_env=self.config.openai.api_key_env,
-            openai_base_url=self.config.openai.base_url,
-            openai_model=self.config.openai.translate_model,
-        )
-        output = provider.translate("Hello, this is a translation test.")
-        if not output.strip():
-            raise ValueError("Translate provider returned empty text.")
-        return output
-
-    def _run_test_tts_provider(self) -> str:
-        provider = create_tts_provider(
-            provider_name=self.config.model.tts_provider,
-            openai_api_key_env=self.config.openai.api_key_env,
-            openai_base_url=self.config.openai.base_url,
-            openai_model=self.config.openai.tts_model,
-            openai_voice=self.config.openai.tts_voice,
-        )
-        audio = provider.synthesize("Hello this is a TTS provider test.")
-        if audio.size == 0:
-            raise ValueError("TTS provider returned empty audio.")
-        return f"samples={audio.shape[0]}"
-
-    def _refresh_last_success_label(self) -> None:
-        if not self._provider_test_last_success:
-            self.models_page.set_last_success("Last success: -")
-            return
-        parts = []
-        for key in ("ASR", "Translate", "TTS"):
-            if key in self._provider_test_last_success:
-                preview = self._truncate_preview(self._provider_test_last_success[key])
-                parts.append(f"{key}: {preview}")
-        self.models_page.set_last_success("Last success: " + " | ".join(parts))
-
-    def clear_provider_test_state(self) -> None:
-        self.cancel_provider_test()
-        self._provider_test_last_success.clear()
-        self.models_page.set_test_status("Provider test: -")
-        self._refresh_last_success_label()
-        self._persist_provider_test_state()
-        self.statusBar().showMessage("已清除 provider 測試狀態")
-
-    def _provider_test_last_success_lines(self) -> list[str]:
-        lines: list[str] = []
-        for key in ("ASR", "Translate", "TTS"):
-            value = self._provider_test_last_success.get(key, "-")
-            lines.append(f"{key}: {value}")
-        return lines
-
-    def _persist_provider_test_state(self) -> None:
-        self._sync_ui_to_config()
-        self.config.provider_test_last_success.asr = self._provider_test_last_success.get("ASR", "")
-        self.config.provider_test_last_success.translate = self._provider_test_last_success.get("Translate", "")
-        self.config.provider_test_last_success.tts = self._provider_test_last_success.get("TTS", "")
-        try:
-            self._save_config_to_disk()
-        except Exception as exc:
-            self._report_error(f"persist_provider_test_state failed: {exc}")
-
-    def _load_provider_test_state_from_config(self) -> None:
-        mapping = {
-            "ASR": self.config.provider_test_last_success.asr,
-            "Translate": self.config.provider_test_last_success.translate,
-            "TTS": self.config.provider_test_last_success.tts,
+    def _candidate_test_tts_configs(self, primary_tts: TtsConfig) -> list[tuple[str, TtsConfig]]:
+        candidates: list[tuple[str, TtsConfig]] = [("configured tts", primary_tts)]
+        seen: set[tuple[str, str, str]] = {
+            (primary_tts.engine, primary_tts.model_path, primary_tts.voice_name)
         }
-        self._provider_test_last_success = {k: v for k, v in mapping.items() if v}
+        for label, config in (
+            ("local piper", self.config.local_tts),
+            ("meeting piper", self.config.meeting_tts),
+            ("default piper", self._default_test_tts_config()),
+        ):
+            key = (config.engine, config.model_path, config.voice_name)
+            if key in seen:
+                continue
+            if not self._is_local_test_tts_available(config):
+                continue
+            seen.add(key)
+            candidates.append((label, config))
+        return candidates
 
-    def _truncate_preview(self, text: str) -> str:
-        if len(text) <= self._last_success_preview_chars:
-            return text
-        return text[: self._last_success_preview_chars - 1] + "..."
+    @staticmethod
+    def _is_local_test_tts_available(config: TtsConfig) -> bool:
+        if (config.engine or "").strip().lower() != "piper":
+            return False
+        exe = Path(config.executable_path)
+        model = Path(config.model_path)
+        if not exe.is_absolute():
+            exe = (Path.cwd() / exe).resolve()
+        if not model.is_absolute():
+            model = (Path.cwd() / model).resolve()
+        return exe.exists() and model.exists()
 
-    def _build_asr_test_audio(self) -> tuple[np.ndarray, int]:
+    @staticmethod
+    def _default_test_tts_config() -> TtsConfig:
+        nested = Path(".\\tools\\piper\\piper\\piper.exe")
+        flat = Path(".\\tools\\piper\\piper.exe")
+        exe = str(nested if nested.exists() else flat)
+        return TtsConfig(
+            engine="piper",
+            executable_path=exe,
+            model_path=".\\models\\tts\\zh-TW-medium.onnx",
+            config_path=".\\models\\tts\\zh-TW-medium.onnx.json",
+            sample_rate=22050,
+        )
+
+    @staticmethod
+    def _build_test_tone_audio() -> np.ndarray:
         sample_rate = 24000
-        try:
-            edge_provider = create_tts_provider(
-                provider_name="edge_tts",
-                openai_voice="en-US-AvaMultilingualNeural",
-            )
-            audio = edge_provider.synthesize("Hello, this is an ASR provider test.", sample_rate=sample_rate)
-            if audio.size > 0:
-                return audio, sample_rate
-        except Exception:
-            pass
+        duration = 0.8
+        t = np.linspace(0.0, duration, int(sample_rate * duration), endpoint=False)
+        wave = 0.18 * np.sin(2 * np.pi * 523.25 * t)
+        return wave.reshape(-1, 1).astype(np.float32)
 
-        fallback_rate = 16000
-        t = np.linspace(0.0, 1.2, int(fallback_rate * 1.2), endpoint=False)
-        tone = 0.15 * np.sin(2 * np.pi * 220 * t)
-        return tone.reshape(-1, 1).astype(np.float32), fallback_rate
+    @staticmethod
+    def _tts_test_text(language: str) -> str:
+        normalized = (language or "").lower()
+        if normalized.startswith("zh"):
+            return "這是翻譯語音測試。"
+        if normalized.startswith("ja"):
+            return "これは音声テストです。"
+        return "This is a translated speech test."
+

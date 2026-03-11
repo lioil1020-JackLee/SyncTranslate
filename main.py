@@ -1,13 +1,26 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 import sys
 
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 from app.device_manager import DeviceManager
 from app.settings import load_config
 from app.ui_main import MainWindow
+
+
+def _apply_windows_app_id() -> None:
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("lioil.synctranslate")
+    except Exception:
+        return
 
 
 def main() -> int:
@@ -20,11 +33,26 @@ def main() -> int:
     devices = DeviceManager().list_all()
     if args.check:
         print(f"Config OK: {args.config}")
-        print(f"sample_rate={config.sample_rate} chunk_ms={config.chunk_ms}")
+        print(f"mode={config.direction.mode}")
+        print(f"sample_rate={config.runtime.sample_rate} chunk_ms={config.runtime.chunk_ms}")
+        print(f"asr={config.asr.engine}:{config.asr.model} device={config.asr.device}")
+        print(f"llm={config.llm.backend} model={config.llm.model} base_url={config.llm.base_url}")
+        print(
+            "meeting_tts="
+            f"{config.meeting_tts.engine} voice={config.meeting_tts.voice_name or config.meeting_tts.model_path}"
+        )
+        print(
+            "local_tts="
+            f"{config.local_tts.engine} voice={config.local_tts.voice_name or config.local_tts.model_path}"
+        )
         print(f"devices_found={len(devices)}")
         return 0
 
+    _apply_windows_app_id()
     app = QApplication(sys.argv)
+    icon_path = Path("lioil.ico")
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
     window = MainWindow(args.config)
     window.show()
     try:

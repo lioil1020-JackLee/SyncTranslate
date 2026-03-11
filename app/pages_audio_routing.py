@@ -15,82 +15,68 @@ class AudioRoutingPage(QWidget):
         on_save: Callable[[], None],
         on_reload: Callable[[], None],
         on_route_changed: Callable[[], None],
-        on_start: Callable[[], None],
     ) -> None:
         super().__init__()
         self._on_apply_banana_preset = on_apply_banana_preset
         self._on_save = on_save
         self._on_reload = on_reload
         self._on_route_changed = on_route_changed
-        self._on_start = on_start
         self._input_devices: list[DeviceInfo] = []
         self._output_devices: list[DeviceInfo] = []
 
-        self.remote_in_hostapi_combo = QComboBox()
-        self.remote_in_combo = QComboBox()
-        self.local_mic_in_hostapi_combo = QComboBox()
-        self.local_mic_in_combo = QComboBox()
-        self.local_tts_out_hostapi_combo = QComboBox()
-        self.local_tts_out_combo = QComboBox()
-        self.meeting_tts_out_hostapi_combo = QComboBox()
-        self.meeting_tts_out_combo = QComboBox()
-        self.session_mode_combo = QComboBox()
-        self.start_btn = QPushButton("開始")
-        self.session_mode_combo.addItem("只收聽翻譯", "remote_only")
-        self.session_mode_combo.addItem("只發話翻譯", "local_only")
-        self.session_mode_combo.addItem("雙向模式", "bidirectional")
+        self.meeting_in_hostapi_combo = QComboBox()
+        self.meeting_in_combo = QComboBox()
+        self.microphone_in_hostapi_combo = QComboBox()
+        self.microphone_in_combo = QComboBox()
+        self.speaker_out_hostapi_combo = QComboBox()
+        self.speaker_out_combo = QComboBox()
+        self.meeting_out_hostapi_combo = QComboBox()
+        self.meeting_out_combo = QComboBox()
+        self.direction_mode_combo = QComboBox()
+
+        self.direction_mode_combo.addItem("\u9060\u7aef -> \u672c\u5730", "meeting_to_local")
+        self.direction_mode_combo.addItem("\u672c\u5730 -> \u9060\u7aef", "local_to_meeting")
+        self.direction_mode_combo.addItem("\u96d9\u5411\u6a21\u5f0f", "bidirectional")
 
         for combo in (
-            self.remote_in_hostapi_combo,
-            self.remote_in_combo,
-            self.local_mic_in_hostapi_combo,
-            self.local_mic_in_combo,
-            self.local_tts_out_hostapi_combo,
-            self.local_tts_out_combo,
-            self.meeting_tts_out_hostapi_combo,
-            self.meeting_tts_out_combo,
-            self.session_mode_combo,
+            self.meeting_in_hostapi_combo,
+            self.meeting_in_combo,
+            self.microphone_in_hostapi_combo,
+            self.microphone_in_combo,
+            self.speaker_out_hostapi_combo,
+            self.speaker_out_combo,
+            self.meeting_out_hostapi_combo,
+            self.meeting_out_combo,
+            self.direction_mode_combo,
         ):
             combo.currentIndexChanged.connect(self._on_route_changed)
 
-        self.remote_in_hostapi_combo.currentIndexChanged.connect(self._refresh_remote_in_combo)
-        self.local_mic_in_hostapi_combo.currentIndexChanged.connect(self._refresh_local_mic_combo)
-        self.local_tts_out_hostapi_combo.currentIndexChanged.connect(self._refresh_local_tts_combo)
-        self.meeting_tts_out_hostapi_combo.currentIndexChanged.connect(self._refresh_meeting_tts_combo)
-        self.start_btn.clicked.connect(self._on_start)
-
-        self.status_label = QLabel("音訊路由設定")
+        self.meeting_in_hostapi_combo.currentIndexChanged.connect(self._refresh_meeting_in_combo)
+        self.microphone_in_hostapi_combo.currentIndexChanged.connect(self._refresh_microphone_in_combo)
+        self.speaker_out_hostapi_combo.currentIndexChanged.connect(self._refresh_speaker_out_combo)
+        self.meeting_out_hostapi_combo.currentIndexChanged.connect(self._refresh_meeting_out_combo)
+        self.status_label = QLabel("\u97f3\u8a0a\u8def\u7531\u8a2d\u5b9a")
 
         form = QFormLayout()
+        form.addRow("\u9060\u7aef\u8f38\u5165", self._build_route_selector_row(self.meeting_in_hostapi_combo, self.meeting_in_combo))
         form.addRow(
-            "會議語音輸入",
-            self._build_route_selector_row(self.remote_in_hostapi_combo, self.remote_in_combo),
+            "\u9ea5\u514b\u98a8\u8f38\u5165",
+            self._build_route_selector_row(self.microphone_in_hostapi_combo, self.microphone_in_combo),
         )
-        form.addRow(
-            "本機麥克風輸入",
-            self._build_route_selector_row(self.local_mic_in_hostapi_combo, self.local_mic_in_combo),
-        )
-        form.addRow(
-            "本機收聽輸出",
-            self._build_route_selector_row(self.local_tts_out_hostapi_combo, self.local_tts_out_combo),
-        )
-        form.addRow(
-            "會議送出輸出",
-            self._build_route_selector_row(self.meeting_tts_out_hostapi_combo, self.meeting_tts_out_combo),
-        )
-        form.addRow("模式", self.session_mode_combo)
+        form.addRow("\u55c7\u53ed\u8f38\u51fa", self._build_route_selector_row(self.speaker_out_hostapi_combo, self.speaker_out_combo))
+        form.addRow("\u9060\u7aef\u8f38\u51fa", self._build_route_selector_row(self.meeting_out_hostapi_combo, self.meeting_out_combo))
+        form.addRow("\u6a21\u5f0f", self.direction_mode_combo)
 
         button_row = QHBoxLayout()
-        apply_btn = QPushButton("套用 Banana 預設")
-        save_btn = QPushButton("儲存設定")
-        reload_btn = QPushButton("重新載入")
+        apply_btn = QPushButton("\u5957\u7528 Banana \u9810\u8a2d")
+        save_btn = QPushButton("\u5132\u5b58\u8a2d\u5b9a")
+        reload_btn = QPushButton("\u91cd\u65b0\u8f09\u5165")
         apply_btn.clicked.connect(self._on_apply_banana_preset)
         save_btn.clicked.connect(self._on_save)
         reload_btn.clicked.connect(self._on_reload)
         button_row.addWidget(apply_btn)
         button_row.addWidget(save_btn)
         button_row.addWidget(reload_btn)
-        button_row.addWidget(self.start_btn)
 
         layout = QVBoxLayout(self)
         layout.addLayout(form)
@@ -102,88 +88,78 @@ class AudioRoutingPage(QWidget):
         self._input_devices = list(input_devices)
         self._output_devices = list(output_devices)
         current = self.selected_audio_routes()
-        self._fill_hostapi_combo(self.remote_in_hostapi_combo, self._input_devices)
-        self._fill_hostapi_combo(self.local_mic_in_hostapi_combo, self._input_devices)
-        self._fill_hostapi_combo(self.local_tts_out_hostapi_combo, self._output_devices)
-        self._fill_hostapi_combo(self.meeting_tts_out_hostapi_combo, self._output_devices)
-        self._apply_selector_to_route(self.remote_in_hostapi_combo, self.remote_in_combo, self._input_devices, current.remote_in)
+        self._fill_hostapi_combo(self.meeting_in_hostapi_combo, self._input_devices)
+        self._fill_hostapi_combo(self.microphone_in_hostapi_combo, self._input_devices)
+        self._fill_hostapi_combo(self.speaker_out_hostapi_combo, self._output_devices)
+        self._fill_hostapi_combo(self.meeting_out_hostapi_combo, self._output_devices)
+        self._apply_selector_to_route(self.meeting_in_hostapi_combo, self.meeting_in_combo, self._input_devices, current.meeting_in)
         self._apply_selector_to_route(
-            self.local_mic_in_hostapi_combo,
-            self.local_mic_in_combo,
+            self.microphone_in_hostapi_combo,
+            self.microphone_in_combo,
             self._input_devices,
-            current.local_mic_in,
+            current.microphone_in,
         )
         self._apply_selector_to_route(
-            self.local_tts_out_hostapi_combo,
-            self.local_tts_out_combo,
+            self.speaker_out_hostapi_combo,
+            self.speaker_out_combo,
             self._output_devices,
-            current.local_tts_out,
+            current.speaker_out,
         )
         self._apply_selector_to_route(
-            self.meeting_tts_out_hostapi_combo,
-            self.meeting_tts_out_combo,
+            self.meeting_out_hostapi_combo,
+            self.meeting_out_combo,
             self._output_devices,
-            current.meeting_tts_out,
+            current.meeting_out,
         )
 
     def apply_config(self, config: AppConfig) -> None:
-        self._apply_selector_to_route(self.remote_in_hostapi_combo, self.remote_in_combo, self._input_devices, config.audio.remote_in)
+        self._apply_selector_to_route(self.meeting_in_hostapi_combo, self.meeting_in_combo, self._input_devices, config.audio.meeting_in)
         self._apply_selector_to_route(
-            self.local_mic_in_hostapi_combo,
-            self.local_mic_in_combo,
+            self.microphone_in_hostapi_combo,
+            self.microphone_in_combo,
             self._input_devices,
-            config.audio.local_mic_in,
+            config.audio.microphone_in,
         )
         self._apply_selector_to_route(
-            self.local_tts_out_hostapi_combo,
-            self.local_tts_out_combo,
+            self.speaker_out_hostapi_combo,
+            self.speaker_out_combo,
             self._output_devices,
-            config.audio.local_tts_out,
+            config.audio.speaker_out,
         )
         self._apply_selector_to_route(
-            self.meeting_tts_out_hostapi_combo,
-            self.meeting_tts_out_combo,
+            self.meeting_out_hostapi_combo,
+            self.meeting_out_combo,
             self._output_devices,
-            config.audio.meeting_tts_out,
+            config.audio.meeting_out,
         )
-        self._select_by_mode(self.session_mode_combo, config.session_mode)
+        self._select_by_mode(self.direction_mode_combo, config.direction.mode)
 
     def selected_audio_routes(self) -> AudioRouteConfig:
         return AudioRouteConfig(
-            remote_in=self._selected_selector(self.remote_in_combo),
-            local_mic_in=self._selected_selector(self.local_mic_in_combo),
-            local_tts_out=self._selected_selector(self.local_tts_out_combo),
-            meeting_tts_out=self._selected_selector(self.meeting_tts_out_combo),
+            meeting_in=self._selected_selector(self.meeting_in_combo),
+            microphone_in=self._selected_selector(self.microphone_in_combo),
+            speaker_out=self._selected_selector(self.speaker_out_combo),
+            meeting_out=self._selected_selector(self.meeting_out_combo),
         )
 
     def set_status(self, message: str) -> None:
         self.status_label.setText(message)
 
-    def set_start_enabled(self, enabled: bool) -> None:
-        self.start_btn.setEnabled(enabled)
-
-    def set_start_label(self, text: str) -> None:
-        self.start_btn.setText(text)
-
     def selected_mode(self) -> str:
-        value = self.session_mode_combo.currentData()
-        return str(value) if value else "remote_only"
+        value = self.direction_mode_combo.currentData()
+        return str(value) if value else "meeting_to_local"
 
-    def _refresh_remote_in_combo(self) -> None:
-        self._refill_device_combo(self.remote_in_combo, self._input_devices, self.remote_in_hostapi_combo.currentData())
+    def _refresh_meeting_in_combo(self) -> None:
+        self._refill_device_combo(self.meeting_in_combo, self._input_devices, self.meeting_in_hostapi_combo.currentData())
 
-    def _refresh_local_mic_combo(self) -> None:
-        self._refill_device_combo(self.local_mic_in_combo, self._input_devices, self.local_mic_in_hostapi_combo.currentData())
+    def _refresh_microphone_in_combo(self) -> None:
+        self._refill_device_combo(self.microphone_in_combo, self._input_devices, self.microphone_in_hostapi_combo.currentData())
 
-    def _refresh_local_tts_combo(self) -> None:
-        self._refill_device_combo(self.local_tts_out_combo, self._output_devices, self.local_tts_out_hostapi_combo.currentData())
+    def _refresh_speaker_out_combo(self) -> None:
+        self._refill_device_combo(self.speaker_out_combo, self._output_devices, self.speaker_out_hostapi_combo.currentData())
 
-    def _refresh_meeting_tts_combo(self) -> None:
-        self._refill_device_combo(
-            self.meeting_tts_out_combo,
-            self._output_devices,
-            self.meeting_tts_out_hostapi_combo.currentData(),
-        )
+    def _refresh_meeting_out_combo(self) -> None:
+        self._refill_device_combo(self.meeting_out_combo, self._output_devices, self.meeting_out_hostapi_combo.currentData())
 
     def _apply_selector_to_route(
         self,
@@ -225,11 +201,7 @@ class AudioRoutingPage(QWidget):
         combo.blockSignals(True)
         combo.clear()
         for device in filtered:
-            label = (
-                f"[{device.hostapi_label}] [{device.index}] {device.name} "
-                f"(ch in/out: {device.max_input_channels}/{device.max_output_channels}, "
-                f"sr: {device.default_samplerate:.0f})"
-            )
+            label = f"[{device.hostapi_label}] [{device.index}] {device.name}"
             selector = encode_device_selector(hostapi_name=device.hostapi_name, device_name=device.name)
             combo.addItem(label, selector)
         index = combo.findData(current)
@@ -271,8 +243,8 @@ class AudioRoutingPage(QWidget):
     @staticmethod
     def _build_route_selector_row(hostapi_combo: QComboBox, device_combo: QComboBox) -> QWidget:
         hostapi_combo.setMinimumWidth(180)
-        hostapi_combo.setToolTip("音訊介面")
-        device_combo.setToolTip("音訊裝置")
+        hostapi_combo.setToolTip("\u97f3\u8a0a\u4ecb\u9762")
+        device_combo.setToolTip("\u97f3\u8a0a\u88dd\u7f6e")
         container = QWidget()
         row = QHBoxLayout(container)
         row.setContentsMargins(0, 0, 0, 0)

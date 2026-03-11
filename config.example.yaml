@@ -1,37 +1,94 @@
 audio:
-  remote_in: "VoiceMeeter Aux Output (VB-Audio VoiceMeeter AUX VAIO)"
-  local_mic_in: "Microphone (USB Audio Device)"
-  local_tts_out: "Headphones (Realtek Audio)"
-  meeting_tts_out: "VoiceMeeter AUX Input (VB-Audio VoiceMeeter AUX VAIO)"
+  meeting_in: "Windows DirectSound::Voicemeeter Out B2 (VB-Audio Voicemeeter VAIO)"
+  microphone_in: "Windows WASAPI::Microphone (USB Audio Device)"
+  speaker_out: "Windows WASAPI::Headphones (Realtek Audio)"
+  meeting_out: "Windows DirectSound::Voicemeeter AUX Input (VB-Audio Voicemeeter VAIO)"
+
+direction:
+  mode: "bidirectional"
 
 language:
-  remote_source: "en"
-  remote_target: "zh-TW"
+  meeting_source: "en"
+  meeting_target: "zh-TW"
   local_source: "zh-TW"
   local_target: "en"
 
-model:
-  asr_provider: "mock"
-  translate_provider: "mock"
-  tts_provider: "mock"
-  # asr_provider: mock | openai | groq | huggingface | local
-  # translate_provider: mock | openai | groq | huggingface
-  # tts_provider: mock | openai | edge_tts
+asr:
+  engine: "faster_whisper"
+  model: "small"
+  device: "cuda"
+  compute_type: "float16"
+  beam_size: 1
+  condition_on_previous_text: true
+  vad:
+    enabled: true
+    min_speech_duration_ms: 250
+    min_silence_duration_ms: 800
+    max_speech_duration_s: 15
+    speech_pad_ms: 300
+    rms_threshold: 0.01
+  streaming:
+    partial_interval_ms: 400
+    partial_history_seconds: 8
+    final_history_seconds: 20
 
-openai:
-  api_key_env: "OPENAI_API_KEY"
-  base_url: "https://api.openai.com/v1"
-  asr_model: "gpt-4o-transcribe"
-  translate_model: "gpt-5-mini"
-  tts_model: "gpt-4o-mini-tts"
-  tts_voice: "alloy"
+llm:
+  backend: "ollama"
+  base_url: "http://127.0.0.1:11434"
+  model: "llama3.1:8b"
+  temperature: 0.2
+  top_p: 0.9
+  request_timeout_sec: 20
+  sliding_window:
+    enabled: true
+    trigger_tokens: 20
+    max_context_items: 6
 
-provider_test_last_success:
+meeting_tts:
+  engine: "edge_tts"
+  executable_path: ".\\tools\\piper\\piper\\piper.exe"
+  model_path: ".\\models\\tts\\zh-TW-medium.onnx"
+  config_path: ".\\models\\tts\\zh-TW-medium.onnx.json"
+  voice_name: "zh-TW-HsiaoChenNeural"
+  speaker_id: 0
+  length_scale: 1.0
+  noise_scale: 0.667
+  noise_w: 0.8
+  sample_rate: 24000
+
+local_tts:
+  engine: "piper"
+  executable_path: ".\\tools\\piper\\piper\\piper.exe"
+  model_path: ".\\models\\tts\\zh-TW-medium.onnx"
+  config_path: ".\\models\\tts\\zh-TW-medium.onnx.json"
+  voice_name: ""
+  speaker_id: 0
+  length_scale: 1.0
+  noise_scale: 0.667
+  noise_w: 0.8
+  sample_rate: 22050
+
+tts:
+  engine: "piper"
+  executable_path: ".\\tools\\piper\\piper\\piper.exe"
+  model_path: ".\\models\\tts\\zh-TW-medium.onnx"
+  config_path: ".\\models\\tts\\zh-TW-medium.onnx.json"
+  voice_name: ""
+  speaker_id: 0
+  length_scale: 1.0
+  noise_scale: 0.667
+  noise_w: 0.8
+  sample_rate: 22050
+
+runtime:
+  sample_rate: 48000
+  chunk_ms: 100
+  asr_queue_maxsize: 128
+  llm_queue_maxsize: 32
+  tts_queue_maxsize: 32
+  warmup_on_start: true
+
+health_last_success:
   asr: ""
-  translate: ""
+  llm: ""
   tts: ""
-
-session_mode: "remote_only"
-translate_mode: "fast"
-sample_rate: 48000
-chunk_ms: 100

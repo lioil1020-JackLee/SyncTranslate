@@ -1,0 +1,275 @@
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass
+from queue import Empty, Full, Queue
+from threading import Event, Lock, Thread
+from typing import Callable
+
+import numpy as np
+
+from app.local_ai.faster_whisper_engine import FasterWhisperEngine
+from app.local_ai.vad_segmenter import VadSegmenter
+
+
+@dataclass(slots=True)
+class AsrEvent:
+    text: str
+    is_final: bool
+    start_ms: int
+    end_ms: int
+    latency_ms: int
+
+
+@dataclass(slots=True)
+class StreamingAsrStats:
+    queue_size: int
+    dropped_chunks: int
+    partial_count: int
+    final_count: int
+    last_debug: str
+    vad_rms: float
+    vad_threshold: float
+
+
+class StreamingAsr:
+    def __init__(
+        self,
+        *,
+        engine: FasterWhisperEngine,
+        vad: VadSegmenter,
+        partial_interval_ms: int = 400,
+        queue_maxsize: int = 128,
+        on_event: Callable[[AsrEvent], None] | None = None,
+        on_debug: Callable[[str], None] | None = None,
+    ) -> None:
+        self._engine = engine
+        self._vad = vad
+        self._partial_interval_ms = max(200, int(partial_interval_ms))
+        self._queue: Queue[tuple[np.ndarray, float]] = Queue(maxsize=max(16, queue_maxsize))
+        self._stop_event = Event()
+        self._thread: Thread | None = None
+        self._on_event = on_event
+        self._on_debug = on_debug
+        self._segment_chunks: list[np.ndarray] = []
+        self._segment_start_ms = 0
+        self._segment_end_ms = 0
+        self._last_partial_ms = 0
+        self._segment_sample_rate = 16000
+        self._min_partial_audio_ms = 600
+        self._force_final_queue_size = max(8, self._queue.maxsize // 4)
+        self._force_final_audio_ms = 1800
+        self._overflow_count = 0
+        self._last_overflow_report_ms = 0
+        self._drop_partial_until_final = False
+        self._partial_count = 0
+        self._final_count = 0
+        self._last_debug = ""
+        self._stats_lock = Lock()
+
+    def start(self, on_event: Callable[[AsrEvent], None]) -> None:
+        self.stop()
+        self._on_event = on_event
+        self._stop_event.clear()
+        self._thread = Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=1.5)
+        self._thread = None
+        self._vad.reset()
+        self._segment_chunks = []
+        self._segment_start_ms = 0
+        self._segment_end_ms = 0
+        self._last_partial_ms = 0
+        self._segment_sample_rate = 16000
+        self._overflow_count = 0
+        self._last_overflow_report_ms = 0
+        self._drop_partial_until_final = False
+        self._partial_count = 0
+        self._final_count = 0
+        self._last_debug = ""
+        while not self._queue.empty():
+            try:
+                self._queue.get_nowait()
+            except Empty:
+                break
+
+    def stats(self) -> StreamingAsrStats:
+        with self._stats_lock:
+            return StreamingAsrStats(
+                queue_size=self._queue.qsize(),
+                dropped_chunks=self._overflow_count,
+                partial_count=self._partial_count,
+                final_count=self._final_count,
+                last_debug=self._last_debug,
+                vad_rms=self._vad.last_rms,
+                vad_threshold=self._vad.effective_rms_threshold,
+            )
+
+    def submit_chunk(self, chunk: np.ndarray, sample_rate: float) -> None:
+        try:
+            self._queue.put_nowait((chunk.copy(), sample_rate))
+        except Full:
+            try:
+                self._queue.get_nowait()
+            except Empty:
+                pass
+            try:
+                self._queue.put_nowait((chunk.copy(), sample_rate))
+            except Full:
+                pass
+            self._overflow_count += 1
+            now_ms = int(time.monotonic() * 1000)
+            if now_ms - self._last_overflow_report_ms >= 1000:
+                self._debug(f"asr queue overflow: dropped oldest chunk x{self._overflow_count}")
+                self._last_overflow_report_ms = now_ms
+            self._drop_partial_until_final = True
+
+    def _run(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                chunk, sample_rate = self._queue.get(timeout=0.2)
+            except Empty:
+                continue
+
+            drained = 0
+            pending_parts = [chunk]
+            while drained < 3:
+                try:
+                    extra_chunk, extra_rate = self._queue.get_nowait()
+                except Empty:
+                    break
+                if extra_rate > 0 and int(extra_rate) == int(sample_rate):
+                    pending_parts.append(extra_chunk)
+                    drained += 1
+                    continue
+                self._process_chunk(chunk=np.concatenate(pending_parts, axis=0), sample_rate=sample_rate)
+                pending_parts = [extra_chunk]
+                sample_rate = extra_rate
+                drained = 0
+
+            self._process_chunk(chunk=np.concatenate(pending_parts, axis=0), sample_rate=sample_rate)
+
+    def _process_chunk(self, *, chunk: np.ndarray, sample_rate: float) -> None:
+        if sample_rate <= 0:
+            return
+        now_ms = int(time.monotonic() * 1000)
+        decision = self._vad.update(chunk, sample_rate)
+        chunk_ms = int(decision.chunk_ms)
+        self._segment_sample_rate = int(sample_rate)
+        if self._segment_start_ms == 0:
+            self._segment_start_ms = now_ms - chunk_ms
+        self._segment_end_ms = now_ms
+
+        if decision.speech_active:
+            self._segment_chunks.append(chunk)
+            segment_audio_ms = self._segment_audio_ms()
+            should_force_final = (
+                self._queue.qsize() >= self._force_final_queue_size
+                and segment_audio_ms >= self._force_final_audio_ms
+            )
+            if should_force_final:
+                self._debug(
+                    "asr backlog: force final "
+                    f"queue={self._queue.qsize()} audio_ms={segment_audio_ms}"
+                )
+                self._emit_final(now_ms=now_ms)
+                self._reset_segment()
+                return
+            should_emit_partial = (
+                (not self._drop_partial_until_final)
+                and self._queue.qsize() == 0
+                and now_ms - self._last_partial_ms >= self._partial_interval_ms
+            )
+            if should_emit_partial:
+                self._emit_partial()
+                self._last_partial_ms = now_ms
+
+        if decision.finalize:
+            self._emit_final(now_ms=now_ms)
+            self._reset_segment()
+
+    def _emit_partial(self) -> None:
+        if not self._on_event or not self._segment_chunks:
+            return
+        audio = np.concatenate(self._segment_chunks, axis=0)
+        audio_ms = int(len(audio) * 1000 / max(1, self._segment_sample_rate))
+        if audio_ms < self._min_partial_audio_ms:
+            return
+        start = time.perf_counter()
+        try:
+            text = self._engine.transcribe_partial(audio=audio, sample_rate=self._segment_sample_rate) or ""
+        except Exception as exc:
+            self._debug(f"partial asr failed: {exc}")
+            return
+        if not text.strip():
+            return
+        latency_ms = int((time.perf_counter() - start) * 1000)
+        self._on_event(
+            AsrEvent(
+                text=text.strip(),
+                is_final=False,
+                start_ms=self._segment_start_ms,
+                end_ms=self._segment_end_ms,
+                latency_ms=latency_ms,
+            )
+        )
+        with self._stats_lock:
+            self._partial_count += 1
+        self._debug(f"asr partial latency={latency_ms}ms text={text.strip()[:80]}")
+
+    def _emit_final(self, *, now_ms: int) -> None:
+        if not self._on_event or not self._segment_chunks:
+            return
+        audio = np.concatenate(self._segment_chunks, axis=0)
+        start = time.perf_counter()
+        try:
+            text = self._engine.transcribe_final(audio=audio, sample_rate=self._segment_sample_rate) or ""
+        except Exception as exc:
+            self._on_event(
+                AsrEvent(
+                    text=f"[asr-error] {exc}",
+                    is_final=True,
+                    start_ms=self._segment_start_ms,
+                    end_ms=now_ms,
+                    latency_ms=0,
+                )
+            )
+            return
+        latency_ms = int((time.perf_counter() - start) * 1000)
+        if not text.strip():
+            return
+        self._on_event(
+            AsrEvent(
+                text=text.strip(),
+                is_final=True,
+                start_ms=self._segment_start_ms,
+                end_ms=now_ms,
+                latency_ms=latency_ms,
+            )
+        )
+        with self._stats_lock:
+            self._final_count += 1
+        self._debug(f"asr final latency={latency_ms}ms text={text.strip()[:80]}")
+
+    def _debug(self, message: str) -> None:
+        with self._stats_lock:
+            self._last_debug = message
+        if self._on_debug:
+            self._on_debug(message)
+
+    def _segment_audio_ms(self) -> int:
+        if not self._segment_chunks:
+            return 0
+        sample_count = sum(int(chunk.shape[0]) for chunk in self._segment_chunks)
+        return int(sample_count * 1000 / max(1, self._segment_sample_rate))
+
+    def _reset_segment(self) -> None:
+        self._segment_chunks = []
+        self._segment_start_ms = 0
+        self._segment_end_ms = 0
+        self._last_partial_ms = 0
+        self._drop_partial_until_final = False

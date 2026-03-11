@@ -40,43 +40,78 @@ class AudioCapture:
         self._current_sample_rate: int | None = None
         self._consumers: list[Callable[[np.ndarray, float], None]] = []
 
-    def start(self, device_name: str, sample_rate: int | None = None) -> None:
+    def start(self, device_name: str, sample_rate: int | None = None, chunk_ms: int | None = None) -> None:
         if not device_name:
             raise ValueError("Input device name is required.")
 
         self.stop()
-
-        device_index, device_info = self._find_input_device(device_name)
-        max_input_channels = int(device_info["max_input_channels"])
-        channels = 1 if max_input_channels >= 1 else 0
-        if channels <= 0:
-            raise ValueError(f"Device has no input channels: {device_name}")
-
         requested_sample_rate = float(sample_rate) if sample_rate else None
-        default_sample_rate = float(device_info["default_samplerate"])
-        resolved_sample_rate = self._resolve_supported_input_sample_rate(
-            device_index=device_index,
-            channels=channels,
-            requested_sample_rate=requested_sample_rate,
-            default_sample_rate=default_sample_rate,
-        )
-        with self._lock:
-            self._frame_count = 0
-            self._level = 0.0
-            self._sample_rate = resolved_sample_rate
-            self._last_error = ""
-            self._current_device_name = device_name
-            self._current_sample_rate = int(round(resolved_sample_rate))
+        errors: list[str] = []
+        for device_index, device_info in self._rank_input_devices(device_name):
+            max_input_channels = int(device_info["max_input_channels"])
+            channels = 1 if max_input_channels >= 1 else 0
+            if channels <= 0:
+                continue
+            default_sample_rate = float(device_info["default_samplerate"])
+            try:
+                resolved_sample_rate = self._resolve_supported_input_sample_rate(
+                    device_index=device_index,
+                    channels=channels,
+                    requested_sample_rate=requested_sample_rate,
+                    default_sample_rate=default_sample_rate,
+                )
+                with self._lock:
+                    self._frame_count = 0
+                    self._level = 0.0
+                    self._sample_rate = resolved_sample_rate
+                    self._last_error = ""
+                    self._current_device_name = device_name
+                    self._current_sample_rate = int(round(resolved_sample_rate))
 
-        self._stream = sd.InputStream(
-            device=device_index,
-            channels=channels,
-            samplerate=resolved_sample_rate,
-            callback=self._on_audio,
+                self._stream = sd.InputStream(
+                    device=device_index,
+                    channels=channels,
+                    samplerate=resolved_sample_rate,
+                    blocksize=self._resolve_blocksize(resolved_sample_rate, chunk_ms),
+                    dtype="float32",
+                    callback=self._on_audio,
+                )
+                self._stream.start()
+                with self._lock:
+                    self._running = True
+                return
+            except Exception as exc:
+                errors.append(
+                    f"{device_info['name']} [idx={device_index}, default={int(round(default_sample_rate))}Hz]: {exc}"
+                )
+
+        if not errors:
+            raise ValueError(f"Input device not found or unavailable: {device_name}")
+        raise ValueError(
+            "Unable to start input capture on selected device or compatible host API fallback. "
+            + " | ".join(errors[:6])
         )
-        self._stream.start()
-        with self._lock:
-            self._running = True
+
+    def preview_resolved_sample_rate(self, device_name: str, requested_sample_rate: int | None = None) -> float:
+        requested = float(requested_sample_rate) if requested_sample_rate else None
+        errors: list[str] = []
+        for device_index, device_info in self._rank_input_devices(device_name):
+            channels = 1 if int(device_info["max_input_channels"]) >= 1 else 0
+            if channels <= 0:
+                continue
+            default_rate = float(device_info["default_samplerate"])
+            try:
+                return self._resolve_supported_input_sample_rate(
+                    device_index=device_index,
+                    channels=channels,
+                    requested_sample_rate=requested,
+                    default_sample_rate=default_rate,
+                )
+            except Exception as exc:
+                errors.append(str(exc))
+        if errors:
+            raise ValueError(errors[0])
+        raise ValueError(f"Input device not found or unavailable: {device_name}")
 
     def stop(self) -> None:
         if not self._stream:
@@ -141,7 +176,7 @@ class AudioCapture:
                 continue
 
     @staticmethod
-    def _find_input_device(device_name: str) -> tuple[int, dict[str, object]]:
+    def _rank_input_devices(device_name: str) -> list[tuple[int, dict[str, object]]]:
         hostapi_name, requested_name = parse_device_selector(device_name)
         devices = list_indexed_devices()
         preferred_hostapi = preferred_hostapi_index_for_platform()
@@ -184,11 +219,10 @@ class AudioCapture:
             ranked.append((hostapi_rank, -score, extra_token_penalty, idx, item))
 
         if not ranked:
-            raise ValueError(f"Input device not found: {device_name}")
+            return []
 
         ranked.sort()
-        _, _, _, idx, item = ranked[0]
-        return idx, item
+        return [(idx, item) for _, _, _, idx, item in ranked]
 
     @staticmethod
     def _resolve_supported_input_sample_rate(
@@ -201,6 +235,10 @@ class AudioCapture:
         candidate_rates: list[float] = []
         if requested_sample_rate and requested_sample_rate > 0:
             candidate_rates.append(requested_sample_rate)
+        # ASR-friendly rates first.
+        for rate in (16000.0, 48000.0, 44100.0, 32000.0, 24000.0, 22050.0):
+            if rate not in candidate_rates:
+                candidate_rates.append(rate)
         if default_sample_rate > 0 and default_sample_rate not in candidate_rates:
             candidate_rates.append(default_sample_rate)
 
@@ -214,3 +252,10 @@ class AudioCapture:
 
         details = "; ".join(errors) if errors else "no valid candidate sample rate"
         raise ValueError(f"Input device does not support requested sample rate(s): {details}")
+
+    @staticmethod
+    def _resolve_blocksize(sample_rate: float, chunk_ms: int | None) -> int:
+        if not chunk_ms or chunk_ms <= 0 or sample_rate <= 0:
+            return 0
+        frames = int(round(float(sample_rate) * int(chunk_ms) / 1000.0))
+        return max(256, frames)
