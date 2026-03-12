@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime
 import json
@@ -458,7 +458,7 @@ class MainWindow(QMainWindow):
             self._sync_ui_to_config()
             audio, sample_rate, engine_label = self._build_output_test_audio(
                 primary_tts=self.config.local_tts,
-                text="會議輸出測試",
+                text=self._tts_test_text(self.config.language.local_target),
             )
             self.meeting_playback.play(
                 audio=audio,
@@ -477,7 +477,7 @@ class MainWindow(QMainWindow):
             self._sync_ui_to_config()
             audio, sample_rate, engine_label = self._build_output_test_audio(
                 primary_tts=self.config.meeting_tts,
-                text="喇叭測試",
+                text=self._tts_test_text(self.config.language.meeting_target),
             )
             self.speaker_playback.play(
                 audio=audio,
@@ -870,19 +870,16 @@ class MainWindow(QMainWindow):
         return save_config(self.config, self.config_path)
 
     def _build_output_test_audio(self, *, primary_tts: TtsConfig, text: str) -> tuple[np.ndarray, int, str]:
-        errors: list[str] = []
-        for label, config in self._candidate_test_tts_configs(primary_tts):
-            try:
-                tts = self._create_tts_engine(config)
-                audio = tts.synthesize(text)
-                if audio.size == 0:
-                    raise ValueError("tts returned empty audio")
-                return audio, config.sample_rate, label
-            except Exception as exc:
-                errors.append(f"{label}: {exc}")
-
-        self._report_error("test_tts_fallback_tone: " + " | ".join(errors[:4]))
-        return self._build_test_tone_audio(), 24000, "fallback tone"
+        try:
+            tts = self._create_tts_engine(primary_tts)
+            audio = tts.synthesize(text)
+            if audio.size == 0:
+                raise ValueError("tts returned empty audio")
+            return audio, primary_tts.sample_rate, "configured tts"
+        except Exception as exc:
+            engine = (primary_tts.engine or "").strip() or "unknown"
+            voice = (primary_tts.voice_name or "").strip() or primary_tts.model_path
+            raise ValueError(f"Configured TTS failed ({engine}, {voice}): {exc}") from exc
 
     def _candidate_test_tts_configs(self, primary_tts: TtsConfig) -> list[tuple[str, TtsConfig]]:
         candidates: list[tuple[str, TtsConfig]] = [("configured tts", primary_tts)]

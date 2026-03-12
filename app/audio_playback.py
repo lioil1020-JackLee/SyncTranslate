@@ -32,9 +32,12 @@ class AudioPlayback:
             for device_index, device_info in self._find_output_devices(output_device_name):
                 default_sample_rate = float(device_info["default_samplerate"])
                 max_output_channels = int(device_info["max_output_channels"])
+                prefer_stereo = self._should_prefer_stereo_output(str(device_info["name"]))
+                prefer_device_rate = self._should_prefer_device_sample_rate(str(device_info["name"]))
                 for playback_audio, channels in self._candidate_audio_variants(
                     audio=audio,
                     max_output_channels=max_output_channels,
+                    prefer_stereo=prefer_stereo,
                 ):
                     try:
                         resolved_sample_rate = self._resolve_supported_output_sample_rate(
@@ -42,6 +45,7 @@ class AudioPlayback:
                             channels=channels,
                             requested_sample_rate=requested_sample_rate,
                             default_sample_rate=default_sample_rate,
+                            prefer_device_rate=prefer_device_rate,
                         )
                         playback_audio = self._resample_audio_if_needed(
                             audio=playback_audio,
@@ -171,9 +175,14 @@ class AudioPlayback:
         channels: int,
         requested_sample_rate: float,
         default_sample_rate: float,
+        prefer_device_rate: bool = False,
     ) -> float:
         candidate_rates: list[float] = []
-        if requested_sample_rate > 0:
+        if prefer_device_rate:
+            for rate in (default_sample_rate, 48000.0, 44100.0, requested_sample_rate):
+                if rate > 0 and rate not in candidate_rates:
+                    candidate_rates.append(rate)
+        elif requested_sample_rate > 0:
             candidate_rates.append(requested_sample_rate)
         # Prefer common real-time voice sample rates across virtual/physical devices.
         for rate in (48000.0, 44100.0, 32000.0, 24000.0, 22050.0, 16000.0):
@@ -203,6 +212,7 @@ class AudioPlayback:
         *,
         audio: np.ndarray,
         max_output_channels: int,
+        prefer_stereo: bool = False,
     ) -> list[tuple[np.ndarray, int]]:
         if audio.size == 0 or max_output_channels <= 0:
             return []
@@ -215,11 +225,28 @@ class AudioPlayback:
         else:
             raise ValueError(f"Unsupported audio shape for playback: {audio.shape}")
 
-        variants: list[tuple[np.ndarray, int]] = [(mono, 1)]
+        variants: list[tuple[np.ndarray, int]] = []
         if max_output_channels >= 2:
             stereo = np.repeat(mono, 2, axis=1)
-            variants.append((stereo, 2))
+            if prefer_stereo:
+                variants.append((stereo, 2))
+                variants.append((mono, 1))
+            else:
+                variants.append((mono, 1))
+                variants.append((stereo, 2))
+        else:
+            variants.append((mono, 1))
         return variants
+
+    @staticmethod
+    def _should_prefer_stereo_output(device_name: str) -> bool:
+        normalized = normalize_device_text(device_name)
+        return any(token in normalized for token in ("voicemeeter", "vb-audio", "virtual"))
+
+    @staticmethod
+    def _should_prefer_device_sample_rate(device_name: str) -> bool:
+        normalized = normalize_device_text(device_name)
+        return any(token in normalized for token in ("voicemeeter", "vb-audio", "virtual"))
 
     @staticmethod
     def _resample_audio_if_needed(
