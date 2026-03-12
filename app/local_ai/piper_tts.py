@@ -23,7 +23,7 @@ class PiperTtsEngine:
     noise_w: float = 0.8
     sample_rate: int = 22050
 
-    def synthesize(self, text: str) -> np.ndarray:
+    def synthesize(self, text: str, sample_rate: int | None = None) -> np.ndarray:
         if not text.strip():
             return np.zeros((0, 1), dtype=np.float32)
         exe = resolve_runtime_path(self.executable_path)
@@ -64,7 +64,11 @@ class PiperTtsEngine:
             if completed.returncode != 0:
                 stderr = completed.stderr.decode("utf-8", errors="replace").strip()
                 raise ValueError(f"piper synthesis failed: {stderr or completed.returncode}")
-            return _load_wav(output_path.read_bytes())
+            samples, rate = _load_wav(output_path.read_bytes())
+            target = int(sample_rate) if sample_rate is not None else int(self.sample_rate)
+            if rate != target:
+                samples = _resample_audio(samples, orig_sr=rate, target_sr=target)
+            return samples
         finally:
             try:
                 output_path.unlink(missing_ok=True)
@@ -84,6 +88,7 @@ def _load_wav(wav_bytes: bytes) -> np.ndarray:
     with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
         channels = wf.getnchannels()
         width = wf.getsampwidth()
+        rate = wf.getframerate()
         frames = wf.readframes(wf.getnframes())
     if width != 2:
         raise ValueError(f"unsupported sample width: {width}")
@@ -92,4 +97,19 @@ def _load_wav(wav_bytes: bytes) -> np.ndarray:
         samples = samples.reshape(-1, channels)[:, :1]
     else:
         samples = samples.reshape(-1, 1)
-    return samples
+    return samples, rate
+
+
+def _resample_audio(samples: np.ndarray, *, orig_sr: int, target_sr: int) -> np.ndarray:
+    if orig_sr == target_sr:
+        return samples
+    orig_len = samples.shape[0]
+    new_len = int(round(orig_len * float(target_sr) / float(orig_sr)))
+    if new_len <= 0:
+        return np.zeros((0, 1), dtype=np.float32)
+    old_idx = np.arange(orig_len)
+    new_idx = np.linspace(0, orig_len - 1, new_len)
+    # single-channel expected
+    col = samples[:, 0]
+    new_col = np.interp(new_idx, old_idx, col).astype(np.float32)
+    return new_col.reshape(-1, 1)

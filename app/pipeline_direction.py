@@ -113,7 +113,7 @@ class DirectionalPipeline:
             except Empty:
                 continue
             try:
-                audio = self._tts.synthesize(text)
+                audio = self._tts.synthesize(text, sample_rate=self._tts_sample_rate)
                 self._audio_playback.play(
                     audio=audio,
                     sample_rate=self._tts_sample_rate,

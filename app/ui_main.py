@@ -872,7 +872,7 @@ class MainWindow(QMainWindow):
     def _build_output_test_audio(self, *, primary_tts: TtsConfig, text: str) -> tuple[np.ndarray, int, str]:
         try:
             tts = self._create_tts_engine(primary_tts)
-            audio = tts.synthesize(text)
+            audio = tts.synthesize(text, sample_rate=primary_tts.sample_rate)
             if audio.size == 0:
                 raise ValueError("tts returned empty audio")
             return audio, primary_tts.sample_rate, "configured tts"

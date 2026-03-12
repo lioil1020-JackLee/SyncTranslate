@@ -36,6 +36,7 @@ class LocalPipeline:
         self._translate_worker = translate_provider
         self._tts_worker = tts_provider
         self._running = False
+        self._tts_sample_rate: int = 24000
 
     @property
     def running(self) -> bool:
@@ -46,6 +47,7 @@ class LocalPipeline:
         self._asr_worker.start(self._handle_asr_result)
         self._audio_capture.add_consumer(self._on_audio_chunk)
         self._audio_capture.start(input_device_name, sample_rate=sample_rate)
+        self._tts_sample_rate = int(sample_rate)
         self._running = True
 
     def stop(self) -> None:
@@ -73,8 +75,8 @@ class LocalPipeline:
             self._transcript_buffer.append(source="local_translated", text=translated, is_final=result.is_final)
 
             output_device = self._get_meeting_tts_output_device()
-            audio = self._tts_worker.synthesize(translated)
-            self._audio_playback.play(audio=audio, sample_rate=24000, output_device_name=output_device)
+            audio = self._tts_worker.synthesize(translated, sample_rate=self._tts_sample_rate)
+            self._audio_playback.play(audio=audio, sample_rate=self._tts_sample_rate, output_device_name=output_device)
 
             self._on_translated_transcript(translated)
         except Exception as exc:
