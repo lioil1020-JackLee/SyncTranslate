@@ -1,12 +1,21 @@
 from __future__ import annotations
 
-from threading import Lock
+import platform
+import time
+from threading import Event, Lock, Thread
 
 import numpy as np
 import sounddevice as sd
 
+try:
+    import soundcard as sc
+except Exception:
+    sc = None
+
 from app.audio_device_selection import (
+    canonical_device_name,
     device_tokens,
+    hostapi_name_by_index,
     normalize_device_text,
     parse_device_selector,
     list_indexed_devices,
@@ -28,57 +37,24 @@ class AudioPlayback:
         requested_sample_rate = float(sample_rate)
         with self._play_lock:
             self.stop()
+            if self._try_play_via_soundcard(audio=audio, sample_rate=requested_sample_rate, output_device_name=output_device_name):
+                return
             errors: list[str] = []
-            for device_index, device_info in self._find_output_devices(output_device_name):
-                default_sample_rate = float(device_info["default_samplerate"])
-                max_output_channels = int(device_info["max_output_channels"])
-                prefer_stereo = self._should_prefer_stereo_output(str(device_info["name"]))
-                prefer_device_rate = self._should_prefer_device_sample_rate(str(device_info["name"]))
-                for playback_audio, channels in self._candidate_audio_variants(
-                    audio=audio,
-                    max_output_channels=max_output_channels,
-                    prefer_stereo=prefer_stereo,
-                ):
-                    try:
-                        resolved_sample_rate = self._resolve_supported_output_sample_rate(
-                            device_index=device_index,
-                            channels=channels,
-                            requested_sample_rate=requested_sample_rate,
-                            default_sample_rate=default_sample_rate,
-                            prefer_device_rate=prefer_device_rate,
-                        )
-                        playback_audio = self._resample_audio_if_needed(
-                            audio=playback_audio,
-                            source_sample_rate=requested_sample_rate,
-                            target_sample_rate=resolved_sample_rate,
-                        )
-                        playback_audio = self._apply_volume(playback_audio)
-                        stream = sd.OutputStream(
-                            device=device_index,
-                            samplerate=resolved_sample_rate,
-                            channels=channels,
-                            dtype="float32",
-                        )
-                        with self._state_lock:
-                            self._stream = stream
-                        try:
-                            stream.start()
-                            stream.write(np.ascontiguousarray(playback_audio, dtype=np.float32))
-                            stream.stop()
-                        finally:
-                            with self._state_lock:
-                                if self._stream is stream:
-                                    self._stream = None
-                            stream.close()
-                        self._last_play_device = str(device_info["name"])
-                        return
-                    except Exception as exc:
-                        errors.append(f"{device_info['name']} [idx={device_index}, {channels}ch]: {exc}")
+            tried_indices: set[int] = set()
+            selected_candidates = self._find_output_devices(output_device_name)
+            if self._try_play_on_candidates(
+                candidates=selected_candidates,
+                audio=audio,
+                requested_sample_rate=requested_sample_rate,
+                errors=errors,
+                tried_indices=tried_indices,
+            ):
+                return
 
             if not errors:
                 raise ValueError(f"Output device not found: {output_device_name}")
             raise ValueError(
-                "Unable to play TTS audio on the selected output device or compatible fallback. "
+                "Unable to play TTS audio on the selected output device. "
                 + " | ".join(errors[:6])
             )
 
@@ -102,6 +78,8 @@ class AudioPlayback:
             self._volume = max(0.0, float(volume))
 
     def preview_resolved_sample_rate(self, output_device_name: str, requested_sample_rate: int) -> float:
+        if self._can_play_via_soundcard(output_device_name):
+            return float(requested_sample_rate)
         requested = float(requested_sample_rate)
         errors: list[str] = []
         for device_index, device_info in self._find_output_devices(output_device_name):
@@ -122,6 +100,176 @@ class AudioPlayback:
         if errors:
             raise ValueError(errors[0])
         raise ValueError(f"Output device not found or unavailable: {output_device_name}")
+
+    def _try_play_on_candidates(
+        self,
+        *,
+        candidates: list[tuple[int, dict[str, object]]],
+        audio: np.ndarray,
+        requested_sample_rate: float,
+        errors: list[str],
+        tried_indices: set[int],
+    ) -> bool:
+        for device_index, device_info in candidates:
+            tried_indices.add(device_index)
+            default_sample_rate = float(device_info["default_samplerate"])
+            max_output_channels = int(device_info["max_output_channels"])
+            prefer_stereo = self._should_prefer_stereo_output(str(device_info["name"]))
+            prefer_device_rate = self._should_prefer_device_sample_rate(str(device_info["name"]))
+            for playback_audio, channels in self._candidate_audio_variants(
+                audio=audio,
+                max_output_channels=max_output_channels,
+                prefer_stereo=prefer_stereo,
+            ):
+                try:
+                    resolved_sample_rate = self._resolve_supported_output_sample_rate(
+                        device_index=device_index,
+                        channels=channels,
+                        requested_sample_rate=requested_sample_rate,
+                        default_sample_rate=default_sample_rate,
+                        prefer_device_rate=prefer_device_rate,
+                    )
+                    playback_audio = self._resample_audio_if_needed(
+                        audio=playback_audio,
+                        source_sample_rate=requested_sample_rate,
+                        target_sample_rate=resolved_sample_rate,
+                    )
+                    playback_audio = self._apply_volume(playback_audio)
+                    hostapi_name = hostapi_name_by_index(int(device_info.get("hostapi", -1))).strip().lower()
+                    timeout_sec = max(3.0, float(playback_audio.shape[0]) / max(1.0, resolved_sample_rate) + 2.0)
+                    if hostapi_name == "windows wdm-ks":
+                        self._play_via_callback_stream(
+                            device_index=device_index,
+                            samplerate=resolved_sample_rate,
+                            channels=channels,
+                            audio=playback_audio,
+                            timeout_sec=timeout_sec,
+                        )
+                    else:
+                        stream = sd.OutputStream(
+                            device=device_index,
+                            samplerate=resolved_sample_rate,
+                            channels=channels,
+                            dtype="float32",
+                        )
+                        with self._state_lock:
+                            self._stream = stream
+                        try:
+                            stream.start()
+                            self._write_stream_blocking_with_timeout(
+                                stream=stream,
+                                audio=playback_audio,
+                                timeout_sec=timeout_sec,
+                            )
+                            stream.stop()
+                        finally:
+                            with self._state_lock:
+                                if self._stream is stream:
+                                    self._stream = None
+                            stream.close()
+                    self._last_play_device = str(device_info["name"])
+                    return True
+                except Exception as exc:
+                    errors.append(f"{device_info['name']} [idx={device_index}, {channels}ch]: {exc}")
+        return False
+
+    def _try_play_via_soundcard(self, *, audio: np.ndarray, sample_rate: float, output_device_name: str) -> bool:
+        if platform.system().lower() != "windows" or sc is None:
+            return False
+        if self._should_avoid_soundcard_backend(output_device_name):
+            return False
+
+        speaker = self._find_soundcard_speaker(output_device_name)
+        if speaker is None:
+            return False
+
+        requested_rate = int(round(sample_rate))
+        max_channels = 1 if audio.ndim == 1 else int(audio.shape[1])
+        candidate_rates: list[int] = []
+        for rate in (requested_rate, 48000, 44100, 24000):
+            if rate > 0 and rate not in candidate_rates:
+                candidate_rates.append(rate)
+
+        last_error: Exception | None = None
+        for channels in (2, 1):
+            if channels < max_channels:
+                continue
+            prepared_audio = self._prepare_soundcard_audio(audio=audio, channels=channels)
+            for rate in candidate_rates:
+                try:
+                    playback_audio = self._resample_audio_if_needed(
+                        audio=prepared_audio,
+                        source_sample_rate=sample_rate,
+                        target_sample_rate=float(rate),
+                    )
+                    playback_audio = self._apply_volume(playback_audio)
+                    with speaker.player(samplerate=rate, channels=channels, blocksize=1024) as player:
+                        player.play(playback_audio.astype(np.float32, copy=False))
+                    self._last_play_device = speaker.name
+                    return True
+                except Exception as exc:
+                    last_error = exc
+
+        if last_error is not None:
+            raise ValueError(f"Soundcard playback failed for {speaker.name}: {last_error}") from last_error
+        return False
+
+    def _can_play_via_soundcard(self, output_device_name: str) -> bool:
+        if self._should_avoid_soundcard_backend(output_device_name):
+            return False
+        return self._find_soundcard_speaker(output_device_name) is not None
+
+    @staticmethod
+    def _should_avoid_soundcard_backend(output_device_name: str) -> bool:
+        normalized = normalize_device_text(canonical_device_name(output_device_name))
+        return any(token in normalized for token in ("voicemeeter", "vb audio", "virtual"))
+
+    @staticmethod
+    def _find_soundcard_speaker(output_device_name: str):
+        if sc is None:
+            return None
+
+        target_name = canonical_device_name(output_device_name)
+        normalized_target = normalize_device_text(target_name)
+        target_tokens = device_tokens(target_name)
+        ranked: list[tuple[int, int, str, int, object]] = []
+        for speaker_index, speaker in enumerate(sc.all_speakers()):
+            name = str(getattr(speaker, "name", "") or "")
+            normalized_name = normalize_device_text(name)
+            name_tokens = device_tokens(name)
+            score = 0
+            if name == target_name:
+                score = 500
+            elif normalized_name == normalized_target:
+                score = 450
+            elif normalized_target and normalized_target in normalized_name:
+                score = 350
+            elif target_tokens and target_tokens.issubset(name_tokens):
+                score = 300 + len(target_tokens)
+            elif target_tokens:
+                overlap = len(target_tokens & name_tokens)
+                if overlap >= max(2, len(target_tokens) - 1):
+                    score = 200 + overlap
+            if score > 0:
+                extra_token_penalty = max(0, len(name_tokens) - len(target_tokens))
+                ranked.append((-score, extra_token_penalty, normalized_name, speaker_index, speaker))
+
+        ranked.sort()
+        return ranked[0][4] if ranked else None
+
+    @staticmethod
+    def _prepare_soundcard_audio(*, audio: np.ndarray, channels: int) -> np.ndarray:
+        base = audio.astype(np.float32, copy=False)
+        if base.ndim == 1:
+            mono = base.reshape(-1, 1)
+        elif base.ndim == 2:
+            mono = base[:, :1]
+        else:
+            raise ValueError(f"Unsupported audio shape for playback: {audio.shape}")
+
+        if channels <= 1:
+            return mono
+        return np.repeat(mono, channels, axis=1)
 
     @staticmethod
     def _find_output_devices(device_name: str) -> list[tuple[int, dict[str, object]]]:
@@ -159,7 +307,9 @@ class AudioPlayback:
             hostapi = int(item.get("hostapi", -1))
             if hostapi_name:
                 hostapi_matches = str(sd.query_hostapis()[hostapi].get("name", "")) == hostapi_name
-                hostapi_rank = 0 if hostapi_matches else 1
+                if not hostapi_matches:
+                    continue
+                hostapi_rank = 0
             else:
                 hostapi_rank = 0 if hostapi == preferred_hostapi else 1
             extra_token_penalty = max(0, len(name_tokens) - len(target_tokens))
@@ -167,6 +317,96 @@ class AudioPlayback:
 
         ranked.sort()
         return [(idx, item) for _, _, _, idx, item in ranked]
+
+    @staticmethod
+    def _write_stream_blocking_with_timeout(
+        *,
+        stream: sd.OutputStream,
+        audio: np.ndarray,
+        timeout_sec: float,
+    ) -> None:
+        contiguous_audio = np.ascontiguousarray(audio, dtype=np.float32)
+        failure: list[Exception] = []
+
+        def _writer() -> None:
+            try:
+                stream.write(contiguous_audio)
+            except Exception as exc:
+                failure.append(exc)
+
+        writer = Thread(target=_writer, daemon=True)
+        writer.start()
+        writer.join(timeout=max(0.5, timeout_sec))
+        if writer.is_alive():
+            try:
+                stream.abort()
+            except Exception:
+                pass
+            raise TimeoutError(f"Output stream write timed out after {timeout_sec:.1f}s")
+        if failure:
+            raise failure[0]
+
+    def _play_via_callback_stream(
+        self,
+        *,
+        device_index: int,
+        samplerate: float,
+        channels: int,
+        audio: np.ndarray,
+        timeout_sec: float,
+    ) -> None:
+        contiguous_audio = np.ascontiguousarray(audio, dtype=np.float32)
+        if contiguous_audio.ndim == 1:
+            contiguous_audio = contiguous_audio.reshape(-1, 1)
+        if contiguous_audio.shape[1] != channels:
+            if channels == 1:
+                contiguous_audio = contiguous_audio[:, :1]
+            else:
+                contiguous_audio = np.repeat(contiguous_audio[:, :1], channels, axis=1)
+
+        done = Event()
+        cursor = 0
+
+        def _callback(outdata: np.ndarray, frames: int, _time_info, status) -> None:
+            nonlocal cursor
+            if status:
+                # status may contain underflow flags even when playback proceeds.
+                pass
+            end = min(cursor + frames, contiguous_audio.shape[0])
+            chunk = contiguous_audio[cursor:end]
+            outdata[: len(chunk)] = chunk
+            if len(chunk) < frames:
+                outdata[len(chunk) :] = 0
+                done.set()
+                raise sd.CallbackStop()
+            cursor = end
+
+        stream = sd.OutputStream(
+            device=device_index,
+            samplerate=samplerate,
+            channels=channels,
+            dtype="float32",
+            callback=_callback,
+        )
+        with self._state_lock:
+            self._stream = stream
+        try:
+            stream.start()
+            deadline = time.monotonic() + max(0.5, timeout_sec)
+            while not done.is_set() and time.monotonic() < deadline:
+                sd.sleep(10)
+            if not done.is_set():
+                try:
+                    stream.abort()
+                except Exception:
+                    pass
+                raise TimeoutError(f"Output callback playback timed out after {timeout_sec:.1f}s")
+            stream.stop()
+        finally:
+            with self._state_lock:
+                if self._stream is stream:
+                    self._stream = None
+            stream.close()
 
     @staticmethod
     def _resolve_supported_output_sample_rate(

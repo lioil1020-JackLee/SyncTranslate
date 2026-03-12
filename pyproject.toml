@@ -12,6 +12,7 @@ dependencies = [
     "pycaw>=20251023",
     "pyside6>=6.9.3",
     "pyyaml>=6.0.3",
+    "soundcard>=0.4.5",
     "sounddevice>=0.5.2",
 ]
 
