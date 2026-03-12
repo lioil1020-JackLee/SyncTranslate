@@ -1,5 +1,6 @@
-# Generated from pyproject.toml
-# Main dependencies
+# SyncTranslate dependencies (mirror of pyproject.toml)
+
+# Core runtime
 comtypes>=1.4.16
 edge-tts>=7.2.3
 miniaudio>=1.61
@@ -10,8 +11,10 @@ pyyaml>=6.0.3
 soundcard>=0.4.5
 sounddevice>=0.5.2
 
-# For local ASR (if using local models)
+# Local ASR extra
 faster-whisper>=1.1.1
 
-# To install:
+# Preferred install methods:
+#   uv sync --extra local
+#   or
 #   python -m pip install -r requirements.txt
