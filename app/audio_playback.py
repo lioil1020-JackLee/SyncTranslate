@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from threading import Lock
+
 import numpy as np
 import sounddevice as sd
 
@@ -15,49 +17,85 @@ from app.audio_device_selection import (
 class AudioPlayback:
     def __init__(self) -> None:
         self._last_play_device: str = ""
+        self._volume = 1.0
+        self._state_lock = Lock()
+        self._play_lock = Lock()
+        self._stream: sd.OutputStream | None = None
 
     def play(self, audio: np.ndarray, sample_rate: int, output_device_name: str, *, blocking: bool = False) -> None:
         if audio.size == 0 or not output_device_name:
             return
         requested_sample_rate = float(sample_rate)
-        errors: list[str] = []
-        for device_index, device_info in self._find_output_devices(output_device_name):
-            default_sample_rate = float(device_info["default_samplerate"])
-            max_output_channels = int(device_info["max_output_channels"])
-            for playback_audio, channels in self._candidate_audio_variants(
-                audio=audio,
-                max_output_channels=max_output_channels,
-            ):
-                try:
-                    resolved_sample_rate = self._resolve_supported_output_sample_rate(
-                        device_index=device_index,
-                        channels=channels,
-                        requested_sample_rate=requested_sample_rate,
-                        default_sample_rate=default_sample_rate,
-                    )
-                    playback_audio = self._resample_audio_if_needed(
-                        audio=playback_audio,
-                        source_sample_rate=requested_sample_rate,
-                        target_sample_rate=resolved_sample_rate,
-                    )
-                    sd.stop()
-                    sd.play(playback_audio, samplerate=resolved_sample_rate, device=device_index, blocking=blocking)
-                    self._last_play_device = str(device_info["name"])
-                    return
-                except Exception as exc:
-                    errors.append(
-                        f"{device_info['name']} [idx={device_index}, {channels}ch]: {exc}"
-                    )
+        with self._play_lock:
+            self.stop()
+            errors: list[str] = []
+            for device_index, device_info in self._find_output_devices(output_device_name):
+                default_sample_rate = float(device_info["default_samplerate"])
+                max_output_channels = int(device_info["max_output_channels"])
+                for playback_audio, channels in self._candidate_audio_variants(
+                    audio=audio,
+                    max_output_channels=max_output_channels,
+                ):
+                    try:
+                        resolved_sample_rate = self._resolve_supported_output_sample_rate(
+                            device_index=device_index,
+                            channels=channels,
+                            requested_sample_rate=requested_sample_rate,
+                            default_sample_rate=default_sample_rate,
+                        )
+                        playback_audio = self._resample_audio_if_needed(
+                            audio=playback_audio,
+                            source_sample_rate=requested_sample_rate,
+                            target_sample_rate=resolved_sample_rate,
+                        )
+                        playback_audio = self._apply_volume(playback_audio)
+                        stream = sd.OutputStream(
+                            device=device_index,
+                            samplerate=resolved_sample_rate,
+                            channels=channels,
+                            dtype="float32",
+                        )
+                        with self._state_lock:
+                            self._stream = stream
+                        try:
+                            stream.start()
+                            stream.write(np.ascontiguousarray(playback_audio, dtype=np.float32))
+                            stream.stop()
+                        finally:
+                            with self._state_lock:
+                                if self._stream is stream:
+                                    self._stream = None
+                            stream.close()
+                        self._last_play_device = str(device_info["name"])
+                        return
+                    except Exception as exc:
+                        errors.append(f"{device_info['name']} [idx={device_index}, {channels}ch]: {exc}")
 
-        if not errors:
-            raise ValueError(f"Output device not found: {output_device_name}")
-        raise ValueError(
-            "Unable to play TTS audio on the selected output device or compatible fallback. "
-            + " | ".join(errors[:6])
-        )
+            if not errors:
+                raise ValueError(f"Output device not found: {output_device_name}")
+            raise ValueError(
+                "Unable to play TTS audio on the selected output device or compatible fallback. "
+                + " | ".join(errors[:6])
+            )
 
     def stop(self) -> None:
-        sd.stop()
+        with self._state_lock:
+            stream = self._stream
+            self._stream = None
+        if not stream:
+            return
+        try:
+            stream.abort()
+        except Exception:
+            pass
+        try:
+            stream.close()
+        except Exception:
+            pass
+
+    def set_volume(self, volume: float) -> None:
+        with self._state_lock:
+            self._volume = max(0.0, float(volume))
 
     def preview_resolved_sample_rate(self, output_device_name: str, requested_sample_rate: int) -> float:
         requested = float(requested_sample_rate)
@@ -219,3 +257,13 @@ class AudioPlayback:
         if squeeze:
             return dst[:, 0]
         return dst
+
+    def _apply_volume(self, audio: np.ndarray) -> np.ndarray:
+        with self._state_lock:
+            volume = self._volume
+        if volume == 1.0:
+            return audio.astype(np.float32, copy=False)
+        scaled = audio.astype(np.float32, copy=True)
+        scaled *= volume
+        np.clip(scaled, -1.0, 1.0, out=scaled)
+        return scaled

@@ -59,6 +59,8 @@ class TranslationStitcher:
         )
         if not translated:
             return None
+        if self._target_lang.lower().startswith("zh") and not _looks_like_displayable_zh_translation(translated):
+            return None
         self._context.append(text)
         if not event.is_final:
             self._last_partial_call_ms = now_ms
@@ -67,3 +69,23 @@ class TranslationStitcher:
         if should_speak:
             self._last_spoken = translated
         return StitchResult(text=translated, is_final=event.is_final, should_speak=should_speak)
+
+
+def _looks_like_displayable_zh_translation(text: str) -> bool:
+    value = (text or "").strip()
+    if not value:
+        return False
+    lowered = value.lower()
+    banned = (
+        "thinking process",
+        "analyze the request",
+        "common phrasing",
+        "interpretation",
+        "translation:",
+        "->",
+    )
+    if any(token in lowered for token in banned):
+        return False
+    cjk = sum("\u4e00" <= ch <= "\u9fff" for ch in value)
+    ascii_letters = sum(ch.isascii() and ch.isalpha() for ch in value)
+    return cjk > 0 and cjk >= max(2, ascii_letters // 2)

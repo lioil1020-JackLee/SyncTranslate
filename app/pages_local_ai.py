@@ -47,13 +47,13 @@ _OFFICIAL_FASTER_WHISPER_MODELS = [
 ]
 
 _EDGE_VOICE_OPTIONS: list[tuple[str, str]] = [
-    ("Chinese Female (TW) - HsiaoChen", "zh-TW-HsiaoChenNeural"),
-    ("Chinese Female (TW) - HsiaoYu", "zh-TW-HsiaoYuNeural"),
-    ("Chinese Male (TW) - YunJhe", "zh-TW-YunJheNeural"),
-    ("English Female (US) - Jenny", "en-US-JennyNeural"),
-    ("English Male (US) - Guy", "en-US-GuyNeural"),
-    ("English Female (UK) - Sonia", "en-GB-SoniaNeural"),
-    ("English Male (UK) - Ryan", "en-GB-RyanNeural"),
+    ("中文女聲（台灣）- HsiaoChen", "zh-TW-HsiaoChenNeural"),
+    ("中文女聲（台灣）- HsiaoYu", "zh-TW-HsiaoYuNeural"),
+    ("中文男聲（台灣）- YunJhe", "zh-TW-YunJheNeural"),
+    ("英文女聲（美國）- Jenny", "en-US-JennyNeural"),
+    ("英文男聲（美國）- Guy", "en-US-GuyNeural"),
+    ("英文女聲（英國）- Sonia", "en-GB-SoniaNeural"),
+    ("英文男聲（英國）- Ryan", "en-GB-RyanNeural"),
 ]
 
 
@@ -102,20 +102,35 @@ class LocalAiPage(QWidget):
 
         self.asr_group, asr_form = self._build_asr_group()
         self.llm_group, llm_form = self._build_llm_group()
-        self.meeting_tts = self._create_tts_widgets("Speaker Translation Voice")
-        self.local_tts = self._create_tts_widgets("Meeting Translation Voice")
+        self.meeting_tts = self._create_tts_widgets("喇叭翻譯語音")
+        self.local_tts = self._create_tts_widgets("會議翻譯語音")
         self.runtime_group, runtime_form = self._build_runtime_group()
 
-        self.runtime_status_label = QLabel("Runtime")
+        self.runtime_status_label = QLabel("執行狀態")
         self.runtime_status_label.setWordWrap(True)
         self.runtime_status_label.setStyleSheet("color: #b7bdc6;")
 
         self.runtime_hint_label = QLabel(
-            "Health check and warmup were moved to the Diagnostics tab.\n"
-            "This page now focuses on model and runtime settings."
+            "健康檢查與預熱已移到「音訊路由與診斷」頁。\n"
+            "這一頁專注在模型與執行參數設定。"
         )
         self.runtime_hint_label.setWordWrap(True)
         self.runtime_hint_label.setStyleSheet("color: #9aa3ad;")
+
+        self.runtime_detail_label = QLabel(
+            "參數說明\n"
+            "Beam 寬度：每次辨識保留的候選數。越大通常越準，但延遲與顯存占用也會增加。\n\n"
+            "局部更新間隔：partial 字幕多久刷新一次。太短會增加 ASR 負擔，太長則字幕反應較慢。\n\n"
+            "最短語音 / 最短靜音 / 語音補白：VAD 切段門檻。語速快或停頓短時，可適度降低最短靜音。\n\n"
+            "Trigger Token：partial 文字累積到多少詞後才送 LLM 翻譯，可減少過度頻繁的翻譯請求。\n\n"
+            "上下文項數：送進 LLM 的前文片段數量。越大越有上下文，但也更耗 token 與時間。\n\n"
+            "ASR 佇列：等待辨識的音訊塊數。太小容易丟音，太大表示延遲可能逐漸堆高。\n\n"
+            "LLM 佇列：等待翻譯的片段數。若常堆積，代表翻譯速度跟不上語音輸入。\n\n"
+            "TTS 佇列：等待播報的句子數。若持續增加，代表語音輸出速度慢於翻譯產生速度。\n\n"
+            "啟動時預熱：啟動程式後先做模型初始化，第一次真正開始翻譯時會比較快。"
+        )
+        self.runtime_detail_label.setWordWrap(True)
+        self.runtime_detail_label.setStyleSheet("color: #9aa3ad; line-height: 1.35;")
 
         left_grid = QGridLayout()
         left_grid.setContentsMargins(0, 0, 0, 0)
@@ -139,6 +154,7 @@ class LocalAiPage(QWidget):
         right_column.addWidget(self.runtime_group)
         right_column.addWidget(self.runtime_status_label)
         right_column.addWidget(self.runtime_hint_label)
+        right_column.addWidget(self.runtime_detail_label)
         right_column.addStretch(1)
 
         right_panel = QWidget()
@@ -250,7 +266,7 @@ class LocalAiPage(QWidget):
         self.asr_model_combo.setEditable(True)
         for model in self._discover_asr_models():
             self.asr_model_combo.addItem(model)
-        self.asr_model_combo.setToolTip("Local models/asr plus faster-whisper official model names")
+        self.asr_model_combo.setToolTip("本機 models/asr 與 faster-whisper 官方模型名稱")
 
         self.asr_device_combo = QComboBox()
         self.asr_device_combo.addItem("auto", "auto")
@@ -262,10 +278,10 @@ class LocalAiPage(QWidget):
 
         self.asr_beam_spin = QSpinBox()
         self.asr_beam_spin.setRange(1, 8)
-        self.asr_condition_prev_check = QCheckBox("Condition on previous text")
+        self.asr_condition_prev_check = QCheckBox("延續前文")
         self.asr_partial_interval_spin = QSpinBox()
         self.asr_partial_interval_spin.setRange(200, 5000)
-        self.asr_vad_enabled = QCheckBox("Enable VAD")
+        self.asr_vad_enabled = QCheckBox("啟用 VAD")
         self.asr_min_speech_spin = QSpinBox()
         self.asr_min_speech_spin.setRange(100, 4000)
         self.asr_min_silence_spin = QSpinBox()
@@ -277,19 +293,19 @@ class LocalAiPage(QWidget):
 
         form = QFormLayout()
         self._configure_form_layout(form)
-        form.addRow("Model", self.asr_model_combo)
-        form.addRow("Device", self.asr_device_combo)
-        form.addRow("Compute", self.asr_compute_label)
-        form.addRow("Beam", self.asr_beam_spin)
+        form.addRow("模型", self.asr_model_combo)
+        form.addRow("裝置", self.asr_device_combo)
+        form.addRow("精度", self.asr_compute_label)
+        form.addRow("Beam 寬度", self.asr_beam_spin)
         form.addRow("", self.asr_condition_prev_check)
-        form.addRow("Partial Interval (ms)", self.asr_partial_interval_spin)
+        form.addRow("局部更新間隔(ms)", self.asr_partial_interval_spin)
         form.addRow("", self.asr_vad_enabled)
-        form.addRow("Min Speech (ms)", self.asr_min_speech_spin)
-        form.addRow("Min Silence (ms)", self.asr_min_silence_spin)
-        form.addRow("Speech Padding (ms)", self.asr_speech_pad_spin)
-        form.addRow("Max Speech (s)", self.asr_max_speech_spin)
+        form.addRow("最短語音(ms)", self.asr_min_speech_spin)
+        form.addRow("最短靜音(ms)", self.asr_min_silence_spin)
+        form.addRow("語音補白(ms)", self.asr_speech_pad_spin)
+        form.addRow("最長語音(s)", self.asr_max_speech_spin)
 
-        group = QGroupBox("ASR (faster-whisper)")
+        group = QGroupBox("語音辨識 ASR")
         group.setLayout(form)
         return group, form
 
@@ -301,7 +317,7 @@ class LocalAiPage(QWidget):
         self.llm_url_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.llm_model_combo = QComboBox()
         self.llm_model_combo.setEditable(True)
-        self.llm_reload_models_btn = QPushButton("Reload Models")
+        self.llm_reload_models_btn = QPushButton("重新載入模型")
         self.llm_timeout_spin = QSpinBox()
         self.llm_timeout_spin.setRange(5, 120)
         self.llm_temperature_spin = QDoubleSpinBox()
@@ -319,17 +335,17 @@ class LocalAiPage(QWidget):
 
         form = QFormLayout()
         self._configure_form_layout(form)
-        form.addRow("Backend", self.llm_backend_combo)
-        form.addRow("Server URL", self.llm_url_label)
-        form.addRow("Model", self.llm_model_combo)
+        form.addRow("後端", self.llm_backend_combo)
+        form.addRow("服務位址", self.llm_url_label)
+        form.addRow("模型", self.llm_model_combo)
         form.addRow("", self.llm_reload_models_btn)
-        form.addRow("Timeout (s)", self.llm_timeout_spin)
-        form.addRow("Temperature", self.llm_temperature_spin)
+        form.addRow("逾時(秒)", self.llm_timeout_spin)
+        form.addRow("溫度", self.llm_temperature_spin)
         form.addRow("Top P", self.llm_top_p_spin)
-        form.addRow("Trigger Token", self.llm_trigger_tokens_spin)
-        form.addRow("Context Items", self.llm_context_items_spin)
+        form.addRow("觸發 Token", self.llm_trigger_tokens_spin)
+        form.addRow("上下文項數", self.llm_context_items_spin)
 
-        group = QGroupBox("LLM")
+        group = QGroupBox("翻譯模型 LLM")
         group.setLayout(form)
         return group, form
 
@@ -338,7 +354,7 @@ class LocalAiPage(QWidget):
         self.runtime_sample_rate_spin.setRange(8000, 192000)
         self.runtime_chunk_spin = QSpinBox()
         self.runtime_chunk_spin.setRange(20, 1000)
-        self.runtime_warmup_check = QCheckBox("Warmup on Start")
+        self.runtime_warmup_check = QCheckBox("啟動時預熱")
         self.runtime_asr_q_spin = QSpinBox()
         self.runtime_asr_q_spin.setRange(8, 512)
         self.runtime_llm_q_spin = QSpinBox()
@@ -348,21 +364,21 @@ class LocalAiPage(QWidget):
 
         form = QFormLayout()
         self._configure_form_layout(form)
-        form.addRow("Sample Rate", self.runtime_sample_rate_spin)
-        form.addRow("Chunk (ms)", self.runtime_chunk_spin)
+        form.addRow("執行取樣率", self.runtime_sample_rate_spin)
+        form.addRow("音訊切片(ms)", self.runtime_chunk_spin)
         form.addRow("", self.runtime_warmup_check)
-        form.addRow("ASR Queue", self.runtime_asr_q_spin)
-        form.addRow("LLM Queue", self.runtime_llm_q_spin)
-        form.addRow("TTS Queue", self.runtime_tts_q_spin)
+        form.addRow("ASR 佇列", self.runtime_asr_q_spin)
+        form.addRow("LLM 佇列", self.runtime_llm_q_spin)
+        form.addRow("TTS 佇列", self.runtime_tts_q_spin)
 
-        group = QGroupBox("Runtime")
+        group = QGroupBox("執行階段")
         group.setLayout(form)
         return group, form
 
     def _create_tts_widgets(self, title: str) -> TtsWidgets:
         engine_combo = QComboBox()
-        engine_combo.addItem("Piper (Local)", "piper")
-        engine_combo.addItem("Edge TTS", "edge_tts")
+        engine_combo.addItem("Piper（本機）", "piper")
+        engine_combo.addItem("Edge TTS（雲端）", "edge_tts")
 
         edge_voice_combo = QComboBox()
         for label, voice_name in _EDGE_VOICE_OPTIONS:
@@ -390,7 +406,7 @@ class LocalAiPage(QWidget):
         for editor in (exec_edit, model_edit, config_edit):
             editor.setReadOnly(True)
             editor.setCursor(Qt.CursorShape.PointingHandCursor)
-            editor.setToolTip("Click to pick a file")
+            editor.setToolTip("點一下選擇檔案")
             self._set_uniform_field_style(editor, minimum_width=180)
 
         for compact in (
@@ -406,16 +422,16 @@ class LocalAiPage(QWidget):
 
         form = QFormLayout()
         self._configure_form_layout(form)
-        form.addRow("Engine", engine_combo)
-        form.addRow("Edge Voice", edge_voice_combo)
-        form.addRow("Piper Executable", exec_edit)
-        form.addRow("Model Path", model_edit)
-        form.addRow("Config Path", config_edit)
-        form.addRow("Piper Speaker", speaker_combo)
-        form.addRow("Length Scale", length_scale_spin)
-        form.addRow("Noise Scale", noise_scale_spin)
-        form.addRow("Noise W", noise_w_spin)
-        form.addRow("Sample Rate", sample_rate_spin)
+        form.addRow("引擎", engine_combo)
+        form.addRow("Edge 聲線", edge_voice_combo)
+        form.addRow("Piper 執行檔", exec_edit)
+        form.addRow("模型路徑", model_edit)
+        form.addRow("設定檔路徑", config_edit)
+        form.addRow("Piper 聲線", speaker_combo)
+        form.addRow("語速 Length Scale", length_scale_spin)
+        form.addRow("隨機度 Noise Scale", noise_scale_spin)
+        form.addRow("音色 Noise W", noise_w_spin)
+        form.addRow("取樣率", sample_rate_spin)
 
         group = QGroupBox(title)
         group.setLayout(form)
@@ -491,13 +507,13 @@ class LocalAiPage(QWidget):
         ):
             self._connect_change_signal(widget)
 
-        self._bind_tts_widget_events(self.meeting_tts, "speaker")
-        self._bind_tts_widget_events(self.local_tts, "meeting")
+        self._bind_tts_widget_events(self.meeting_tts, "喇叭")
+        self._bind_tts_widget_events(self.local_tts, "會議")
 
     def _bind_tts_widget_events(self, widgets: TtsWidgets, title: str) -> None:
-        widgets.exec_edit.set_picker(lambda: self._pick_path(widgets.exec_edit, f"Select {title} Piper executable", True))
-        widgets.model_edit.set_picker(lambda: self._pick_path(widgets.model_edit, f"Select {title} TTS model", False))
-        widgets.config_edit.set_picker(lambda: self._pick_path(widgets.config_edit, f"Select {title} TTS config", False))
+        widgets.exec_edit.set_picker(lambda: self._pick_path(widgets.exec_edit, f"選擇{title} Piper 執行檔", True))
+        widgets.model_edit.set_picker(lambda: self._pick_path(widgets.model_edit, f"選擇{title} TTS 模型", False))
+        widgets.config_edit.set_picker(lambda: self._pick_path(widgets.config_edit, f"選擇{title} TTS 設定檔", False))
         widgets.config_edit.textChanged.connect(lambda *_: self._reload_tts_speaker_options(widgets))
         for widget in (
             widgets.engine_combo,
@@ -542,7 +558,7 @@ class LocalAiPage(QWidget):
     def _reload_tts_speaker_options(self, widgets: TtsWidgets, selected_id: int | None = None) -> None:
         speaker_rows = self._load_speaker_rows_from_tts_config(widgets.config_edit.text().strip())
         if not speaker_rows:
-            speaker_rows = [("Default Speaker", 0)]
+            speaker_rows = [("預設聲線", 0)]
 
         current_id = selected_id
         if current_id is None and widgets.speaker_combo.currentData() is not None:
@@ -573,7 +589,7 @@ class LocalAiPage(QWidget):
             rows: list[tuple[str, int]] = []
             for name, sid in speaker_map.items():
                 try:
-                    rows.append((f"Speaker: {name}", int(sid)))
+                    rows.append((f"聲線：{name}", int(sid)))
                 except Exception:
                     continue
             rows.sort(key=lambda row: row[1])
@@ -584,10 +600,10 @@ class LocalAiPage(QWidget):
             rows = []
             for idx, item in enumerate(speakers):
                 if isinstance(item, dict):
-                    name = str(item.get("name") or item.get("speaker") or f"Speaker {idx + 1}")
+                    name = str(item.get("name") or item.get("speaker") or f"聲線 {idx + 1}")
                 else:
                     name = str(item)
-                rows.append((f"Speaker: {name}", idx))
+                rows.append((f"聲線：{name}", idx))
             return rows
 
         return []
@@ -599,7 +615,7 @@ class LocalAiPage(QWidget):
         url = self._backend_url(backend)
         self._model_loading = True
         self.llm_reload_models_btn.setEnabled(False)
-        self.llm_reload_models_btn.setText("Loading...")
+        self.llm_reload_models_btn.setText("載入中...")
 
         def _worker() -> None:
             try:
@@ -619,16 +635,16 @@ class LocalAiPage(QWidget):
 
         self._model_loading = False
         self.llm_reload_models_btn.setEnabled(True)
-        self.llm_reload_models_btn.setText("Reload Models")
+        self.llm_reload_models_btn.setText("重新載入模型")
 
         if not ok:
-            self.runtime_status_label.setText(f"LLM model load failed: {payload}")
+            self.runtime_status_label.setText(f"LLM 模型載入失敗：{payload}")
             return
 
         current = self.llm_model_combo.currentText().strip()
         models = payload if isinstance(payload, list) else []
         if not models:
-            self.runtime_status_label.setText("No LLM models found")
+            self.runtime_status_label.setText("找不到可用的 LLM 模型")
             self.llm_model_combo.clear()
             return
 

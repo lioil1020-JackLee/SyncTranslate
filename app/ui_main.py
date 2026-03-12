@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime
+import json
 from pathlib import Path
 from queue import Empty, Queue
+import subprocess
+import sys
 from threading import Lock
 from threading import Thread
 import time
@@ -17,7 +20,7 @@ from app.audio_playback import AudioPlayback
 from app.debug_panel import DebugPanel
 from app.device_manager import DeviceManager
 from app.local_ai.faster_whisper_engine import FasterWhisperEngine
-from app.local_ai.healthcheck import run_local_healthcheck
+from app.local_ai.healthcheck import LocalHealthReport
 from app.local_ai.ollama_client import OllamaClient
 from app.local_ai.streaming_asr import StreamingAsr
 from app.local_ai.tts_factory import create_tts_engine
@@ -58,6 +61,10 @@ class MainWindow(QMainWindow):
         self._health_check_timeout_sec = 45.0
         self._session_action_running = False
         self._session_action_queue: Queue[tuple[str, bool, object]] = Queue()
+        self._pending_live_apply = False
+        self._pipelines_dirty = False
+        self._volume_sync_queue: Queue[dict[str, float | None]] = Queue(maxsize=1)
+        self._volume_sync_running = False
 
         self.setWindowTitle("SyncTranslate - Local AI Runtime")
         self._set_window_icon()
@@ -91,7 +98,7 @@ class MainWindow(QMainWindow):
 
         self.tabs.addTab(self._wrap_in_scroll_area(self.io_control_page), "音訊路由與診斷")
         self.tabs.addTab(self._wrap_in_scroll_area(self.live_caption_page), "即時字幕")
-        self.tabs.addTab(self.local_ai_page, "本地 AI")
+        self.tabs.addTab(self.local_ai_page, "參數設定")
         self.tabs.addTab(self._wrap_in_scroll_area(self.debug_panel), "除錯")
         self.setCentralWidget(self.tabs)
         self._build_pipelines_from_config()
@@ -113,6 +120,10 @@ class MainWindow(QMainWindow):
         self.caption_timer.setInterval(300)
         self.caption_timer.timeout.connect(self.refresh_live_caption)
         self.caption_timer.start()
+        self.volume_sync_timer = QTimer(self)
+        self.volume_sync_timer.setInterval(1500)
+        self.volume_sync_timer.timeout.connect(self._sync_system_volume_sliders)
+        self.volume_sync_timer.start()
         self.health_timer = QTimer(self)
         self.health_timer.setInterval(120)
         self.health_timer.timeout.connect(self._drain_health_check_results)
@@ -138,6 +149,7 @@ class MainWindow(QMainWindow):
             self.audio_routing_page.apply_config(self.config)
             self.live_caption_page.apply_config(self.config)
             self.local_ai_page.apply_config(self.config)
+            self._apply_audio_route_levels()
         finally:
             self._suspend_live_apply = False
 
@@ -145,6 +157,50 @@ class MainWindow(QMainWindow):
             f"Config: {self.config_path} | input={len(input_devices)} output={len(output_devices)}"
         )
         self.validate_current_routes()
+
+    def _sync_system_volume_sliders(self) -> None:
+        self._drain_volume_sync_results()
+        if self._volume_sync_running:
+            return
+        routes = self.audio_routing_page.selected_audio_routes()
+        self._volume_sync_running = True
+
+        def _worker() -> None:
+            result: dict[str, float | None]
+            try:
+                from app.windows_volume import get_input_volume, get_output_volume
+
+                result = {
+                    "meeting_in": None if self.audio_routing_page._should_skip_system_sync(routes.meeting_in) else get_input_volume(routes.meeting_in),
+                    "microphone_in": None if self.audio_routing_page._should_skip_system_sync(routes.microphone_in) else get_input_volume(routes.microphone_in),
+                    "speaker_out": None if self.audio_routing_page._should_skip_system_sync(routes.speaker_out) else get_output_volume(routes.speaker_out),
+                    "meeting_out": None if self.audio_routing_page._should_skip_system_sync(routes.meeting_out) else get_output_volume(routes.meeting_out),
+                }
+            except Exception as exc:
+                self._report_error(f"volume_sync failed: {exc}")
+                result = {
+                    "meeting_in": None,
+                    "microphone_in": None,
+                    "speaker_out": None,
+                    "meeting_out": None,
+                }
+            try:
+                while not self._volume_sync_queue.empty():
+                    self._volume_sync_queue.get_nowait()
+            except Empty:
+                pass
+            self._volume_sync_queue.put(result)
+
+        Thread(target=_worker, daemon=True).start()
+
+    def _drain_volume_sync_results(self) -> None:
+        try:
+            result = self._volume_sync_queue.get_nowait()
+        except Empty:
+            return
+        self._volume_sync_running = False
+        if self.audio_routing_page.sync_system_volume_sliders(result):
+            self._apply_audio_route_levels_from_ui()
 
     def apply_banana_preset(self) -> None:
         self.config.audio.meeting_in = "Windows DirectSound::Voicemeeter Out B2 (VB-Audio Voicemeeter VAIO)"
@@ -162,7 +218,8 @@ class MainWindow(QMainWindow):
         if self.session_controller:
             self.session_controller.stop()
         self.config = load_config(self.config_path)
-        self._build_pipelines_from_config()
+        self._pipelines_dirty = True
+        self._ensure_pipelines_ready()
         self.refresh_from_system()
         self.audio_routing_page.set_status(f"已重載設定: {self.config_path}")
 
@@ -186,6 +243,7 @@ class MainWindow(QMainWindow):
             self.audio_routing_page.set_status("路由檢查: Error，請到除錯頁查看")
     def _on_audio_routing_changed(self) -> None:
         self.validate_current_routes()
+        self._apply_audio_route_levels_from_ui()
         self._schedule_live_apply()
 
     def _on_local_ai_changed(self) -> None:
@@ -197,20 +255,36 @@ class MainWindow(QMainWindow):
     def _schedule_live_apply(self) -> None:
         if not self._live_apply_ready or self._suspend_live_apply:
             return
+        if self._session_action_running:
+            self._pending_live_apply = True
+            self.statusBar().showMessage("設定變更已暫存，等待目前的啟動/停止動作完成後套用")
+            return
+        if self.session_controller and self.session_controller.is_running():
+            self._pending_live_apply = True
+            self.statusBar().showMessage("設定變更已暫存，請先停止 session，程式會在停止後自動套用")
+            return
         self._live_apply_timer.start()
 
     def _apply_live_config_now(self) -> None:
         if not self._live_apply_ready:
             return
+        if self._session_action_running:
+            self._pending_live_apply = True
+            return
         if self._live_apply_timer.isActive():
             self._live_apply_timer.stop()
 
         was_running = self.session_controller.is_running() if self.session_controller else False
+        if was_running:
+            self._pending_live_apply = True
+            self.statusBar().showMessage("設定變更已暫存，請先停止 session，程式會在停止後自動套用")
+            return
         route = self.audio_routing_page.selected_audio_routes()
         mode = self.audio_routing_page.selected_mode()
         try:
+            self._pending_live_apply = False
             self._sync_ui_to_config()
-            self._build_pipelines_from_config()
+            self._pipelines_dirty = True
             path = self._save_config_to_disk()
 
             if was_running and self.session_controller:
@@ -231,7 +305,10 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"設定套用失敗: {exc}")
 
     def start_session(self) -> None:
-        if not self.session_controller or self._session_action_running:
+        if self._session_action_running:
+            return
+        self._ensure_pipelines_ready()
+        if not self.session_controller:
             return
         if self.session_controller.is_running():
             self._run_session_action("stop")
@@ -241,7 +318,8 @@ class MainWindow(QMainWindow):
         mode = self.audio_routing_page.selected_mode()
         try:
             self._sync_ui_to_config()
-            self._build_pipelines_from_config()
+            self._pipelines_dirty = True
+            self._ensure_pipelines_ready()
             self._save_config_to_disk()
             self._run_session_action(
                 "start",
@@ -377,6 +455,7 @@ class MainWindow(QMainWindow):
     def test_meeting_tts_output(self) -> None:
         device_name = self._get_meeting_output_device()
         try:
+            self._sync_ui_to_config()
             audio, sample_rate, engine_label = self._build_output_test_audio(
                 primary_tts=self.config.local_tts,
                 text="會議輸出測試",
@@ -395,6 +474,7 @@ class MainWindow(QMainWindow):
     def test_speaker_tts_output(self) -> None:
         device_name = self._get_speaker_output_device()
         try:
+            self._sync_ui_to_config()
             audio, sample_rate, engine_label = self._build_output_test_audio(
                 primary_tts=self.config.meeting_tts,
                 text="喇叭測試",
@@ -408,7 +488,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"本地喇叭測試完成: {device_name} ({engine_label})")
         except Exception as exc:
             self._report_error(f"test_speaker_tts_output failed: {exc}")
-            QMessageBox.critical(self, "測試失敗", str(exc))
+            QMessageBox.critical(self, "測試失敗", self._format_playback_error(exc))
 
     @staticmethod
     def _format_transcript_line(text: str, is_final: bool) -> str:
@@ -421,8 +501,16 @@ class MainWindow(QMainWindow):
 
     def _report_error(self, message: str) -> None:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log_path = Path("logs") / "runtime_events.log"
+        log_path.parent.mkdir(exist_ok=True)
         with self._error_lock:
-            self.recent_errors.append(f"{timestamp} {message}")
+            line = f"{timestamp} {message}"
+            self.recent_errors.append(line)
+        try:
+            with log_path.open("a", encoding="utf-8") as fp:
+                fp.write(line + "\n")
+        except Exception:
+            pass
 
     def export_diagnostics(self) -> None:
         now = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -487,6 +575,16 @@ class MainWindow(QMainWindow):
             tts_config=self.config.local_tts,
         )
         self.session_controller = SessionController(self.meeting_pipeline, self.local_pipeline)
+        self._pipelines_dirty = False
+
+    def _ensure_pipelines_ready(self) -> None:
+        if (
+            self.session_controller is None
+            or self.meeting_pipeline is None
+            or self.local_pipeline is None
+            or self._pipelines_dirty
+        ):
+            self._build_pipelines_from_config()
 
     def _create_pipeline(
         self,
@@ -563,33 +661,38 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("health check 進行中")
             return
         self._sync_ui_to_config()
-        asr = FasterWhisperEngine(
-            model=self.config.asr.model,
-            device=self.config.asr.device,
-            compute_type=self.config.asr.compute_type,
-            beam_size=self.config.asr.beam_size,
-            condition_on_previous_text=self.config.asr.condition_on_previous_text,
-            language=self.config.language.meeting_source,
-        )
-        llm = OllamaClient(
-            backend=self.config.llm.backend,
-            base_url=self.config.llm.base_url,
-            model=self.config.llm.model,
-            temperature=self.config.llm.temperature,
-            top_p=self.config.llm.top_p,
-            request_timeout_sec=self.config.llm.request_timeout_sec,
-        )
-        tts = self._create_tts_engine(self.config.meeting_tts)
+        config_path = str(self._save_config_to_disk())
         self._health_check_running = True
         self._health_check_started_at = time.monotonic()
-        self.local_ai_page.set_runtime_status("health: RUNNING")
-        self.diagnostics_page.set_health_summary("health: RUNNING")
-        self.diagnostics_page.set_health_details("health check running...")
-        self.statusBar().showMessage("health check running...")
+        self.local_ai_page.set_runtime_status("健康檢查進行中")
+        self.diagnostics_page.set_health_summary("健康檢查：進行中")
+        self.diagnostics_page.set_health_details("健康檢查進行中...")
+        self.statusBar().showMessage("健康檢查進行中...")
 
         def _worker() -> None:
             try:
-                report = run_local_healthcheck(asr_engine=asr, llm_client=llm, tts_engine=tts, warmup=warmup)
+                completed = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "app.local_ai.healthcheck_worker",
+                        config_path,
+                        "true" if warmup else "false",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    cwd=str(Path(__file__).resolve().parent.parent),
+                )
+                if completed.returncode != 0:
+                    stderr = (completed.stderr or "").strip()
+                    stdout = (completed.stdout or "").strip()
+                    detail = stderr or stdout or f"health check subprocess exited with code {completed.returncode}"
+                    raise RuntimeError(detail)
+                payload = (completed.stdout or "").strip()
+                if not payload:
+                    raise RuntimeError("health check subprocess returned no result")
+                report = LocalHealthReport(**json.loads(payload))
                 self._health_check_queue.put((True, report))
             except Exception as exc:
                 self._health_check_queue.put((False, exc))
@@ -603,8 +706,8 @@ class MainWindow(QMainWindow):
         if elapsed >= self._health_check_timeout_sec:
             self._health_check_running = False
             self._health_check_started_at = 0.0
-            summary = "health: FAILED"
-            message = f"health check timeout after {int(self._health_check_timeout_sec)}s"
+            summary = "健康檢查：失敗"
+            message = f"健康檢查逾時，超過 {int(self._health_check_timeout_sec)} 秒"
             self.local_ai_page.set_runtime_status(summary)
             self.diagnostics_page.set_health_summary(summary)
             self.diagnostics_page.set_health_details(message)
@@ -619,7 +722,7 @@ class MainWindow(QMainWindow):
         self._health_check_started_at = 0.0
         if not ok:
             message = str(payload)
-            summary = "health: FAILED"
+            summary = "健康檢查：失敗"
             self.local_ai_page.set_runtime_status(summary)
             self.diagnostics_page.set_health_summary(summary)
             self.diagnostics_page.set_health_details(message)
@@ -628,12 +731,12 @@ class MainWindow(QMainWindow):
             return
 
         report = payload
-        summary = "health: OK" if report.ok else "health: FAILED"
+        summary = "健康檢查：正常" if report.ok else "健康檢查：失敗"
         detail = "\n".join(
             [
-                f"ASR: {'OK' if report.asr_ok else 'FAIL'} - {report.asr_message}",
-                f"LLM: {'OK' if report.llm_ok else 'FAIL'} - {report.llm_message}",
-                f"TTS: {'OK' if report.tts_ok else 'FAIL'} - {report.tts_message}",
+                f"ASR：{'正常' if report.asr_ok else '失敗'} - {report.asr_message}",
+                f"LLM：{'正常' if report.llm_ok else '失敗'} - {report.llm_message}",
+                f"TTS：{'正常' if report.tts_ok else '失敗'} - {report.tts_message}",
             ]
         )
         self.local_ai_page.set_runtime_status(summary)
@@ -708,6 +811,8 @@ class MainWindow(QMainWindow):
 
         self.statusBar().showMessage(result.message)
         self.validate_current_routes()
+        if action == "stop" and self._pending_live_apply:
+            QTimer.singleShot(0, self._apply_live_config_now)
 
     def _get_recent_errors(self) -> list[str]:
         with self._error_lock:
@@ -743,9 +848,23 @@ class MainWindow(QMainWindow):
 
     def _sync_ui_to_config(self) -> None:
         self.config.audio = self.audio_routing_page.selected_audio_routes()
+        self._apply_audio_route_levels()
         self.config.direction.mode = self.audio_routing_page.selected_mode()
         self.live_caption_page.update_config(self.config)
         self.local_ai_page.update_config(self.config)
+
+    def _apply_audio_route_levels(self) -> None:
+        self.meeting_capture.set_gain(self.config.audio.meeting_in_gain)
+        self.local_capture.set_gain(self.config.audio.microphone_in_gain)
+        self.speaker_playback.set_volume(self.config.audio.speaker_out_volume)
+        self.meeting_playback.set_volume(self.config.audio.meeting_out_volume)
+
+    def _apply_audio_route_levels_from_ui(self) -> None:
+        audio = self.audio_routing_page.selected_audio_routes()
+        self.meeting_capture.set_gain(audio.meeting_in_gain)
+        self.local_capture.set_gain(audio.microphone_in_gain)
+        self.speaker_playback.set_volume(audio.speaker_out_volume)
+        self.meeting_playback.set_volume(audio.meeting_out_volume)
 
     def _save_config_to_disk(self) -> Path:
         return save_config(self.config, self.config_path)
@@ -816,6 +935,13 @@ class MainWindow(QMainWindow):
         t = np.linspace(0.0, duration, int(sample_rate * duration), endpoint=False)
         wave = 0.18 * np.sin(2 * np.pi * 523.25 * t)
         return wave.reshape(-1, 1).astype(np.float32)
+
+    @staticmethod
+    def _format_playback_error(exc: Exception) -> str:
+        text = str(exc).strip()
+        if "Unable to play TTS audio" in text:
+            return "無法在選定的喇叭輸出播放測試音。請改選可用的喇叭或耳機裝置。\n\n詳細資訊:\n" + text
+        return text
 
     @staticmethod
     def _tts_test_text(language: str) -> str:

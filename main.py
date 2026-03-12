@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import faulthandler
 from pathlib import Path
 import sys
+import threading
+import traceback
 
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
@@ -10,6 +13,9 @@ from PySide6.QtWidgets import QApplication
 from app.device_manager import DeviceManager
 from app.settings import load_config
 from app.ui_main import MainWindow
+
+
+_FAULT_LOG_HANDLE = None
 
 
 def _apply_windows_app_id() -> None:
@@ -23,7 +29,34 @@ def _apply_windows_app_id() -> None:
         return
 
 
+def _configure_runtime_logging() -> None:
+    global _FAULT_LOG_HANDLE
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
+    fault_path = log_dir / "runtime_crash.log"
+    _FAULT_LOG_HANDLE = fault_path.open("a", encoding="utf-8")
+    _FAULT_LOG_HANDLE.write(f"\n===== startup {Path.cwd()} =====\n")
+    _FAULT_LOG_HANDLE.flush()
+    faulthandler.enable(_FAULT_LOG_HANDLE, all_threads=True)
+
+    def _log_exception(prefix: str, exc_type, exc_value, exc_tb) -> None:
+        _FAULT_LOG_HANDLE.write(prefix + "\n")
+        traceback.print_exception(exc_type, exc_value, exc_tb, file=_FAULT_LOG_HANDLE)
+        _FAULT_LOG_HANDLE.flush()
+
+    def _sys_excepthook(exc_type, exc_value, exc_tb) -> None:
+        _log_exception("Unhandled exception", exc_type, exc_value, exc_tb)
+        sys.__excepthook__(exc_type, exc_value, exc_tb)
+
+    def _threading_excepthook(args: threading.ExceptHookArgs) -> None:
+        _log_exception(f"Unhandled thread exception: {args.thread.name if args.thread else 'unknown'}", args.exc_type, args.exc_value, args.exc_traceback)
+
+    sys.excepthook = _sys_excepthook
+    threading.excepthook = _threading_excepthook
+
+
 def main() -> int:
+    _configure_runtime_logging()
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config.yaml")
     parser.add_argument("--check", action="store_true", help="Run config + device checks without opening the UI")

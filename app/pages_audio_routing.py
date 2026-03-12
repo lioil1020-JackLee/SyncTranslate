@@ -2,10 +2,21 @@ from __future__ import annotations
 
 from typing import Callable
 
-from PySide6.QtWidgets import QComboBox, QFormLayout, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
+    QComboBox,
+    QFormLayout,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSlider,
+    QVBoxLayout,
+    QWidget,
+)
 
 from app.audio_device_selection import canonical_device_name, encode_device_selector, hostapi_sort_key, parse_device_selector
 from app.schemas import AppConfig, AudioRouteConfig, DeviceInfo
+from app.windows_volume import get_input_volume, get_output_volume
 
 
 class AudioRoutingPage(QWidget):
@@ -23,15 +34,24 @@ class AudioRoutingPage(QWidget):
         self._on_route_changed = on_route_changed
         self._input_devices: list[DeviceInfo] = []
         self._output_devices: list[DeviceInfo] = []
+        self._system_volume_initialized = False
 
         self.meeting_in_hostapi_combo = QComboBox()
         self.meeting_in_combo = QComboBox()
         self.microphone_in_hostapi_combo = QComboBox()
         self.microphone_in_combo = QComboBox()
+        self.microphone_in_volume_slider = self._create_volume_slider()
+        self.microphone_in_volume_label = QLabel()
         self.speaker_out_hostapi_combo = QComboBox()
         self.speaker_out_combo = QComboBox()
+        self.speaker_out_volume_slider = self._create_volume_slider()
+        self.speaker_out_volume_label = QLabel()
         self.meeting_out_hostapi_combo = QComboBox()
         self.meeting_out_combo = QComboBox()
+        self.meeting_in_volume_slider = self._create_volume_slider()
+        self.meeting_in_volume_label = QLabel()
+        self.meeting_out_volume_slider = self._create_volume_slider()
+        self.meeting_out_volume_label = QLabel()
         self.direction_mode_combo = QComboBox()
 
         self.direction_mode_combo.addItem("\u9060\u7aef -> \u672c\u5730", "meeting_to_local")
@@ -51,6 +71,15 @@ class AudioRoutingPage(QWidget):
         ):
             combo.currentIndexChanged.connect(self._on_route_changed)
 
+        for slider, label in (
+            (self.meeting_in_volume_slider, self.meeting_in_volume_label),
+            (self.microphone_in_volume_slider, self.microphone_in_volume_label),
+            (self.speaker_out_volume_slider, self.speaker_out_volume_label),
+            (self.meeting_out_volume_slider, self.meeting_out_volume_label),
+        ):
+            slider.valueChanged.connect(lambda value, target=label: target.setText(f"{value}%"))
+            slider.valueChanged.connect(self._on_route_changed)
+
         self.meeting_in_hostapi_combo.currentIndexChanged.connect(self._refresh_meeting_in_combo)
         self.microphone_in_hostapi_combo.currentIndexChanged.connect(self._refresh_microphone_in_combo)
         self.speaker_out_hostapi_combo.currentIndexChanged.connect(self._refresh_speaker_out_combo)
@@ -58,13 +87,42 @@ class AudioRoutingPage(QWidget):
         self.status_label = QLabel("\u97f3\u8a0a\u8def\u7531\u8a2d\u5b9a")
 
         form = QFormLayout()
-        form.addRow("\u9060\u7aef\u8f38\u5165", self._build_route_selector_row(self.meeting_in_hostapi_combo, self.meeting_in_combo))
+        form.addRow(
+            "\u9060\u7aef\u8f38\u5165",
+            self._build_route_selector_row(
+                self.meeting_in_hostapi_combo,
+                self.meeting_in_combo,
+                self.meeting_in_volume_slider,
+                self.meeting_in_volume_label,
+            ),
+        )
         form.addRow(
             "\u9ea5\u514b\u98a8\u8f38\u5165",
-            self._build_route_selector_row(self.microphone_in_hostapi_combo, self.microphone_in_combo),
+            self._build_route_selector_row(
+                self.microphone_in_hostapi_combo,
+                self.microphone_in_combo,
+                self.microphone_in_volume_slider,
+                self.microphone_in_volume_label,
+            ),
         )
-        form.addRow("\u55c7\u53ed\u8f38\u51fa", self._build_route_selector_row(self.speaker_out_hostapi_combo, self.speaker_out_combo))
-        form.addRow("\u9060\u7aef\u8f38\u51fa", self._build_route_selector_row(self.meeting_out_hostapi_combo, self.meeting_out_combo))
+        form.addRow(
+            "\u5587\u53ed\u8f38\u51fa",
+            self._build_route_selector_row(
+                self.speaker_out_hostapi_combo,
+                self.speaker_out_combo,
+                self.speaker_out_volume_slider,
+                self.speaker_out_volume_label,
+            ),
+        )
+        form.addRow(
+            "\u9060\u7aef\u8f38\u51fa",
+            self._build_route_selector_row(
+                self.meeting_out_hostapi_combo,
+                self.meeting_out_combo,
+                self.meeting_out_volume_slider,
+                self.meeting_out_volume_label,
+            ),
+        )
         form.addRow("\u6a21\u5f0f", self.direction_mode_combo)
 
         button_row = QHBoxLayout()
@@ -113,6 +171,7 @@ class AudioRoutingPage(QWidget):
         )
 
     def apply_config(self, config: AppConfig) -> None:
+        self._initialize_system_volume(config)
         self._apply_selector_to_route(self.meeting_in_hostapi_combo, self.meeting_in_combo, self._input_devices, config.audio.meeting_in)
         self._apply_selector_to_route(
             self.microphone_in_hostapi_combo,
@@ -132,7 +191,52 @@ class AudioRoutingPage(QWidget):
             self._output_devices,
             config.audio.meeting_out,
         )
+        self._set_slider_ratio(self.meeting_in_volume_slider, config.audio.meeting_in_gain)
+        self._set_slider_ratio(self.microphone_in_volume_slider, config.audio.microphone_in_gain)
+        self._set_slider_ratio(self.speaker_out_volume_slider, config.audio.speaker_out_volume)
+        self._set_slider_ratio(self.meeting_out_volume_slider, config.audio.meeting_out_volume)
         self._select_by_mode(self.direction_mode_combo, config.direction.mode)
+
+    def _initialize_system_volume(self, config: AppConfig) -> None:
+        if self._system_volume_initialized:
+            return
+        meeting_input_volume = None if self._should_skip_system_sync(config.audio.meeting_in) else get_input_volume(config.audio.meeting_in)
+        microphone_volume = None if self._should_skip_system_sync(config.audio.microphone_in) else get_input_volume(config.audio.microphone_in)
+        speaker_volume = None if self._should_skip_system_sync(config.audio.speaker_out) else get_output_volume(config.audio.speaker_out)
+        meeting_output_volume = None if self._should_skip_system_sync(config.audio.meeting_out) else get_output_volume(config.audio.meeting_out)
+        if meeting_input_volume is not None:
+            config.audio.meeting_in_gain = meeting_input_volume
+        if microphone_volume is not None:
+            config.audio.microphone_in_gain = microphone_volume
+        if speaker_volume is not None:
+            config.audio.speaker_out_volume = speaker_volume
+        if meeting_output_volume is not None:
+            config.audio.meeting_out_volume = meeting_output_volume
+        self._system_volume_initialized = True
+
+    def sync_system_volume_sliders(self, levels: dict[str, float | None]) -> bool:
+        changed = False
+        meeting_input_volume = levels.get("meeting_in")
+        microphone_volume = levels.get("microphone_in")
+        speaker_volume = levels.get("speaker_out")
+        meeting_output_volume = levels.get("meeting_out")
+        if meeting_input_volume is not None:
+            changed |= self._set_slider_ratio_silently(
+                self.meeting_in_volume_slider, meeting_input_volume, self.meeting_in_volume_label
+            )
+        if microphone_volume is not None:
+            changed |= self._set_slider_ratio_silently(
+                self.microphone_in_volume_slider, microphone_volume, self.microphone_in_volume_label
+            )
+        if speaker_volume is not None:
+            changed |= self._set_slider_ratio_silently(
+                self.speaker_out_volume_slider, speaker_volume, self.speaker_out_volume_label
+            )
+        if meeting_output_volume is not None:
+            changed |= self._set_slider_ratio_silently(
+                self.meeting_out_volume_slider, meeting_output_volume, self.meeting_out_volume_label
+            )
+        return changed
 
     def selected_audio_routes(self) -> AudioRouteConfig:
         return AudioRouteConfig(
@@ -140,6 +244,10 @@ class AudioRoutingPage(QWidget):
             microphone_in=self._selected_selector(self.microphone_in_combo),
             speaker_out=self._selected_selector(self.speaker_out_combo),
             meeting_out=self._selected_selector(self.meeting_out_combo),
+            meeting_in_gain=self._slider_ratio(self.meeting_in_volume_slider),
+            microphone_in_gain=self._slider_ratio(self.microphone_in_volume_slider),
+            speaker_out_volume=self._slider_ratio(self.speaker_out_volume_slider),
+            meeting_out_volume=self._slider_ratio(self.meeting_out_volume_slider),
         )
 
     def set_status(self, message: str) -> None:
@@ -241,14 +349,57 @@ class AudioRoutingPage(QWidget):
             combo.setCurrentIndex(index)
 
     @staticmethod
-    def _build_route_selector_row(hostapi_combo: QComboBox, device_combo: QComboBox) -> QWidget:
+    def _build_route_selector_row(
+        hostapi_combo: QComboBox,
+        device_combo: QComboBox,
+        volume_slider: QSlider,
+        volume_label: QLabel,
+    ) -> QWidget:
         hostapi_combo.setMinimumWidth(180)
         hostapi_combo.setToolTip("\u97f3\u8a0a\u4ecb\u9762")
         device_combo.setToolTip("\u97f3\u8a0a\u88dd\u7f6e")
+        volume_slider.setToolTip("\u97f3\u91cf")
+        volume_label.setMinimumWidth(44)
+        volume_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         container = QWidget()
         row = QHBoxLayout(container)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(8)
         row.addWidget(hostapi_combo, 1)
         row.addWidget(device_combo, 2)
+        row.addWidget(volume_slider, 1)
+        row.addWidget(volume_label)
         return container
+
+    @staticmethod
+    def _create_volume_slider() -> QSlider:
+        slider = QSlider(Qt.Orientation.Horizontal)
+        slider.setRange(0, 200)
+        slider.setSingleStep(5)
+        slider.setPageStep(10)
+        slider.setValue(100)
+        return slider
+
+    @staticmethod
+    def _slider_ratio(slider: QSlider) -> float:
+        return float(slider.value()) / 100.0
+
+    @staticmethod
+    def _set_slider_ratio(slider: QSlider, value: float) -> None:
+        slider.setValue(max(0, min(200, int(round(float(value) * 100.0)))))
+
+    @staticmethod
+    def _set_slider_ratio_silently(slider: QSlider, value: float, label: QLabel) -> bool:
+        target = max(0, min(200, int(round(float(value) * 100.0))))
+        if slider.value() == target:
+            return False
+        slider.blockSignals(True)
+        slider.setValue(target)
+        slider.blockSignals(False)
+        label.setText(f"{target}%")
+        return True
+
+    @staticmethod
+    def _should_skip_system_sync(device_selector: str) -> bool:
+        name = canonical_device_name(device_selector).lower()
+        return any(token in name for token in ("voicemeeter", "vb-audio", "virtual"))

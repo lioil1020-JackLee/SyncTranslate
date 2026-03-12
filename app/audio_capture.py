@@ -36,6 +36,7 @@ class AudioCapture:
         self._level = 0.0
         self._last_error = ""
         self._muted = False
+        self._gain = 1.0
         self._current_device_name = ""
         self._current_sample_rate: int | None = None
         self._consumers: list[Callable[[np.ndarray, float], None]] = []
@@ -131,6 +132,10 @@ class AudioCapture:
         with self._lock:
             self._muted = muted
 
+    def set_gain(self, gain: float) -> None:
+        with self._lock:
+            self._gain = max(0.0, float(gain))
+
     def rebind(self) -> None:
         with self._lock:
             device_name = self._current_device_name
@@ -161,17 +166,26 @@ class AudioCapture:
                 self._consumers.remove(consumer)
 
     def _on_audio(self, indata: np.ndarray, frames: int, _time: object, status: sd.CallbackFlags) -> None:
-        level = float(np.sqrt(np.mean(np.square(indata)))) if indata.size else 0.0
         with self._lock:
+            gain = self._gain
+            muted = self._muted
             self._frame_count += int(frames)
-            self._level = 0.0 if self._muted else level
             if status:
                 self._last_error = str(status)
             consumers = list(self._consumers)
+        processed = indata.astype(np.float32, copy=True)
+        if muted:
+            processed.fill(0.0)
+        elif gain != 1.0:
+            processed *= gain
+            np.clip(processed, -1.0, 1.0, out=processed)
+        level = float(np.sqrt(np.mean(np.square(processed)))) if processed.size else 0.0
+        with self._lock:
+            self._level = level
 
         for consumer in consumers:
             try:
-                consumer(indata.copy(), self._sample_rate)
+                consumer(processed, self._sample_rate)
             except Exception:
                 continue
 

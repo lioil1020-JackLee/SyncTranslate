@@ -1,8 +1,10 @@
 # Generated from pyproject.toml
 # Main dependencies
+comtypes>=1.4.16
 edge-tts>=7.2.3
 miniaudio>=1.61
 numpy>=2.3.3
+pycaw>=20251023
 pyside6>=6.9.3
 pyyaml>=6.0.3
 sounddevice>=0.5.2

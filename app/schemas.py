@@ -10,6 +10,10 @@ class AudioRouteConfig:
     microphone_in: str = ""
     speaker_out: str = ""
     meeting_out: str = ""
+    meeting_in_gain: float = 1.0
+    microphone_in_gain: float = 1.0
+    speaker_out_volume: float = 1.0
+    meeting_out_volume: float = 1.0
 
 
 @dataclass(slots=True)
