@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Callable
 
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QComboBox, QGridLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QComboBox, QGridLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QTextEdit, QVBoxLayout, QWidget
 
 from app.schemas import AppConfig
 
@@ -39,6 +39,8 @@ class LiveCaptionPage(QWidget):
 
         self.start_btn = QPushButton("\u958b\u59cb")
         self.start_btn.clicked.connect(self._handle_start_clicked)
+        self.clear_btn = QPushButton("\u6e05\u7a7a\u5b57\u5e55")
+        self.clear_btn.clicked.connect(self._handle_clear_clicked)
 
         self.remote_original = QTextEdit()
         self.remote_translated = QTextEdit()
@@ -51,20 +53,28 @@ class LiveCaptionPage(QWidget):
             self.local_translated,
         ):
             editor.setReadOnly(True)
+            editor.setMinimumHeight(220)
+            editor.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         for combo in (self.remote_lang_combo, self.local_lang_combo):
             combo.currentIndexChanged.connect(self._notify_settings_changed)
 
         top_row = QHBoxLayout()
+        top_row.setContentsMargins(0, 0, 0, 0)
+        top_row.setSpacing(8)
         top_row.addWidget(QLabel("\u9060\u7aef\u8a9e\u8a00\u65b9\u5411"))
         top_row.addWidget(self.remote_lang_combo, 0)
-        top_row.addSpacing(16)
+        top_row.addSpacing(8)
         top_row.addWidget(QLabel("\u672c\u5730\u8a9e\u8a00\u65b9\u5411"))
         top_row.addWidget(self.local_lang_combo, 0)
         top_row.addStretch(1)
+        top_row.addWidget(self.clear_btn, 0)
         top_row.addWidget(self.start_btn, 0)
 
         grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(6)
+        grid.setVerticalSpacing(4)
         grid.addWidget(QLabel("\u9060\u7aef\u539f\u6587"), 0, 0)
         grid.addWidget(QLabel("\u9060\u7aef\u7ffb\u8b6f"), 0, 1)
         grid.addWidget(self.remote_original, 1, 0)
@@ -73,14 +83,14 @@ class LiveCaptionPage(QWidget):
         grid.addWidget(QLabel("\u672c\u5730\u7ffb\u8b6f"), 2, 1)
         grid.addWidget(self.local_original, 3, 0)
         grid.addWidget(self.local_translated, 3, 1)
-
-        clear_btn = QPushButton("\u6e05\u7a7a\u5b57\u5e55")
-        clear_btn.clicked.connect(self._handle_clear_clicked)
+        grid.setRowStretch(1, 1)
+        grid.setRowStretch(3, 1)
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(6, 4, 6, 6)
+        layout.setSpacing(4)
         layout.addLayout(top_row)
         layout.addLayout(grid)
-        layout.addWidget(clear_btn)
 
     def apply_config(self, config: AppConfig) -> None:
         self._suspend_notify = True

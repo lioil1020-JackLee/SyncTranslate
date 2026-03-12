@@ -56,6 +56,14 @@ _EDGE_VOICE_OPTIONS: list[tuple[str, str]] = [
     ("英文男聲（英國）- Ryan", "en-GB-RyanNeural"),
 ]
 
+_CONTROL_HEIGHT = 30
+_FORM_V_SPACING = 6
+# reduce extra group height to free vertical space
+_GROUP_EXTRA_HEIGHT = 24
+_GROUP_ROW_SPACING = 8
+# reduce page padding to allow slightly more content
+_PAGE_MIN_PADDING = 8
+
 
 class PathPickerLineEdit(QLineEdit):
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -110,64 +118,23 @@ class LocalAiPage(QWidget):
         self.runtime_status_label.setWordWrap(True)
         self.runtime_status_label.setStyleSheet("color: #b7bdc6;")
 
-        self.runtime_hint_label = QLabel(
-            "健康檢查與預熱已移到「音訊路由與診斷」頁。\n"
-            "這一頁專注在模型與執行參數設定。"
-        )
-        self.runtime_hint_label.setWordWrap(True)
-        self.runtime_hint_label.setStyleSheet("color: #9aa3ad;")
+        top_grid = QGridLayout()
+        top_grid.setContentsMargins(0, 0, 0, 0)
+        top_grid.setHorizontalSpacing(8)
+        top_grid.setVerticalSpacing(8)
+        top_grid.setColumnStretch(0, 1)
+        top_grid.setColumnStretch(1, 1)
+        top_grid.addWidget(self.asr_group, 0, 0, 2, 1)
+        top_grid.addWidget(self.llm_group, 0, 1)
+        top_grid.addWidget(self.runtime_group, 1, 1)
+        top_grid.addWidget(self.meeting_tts.group, 2, 0)
+        top_grid.addWidget(self.local_tts.group, 2, 1)
 
-        self.runtime_detail_label = QLabel(
-            "參數說明\n"
-            "Beam 寬度：每次辨識保留的候選數。越大通常越準，但延遲與顯存占用也會增加。\n\n"
-            "局部更新間隔：partial 字幕多久刷新一次。太短會增加 ASR 負擔，太長則字幕反應較慢。\n\n"
-            "最短語音 / 最短靜音 / 語音補白：VAD 切段門檻。語速快或停頓短時，可適度降低最短靜音。\n\n"
-            "Trigger Token：partial 文字累積到多少詞後才送 LLM 翻譯，可減少過度頻繁的翻譯請求。\n\n"
-            "上下文項數：送進 LLM 的前文片段數量。越大越有上下文，但也更耗 token 與時間。\n\n"
-            "ASR 佇列：等待辨識的音訊塊數。太小容易丟音，太大表示延遲可能逐漸堆高。\n\n"
-            "LLM 佇列：等待翻譯的片段數。若常堆積，代表翻譯速度跟不上語音輸入。\n\n"
-            "TTS 佇列：等待播報的句子數。若持續增加，代表語音輸出速度慢於翻譯產生速度。\n\n"
-            "啟動時預熱：啟動程式後先做模型初始化，第一次真正開始翻譯時會比較快。"
-        )
-        self.runtime_detail_label.setWordWrap(True)
-        self.runtime_detail_label.setStyleSheet("color: #9aa3ad; line-height: 1.35;")
-
-        left_grid = QGridLayout()
-        left_grid.setContentsMargins(0, 0, 0, 0)
-        left_grid.setHorizontalSpacing(12)
-        left_grid.setVerticalSpacing(12)
-        left_grid.setColumnStretch(0, 1)
-        left_grid.setColumnStretch(1, 1)
-        left_grid.addWidget(self.asr_group, 0, 0)
-        left_grid.addWidget(self.llm_group, 0, 1)
-        left_grid.addWidget(self.meeting_tts.group, 1, 0)
-        left_grid.addWidget(self.local_tts.group, 1, 1)
-
-        left_column = QVBoxLayout()
-        left_column.setContentsMargins(0, 0, 0, 0)
-        left_column.setSpacing(12)
-        left_column.addLayout(left_grid)
-
-        right_column = QVBoxLayout()
-        right_column.setContentsMargins(0, 0, 0, 0)
-        right_column.setSpacing(10)
-        right_column.addWidget(self.runtime_group)
-        right_column.addWidget(self.runtime_status_label)
-        right_column.addWidget(self.runtime_hint_label)
-        right_column.addWidget(self.runtime_detail_label)
-        right_column.addStretch(1)
-
-        right_panel = QWidget()
-        right_panel.setLayout(right_column)
-        right_panel.setMinimumWidth(280)
-        right_panel.setMaximumWidth(380)
-        right_panel.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
-
-        root = QHBoxLayout(self)
-        root.setContentsMargins(8, 8, 8, 8)
-        root.setSpacing(14)
-        root.addLayout(left_column, 2)
-        root.addWidget(right_panel, 1)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(6, 6, 6, 6)
+        root.setSpacing(8)
+        root.addLayout(top_grid)
+        root.addStretch(1)
 
         self._normalize_form_label_widths(
             asr_form,
@@ -175,6 +142,13 @@ class LocalAiPage(QWidget):
             self.meeting_tts.form,
             self.local_tts.form,
             runtime_form,
+        )
+        self._apply_group_heights(
+            asr_form=asr_form,
+            llm_form=llm_form,
+            runtime_form=runtime_form,
+            meeting_tts_form=self.meeting_tts.form,
+            local_tts_form=self.local_tts.form,
         )
 
         self._wire_events()
@@ -190,17 +164,21 @@ class LocalAiPage(QWidget):
     def apply_config(self, config: AppConfig) -> None:
         self._suspend_notify = True
         try:
+            self._select_combo_data(self.asr_engine_combo, config.asr.engine)
             self._set_combo_text(self.asr_model_combo, config.asr.model)
             self._select_combo_data(self.asr_device_combo, config.asr.device)
             self.asr_compute_label.setText(self._compute_type_for_device(config.asr.device))
             self.asr_beam_spin.setValue(config.asr.beam_size)
             self.asr_condition_prev_check.setChecked(config.asr.condition_on_previous_text)
             self.asr_partial_interval_spin.setValue(config.asr.streaming.partial_interval_ms)
+            self.asr_partial_history_spin.setValue(config.asr.streaming.partial_history_seconds)
+            self.asr_final_history_spin.setValue(config.asr.streaming.final_history_seconds)
             self.asr_vad_enabled.setChecked(config.asr.vad.enabled)
             self.asr_min_speech_spin.setValue(config.asr.vad.min_speech_duration_ms)
             self.asr_min_silence_spin.setValue(config.asr.vad.min_silence_duration_ms)
             self.asr_speech_pad_spin.setValue(config.asr.vad.speech_pad_ms)
             self.asr_max_speech_spin.setValue(int(config.asr.vad.max_speech_duration_s))
+            self.asr_rms_threshold_spin.setValue(config.asr.vad.rms_threshold)
 
             self._select_combo_data(self.llm_backend_combo, config.llm.backend)
             self._apply_backend_url(config.llm.backend)
@@ -208,6 +186,7 @@ class LocalAiPage(QWidget):
             self.llm_timeout_spin.setValue(config.llm.request_timeout_sec)
             self.llm_temperature_spin.setValue(config.llm.temperature)
             self.llm_top_p_spin.setValue(config.llm.top_p)
+            self.llm_sliding_window_enabled.setChecked(config.llm.sliding_window.enabled)
             self.llm_trigger_tokens_spin.setValue(config.llm.sliding_window.trigger_tokens)
             self.llm_context_items_spin.setValue(config.llm.sliding_window.max_context_items)
 
@@ -216,7 +195,6 @@ class LocalAiPage(QWidget):
 
             self.runtime_sample_rate_spin.setValue(config.runtime.sample_rate)
             self.runtime_chunk_spin.setValue(config.runtime.chunk_ms)
-            self.runtime_warmup_check.setChecked(config.runtime.warmup_on_start)
             self.runtime_asr_q_spin.setValue(config.runtime.asr_queue_maxsize)
             self.runtime_llm_q_spin.setValue(config.runtime.llm_queue_maxsize)
             self.runtime_tts_q_spin.setValue(config.runtime.tts_queue_maxsize)
@@ -225,17 +203,21 @@ class LocalAiPage(QWidget):
         self._reload_llm_models()
 
     def update_config(self, config: AppConfig) -> None:
+        config.asr.engine = str(self.asr_engine_combo.currentData() or "faster_whisper")
         config.asr.model = self.asr_model_combo.currentText().strip() or "large-v3"
         config.asr.device = str(self.asr_device_combo.currentData() or "auto")
         config.asr.compute_type = self._compute_type_for_device(config.asr.device)
         config.asr.beam_size = self.asr_beam_spin.value()
         config.asr.condition_on_previous_text = self.asr_condition_prev_check.isChecked()
         config.asr.streaming.partial_interval_ms = self.asr_partial_interval_spin.value()
+        config.asr.streaming.partial_history_seconds = self.asr_partial_history_spin.value()
+        config.asr.streaming.final_history_seconds = self.asr_final_history_spin.value()
         config.asr.vad.enabled = self.asr_vad_enabled.isChecked()
         config.asr.vad.min_speech_duration_ms = self.asr_min_speech_spin.value()
         config.asr.vad.min_silence_duration_ms = self.asr_min_silence_spin.value()
         config.asr.vad.speech_pad_ms = self.asr_speech_pad_spin.value()
         config.asr.vad.max_speech_duration_s = float(self.asr_max_speech_spin.value())
+        config.asr.vad.rms_threshold = float(self.asr_rms_threshold_spin.value())
 
         backend = str(self.llm_backend_combo.currentData() or "ollama")
         config.llm.backend = backend
@@ -244,6 +226,7 @@ class LocalAiPage(QWidget):
         config.llm.request_timeout_sec = self.llm_timeout_spin.value()
         config.llm.temperature = float(self.llm_temperature_spin.value())
         config.llm.top_p = float(self.llm_top_p_spin.value())
+        config.llm.sliding_window.enabled = self.llm_sliding_window_enabled.isChecked()
         config.llm.sliding_window.trigger_tokens = self.llm_trigger_tokens_spin.value()
         config.llm.sliding_window.max_context_items = self.llm_context_items_spin.value()
 
@@ -253,7 +236,7 @@ class LocalAiPage(QWidget):
 
         config.runtime.sample_rate = self.runtime_sample_rate_spin.value()
         config.runtime.chunk_ms = self.runtime_chunk_spin.value()
-        config.runtime.warmup_on_start = self.runtime_warmup_check.isChecked()
+        config.runtime.warmup_on_start = True
         config.runtime.asr_queue_maxsize = self.runtime_asr_q_spin.value()
         config.runtime.llm_queue_maxsize = self.runtime_llm_q_spin.value()
         config.runtime.tts_queue_maxsize = self.runtime_tts_q_spin.value()
@@ -262,6 +245,9 @@ class LocalAiPage(QWidget):
         self.runtime_status_label.setText(text)
 
     def _build_asr_group(self) -> tuple[QGroupBox, QFormLayout]:
+        self.asr_engine_combo = QComboBox()
+        self.asr_engine_combo.addItem("faster-whisper", "faster_whisper")
+
         self.asr_model_combo = QComboBox()
         self.asr_model_combo.setEditable(True)
         for model in self._discover_asr_models():
@@ -281,6 +267,10 @@ class LocalAiPage(QWidget):
         self.asr_condition_prev_check = QCheckBox("延續前文")
         self.asr_partial_interval_spin = QSpinBox()
         self.asr_partial_interval_spin.setRange(200, 5000)
+        self.asr_partial_history_spin = QSpinBox()
+        self.asr_partial_history_spin.setRange(1, 30)
+        self.asr_final_history_spin = QSpinBox()
+        self.asr_final_history_spin.setRange(1, 60)
         self.asr_vad_enabled = QCheckBox("啟用 VAD")
         self.asr_min_speech_spin = QSpinBox()
         self.asr_min_speech_spin.setRange(100, 4000)
@@ -290,20 +280,28 @@ class LocalAiPage(QWidget):
         self.asr_speech_pad_spin.setRange(0, 2000)
         self.asr_max_speech_spin = QSpinBox()
         self.asr_max_speech_spin.setRange(3, 60)
+        self.asr_rms_threshold_spin = QDoubleSpinBox()
+        self.asr_rms_threshold_spin.setRange(0.001, 0.2)
+        self.asr_rms_threshold_spin.setSingleStep(0.001)
+        self.asr_rms_threshold_spin.setDecimals(3)
+        asr_toggle_row = self._build_inline_row(self.asr_condition_prev_check, self.asr_vad_enabled)
 
         form = QFormLayout()
         self._configure_form_layout(form)
+        form.addRow("引擎", self.asr_engine_combo)
         form.addRow("模型", self.asr_model_combo)
         form.addRow("裝置", self.asr_device_combo)
         form.addRow("精度", self.asr_compute_label)
         form.addRow("Beam 寬度", self.asr_beam_spin)
-        form.addRow("", self.asr_condition_prev_check)
+        form.addRow("", asr_toggle_row)
         form.addRow("局部更新間隔(ms)", self.asr_partial_interval_spin)
-        form.addRow("", self.asr_vad_enabled)
+        form.addRow("Partial 保留(s)", self.asr_partial_history_spin)
+        form.addRow("Final 保留(s)", self.asr_final_history_spin)
         form.addRow("最短語音(ms)", self.asr_min_speech_spin)
         form.addRow("最短靜音(ms)", self.asr_min_silence_spin)
         form.addRow("語音補白(ms)", self.asr_speech_pad_spin)
         form.addRow("最長語音(s)", self.asr_max_speech_spin)
+        form.addRow("RMS 門檻", self.asr_rms_threshold_spin)
 
         group = QGroupBox("語音辨識 ASR")
         group.setLayout(form)
@@ -328,17 +326,18 @@ class LocalAiPage(QWidget):
         self.llm_top_p_spin.setRange(0.0, 1.0)
         self.llm_top_p_spin.setSingleStep(0.05)
         self.llm_top_p_spin.setDecimals(2)
+        self.llm_sliding_window_enabled = QCheckBox("啟用上下文拼接")
         self.llm_trigger_tokens_spin = QSpinBox()
         self.llm_trigger_tokens_spin.setRange(5, 120)
         self.llm_context_items_spin = QSpinBox()
         self.llm_context_items_spin.setRange(2, 20)
+        llm_service_row = self._build_inline_row(self.llm_url_label, self.llm_reload_models_btn, self.llm_sliding_window_enabled)
 
         form = QFormLayout()
         self._configure_form_layout(form)
         form.addRow("後端", self.llm_backend_combo)
-        form.addRow("服務位址", self.llm_url_label)
+        form.addRow("服務位址", llm_service_row)
         form.addRow("模型", self.llm_model_combo)
-        form.addRow("", self.llm_reload_models_btn)
         form.addRow("逾時(秒)", self.llm_timeout_spin)
         form.addRow("溫度", self.llm_temperature_spin)
         form.addRow("Top P", self.llm_top_p_spin)
@@ -354,7 +353,6 @@ class LocalAiPage(QWidget):
         self.runtime_sample_rate_spin.setRange(8000, 192000)
         self.runtime_chunk_spin = QSpinBox()
         self.runtime_chunk_spin.setRange(20, 1000)
-        self.runtime_warmup_check = QCheckBox("啟動時預熱")
         self.runtime_asr_q_spin = QSpinBox()
         self.runtime_asr_q_spin.setRange(8, 512)
         self.runtime_llm_q_spin = QSpinBox()
@@ -366,7 +364,6 @@ class LocalAiPage(QWidget):
         self._configure_form_layout(form)
         form.addRow("執行取樣率", self.runtime_sample_rate_spin)
         form.addRow("音訊切片(ms)", self.runtime_chunk_spin)
-        form.addRow("", self.runtime_warmup_check)
         form.addRow("ASR 佇列", self.runtime_asr_q_spin)
         form.addRow("LLM 佇列", self.runtime_llm_q_spin)
         form.addRow("TTS 佇列", self.runtime_tts_q_spin)
@@ -407,7 +404,7 @@ class LocalAiPage(QWidget):
             editor.setReadOnly(True)
             editor.setCursor(Qt.CursorShape.PointingHandCursor)
             editor.setToolTip("點一下選擇檔案")
-            self._set_uniform_field_style(editor, minimum_width=180)
+            self._set_uniform_field_style(editor, minimum_width=220)
 
         for compact in (
             engine_combo,
@@ -418,7 +415,7 @@ class LocalAiPage(QWidget):
             noise_w_spin,
             sample_rate_spin,
         ):
-            self._set_uniform_field_style(compact, minimum_width=180)
+            self._set_uniform_field_style(compact, minimum_width=220)
 
         form = QFormLayout()
         self._configure_form_layout(form)
@@ -452,14 +449,18 @@ class LocalAiPage(QWidget):
 
     def _wire_events(self) -> None:
         for compact in (
+            self.asr_engine_combo,
             self.asr_model_combo,
             self.asr_device_combo,
             self.asr_beam_spin,
             self.asr_partial_interval_spin,
+            self.asr_partial_history_spin,
+            self.asr_final_history_spin,
             self.asr_min_speech_spin,
             self.asr_min_silence_spin,
             self.asr_speech_pad_spin,
             self.asr_max_speech_spin,
+            self.asr_rms_threshold_spin,
             self.llm_backend_combo,
             self.llm_model_combo,
             self.llm_timeout_spin,
@@ -473,34 +474,44 @@ class LocalAiPage(QWidget):
             self.runtime_llm_q_spin,
             self.runtime_tts_q_spin,
         ):
-            self._set_uniform_field_style(compact, minimum_width=180)
+            self._set_uniform_field_style(compact, minimum_width=220)
 
-        self.llm_url_label.setMinimumWidth(180)
+        self.llm_url_label.setMinimumWidth(220)
+        self.llm_url_label.setMinimumHeight(30)
+        self.asr_compute_label.setMinimumHeight(30)
+        self.llm_reload_models_btn.setMinimumHeight(30)
+        self.asr_condition_prev_check.setMinimumHeight(30)
+        self.asr_vad_enabled.setMinimumHeight(30)
+        self.llm_sliding_window_enabled.setMinimumHeight(30)
         self.llm_backend_combo.currentIndexChanged.connect(self._on_backend_changed)
         self.asr_device_combo.currentIndexChanged.connect(self._on_asr_device_changed)
         self.llm_reload_models_btn.clicked.connect(self._reload_llm_models)
 
         for widget in (
+            self.asr_engine_combo,
             self.asr_model_combo,
             self.asr_device_combo,
             self.asr_beam_spin,
             self.asr_partial_interval_spin,
+            self.asr_partial_history_spin,
+            self.asr_final_history_spin,
             self.asr_vad_enabled,
             self.asr_condition_prev_check,
             self.asr_min_speech_spin,
             self.asr_min_silence_spin,
             self.asr_speech_pad_spin,
             self.asr_max_speech_spin,
+            self.asr_rms_threshold_spin,
             self.llm_backend_combo,
             self.llm_model_combo,
             self.llm_timeout_spin,
             self.llm_temperature_spin,
             self.llm_top_p_spin,
+            self.llm_sliding_window_enabled,
             self.llm_trigger_tokens_spin,
             self.llm_context_items_spin,
             self.runtime_sample_rate_spin,
             self.runtime_chunk_spin,
-            self.runtime_warmup_check,
             self.runtime_asr_q_spin,
             self.runtime_llm_q_spin,
             self.runtime_tts_q_spin,
@@ -694,12 +705,27 @@ class LocalAiPage(QWidget):
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         form.setFormAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        form.setHorizontalSpacing(12)
-        form.setVerticalSpacing(8)
+        form.setHorizontalSpacing(10)
+        form.setVerticalSpacing(_FORM_V_SPACING)
 
     @staticmethod
-    def _set_uniform_field_style(widget: QWidget, minimum_width: int = 160) -> None:
+    def _build_inline_row(*widgets: QWidget) -> QWidget:
+        container = QWidget()
+        container.setMinimumHeight(_CONTROL_HEIGHT)
+        container.setMaximumHeight(_CONTROL_HEIGHT)
+        row = QHBoxLayout(container)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+        for widget in widgets:
+            row.addWidget(widget)
+        row.addStretch(1)
+        return container
+
+    @staticmethod
+    def _set_uniform_field_style(widget: QWidget, minimum_width: int = 220, control_height: int = _CONTROL_HEIGHT) -> None:
         widget.setMinimumWidth(minimum_width)
+        widget.setMinimumHeight(control_height)
+        widget.setMaximumHeight(control_height)
         widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
     @staticmethod
@@ -715,6 +741,37 @@ class LocalAiPage(QWidget):
                 max_width = max(max_width, item.widget().sizeHint().width())
         for label in labels:
             label.setMinimumWidth(max_width)
+            label.setMinimumHeight(_CONTROL_HEIGHT)
+            label.setMaximumHeight(_CONTROL_HEIGHT)
+
+    def _apply_group_heights(
+        self,
+        *,
+        asr_form: QFormLayout,
+        llm_form: QFormLayout,
+        runtime_form: QFormLayout,
+        meeting_tts_form: QFormLayout,
+        local_tts_form: QFormLayout,
+    ) -> None:
+        llm_height = self._estimate_group_height(llm_form)
+        runtime_height = self._estimate_group_height(runtime_form)
+        asr_height = max(self._estimate_group_height(asr_form), llm_height + runtime_height + _GROUP_ROW_SPACING)
+        tts_height = max(
+            self._estimate_group_height(meeting_tts_form),
+            self._estimate_group_height(local_tts_form),
+        )
+
+        self.asr_group.setMinimumHeight(asr_height)
+        self.llm_group.setMinimumHeight(llm_height)
+        self.runtime_group.setMinimumHeight(runtime_height)
+        self.meeting_tts.group.setMinimumHeight(tts_height)
+        self.local_tts.group.setMinimumHeight(tts_height)
+        self.setMinimumHeight(asr_height + tts_height + (_GROUP_ROW_SPACING * 2) + _PAGE_MIN_PADDING)
+
+    @staticmethod
+    def _estimate_group_height(form: QFormLayout) -> int:
+        row_count = max(1, form.rowCount())
+        return (_CONTROL_HEIGHT * row_count) + (_FORM_V_SPACING * max(0, row_count - 1)) + _GROUP_EXTRA_HEIGHT
 
     @staticmethod
     def _compute_type_for_device(device: str) -> str:

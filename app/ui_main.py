@@ -10,7 +10,7 @@ from threading import Lock
 from threading import Thread
 import time
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QCloseEvent, QGuiApplication, QIcon, QShowEvent
 from PySide6.QtWidgets import QMainWindow, QMessageBox, QScrollArea, QSizePolicy, QTabWidget, QWidget
 import numpy as np
@@ -42,6 +42,8 @@ from app.transcript_buffer import TranscriptBuffer
 class MainWindow(QMainWindow):
     def __init__(self, config_path: str) -> None:
         super().__init__()
+        self._window_geometry_ready = False
+        self._apply_standard_window_flags()
         self.config_path = config_path
         self.config: AppConfig = load_config(self.config_path)
         self.device_manager = DeviceManager()
@@ -68,7 +70,6 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle("SyncTranslate - Local AI Runtime")
         self._set_window_icon()
-        self._set_initial_window_geometry()
 
         self.tabs = QTabWidget()
         self.tabs.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
@@ -101,6 +102,10 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.local_ai_page, "參數設定")
         self.tabs.addTab(self._wrap_in_scroll_area(self.debug_panel), "除錯")
         self.setCentralWidget(self.tabs)
+        self._apply_content_minimum_height()
+        # Now that pages are constructed and minimum heights calculated,
+        # set initial window geometry based on the parameters page size.
+        self._set_initial_window_geometry()
         self._build_pipelines_from_config()
 
         self.input_device_names: set[str] = set()
@@ -356,26 +361,64 @@ class MainWindow(QMainWindow):
 
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
+        if self._window_geometry_ready:
+            return
+        self._window_geometry_ready = True
+        self._ensure_window_decorations()
         QTimer.singleShot(0, self._fit_window_to_screen)
 
     def _set_initial_window_geometry(self) -> None:
         default_width = 1180
-        default_height = 800
+        default_height = 980
         screen = self._current_screen()
         if screen is None:
             self.resize(default_width, default_height)
             return
-
         available = screen.availableGeometry()
         horizontal_margin = 48
-        vertical_margin = 72
         max_width = max(360, available.width() - horizontal_margin)
-        max_height = max(300, available.height() - vertical_margin)
         width = min(default_width, max_width)
-        height = min(default_height, max_height)
+        preferred_client_h = self._preferred_client_height()
+        client_h = min(preferred_client_h, max(640, available.height() - 72))
         x = available.x() + (available.width() - width) // 2
-        y = available.y() + (available.height() - height) // 2
-        self.setGeometry(x, y, width, height)
+        y = available.y()
+        self.resize(width, client_h)
+        self.move(x, y)
+
+    def _preferred_client_height(self) -> int:
+        page_height = 0
+        if hasattr(self, "local_ai_page") and self.local_ai_page is not None:
+            try:
+                page_height = max(
+                    self.local_ai_page.sizeHint().height(),
+                    self.local_ai_page.minimumSizeHint().height(),
+                )
+            except Exception:
+                page_height = self.local_ai_page.minimumHeight()
+        tab_bar_h = self.tabs.tabBar().sizeHint().height() if hasattr(self, "tabs") else 0
+        status_h = self.statusBar().sizeHint().height() if self.statusBar() else 0
+        return max(760, min(1020, page_height + tab_bar_h + status_h + 12))
+
+    def _standard_window_flags(self):
+        return (
+            Qt.Window
+            | Qt.WindowTitleHint
+            | Qt.WindowSystemMenuHint
+            | Qt.WindowMinimizeButtonHint
+            | Qt.WindowMaximizeButtonHint
+            | Qt.WindowCloseButtonHint
+        )
+
+    def _apply_standard_window_flags(self) -> None:
+        try:
+            self.setWindowFlag(Qt.FramelessWindowHint, False)
+        except Exception:
+            pass
+        try:
+            self.setWindowFlag(Qt.CustomizeWindowHint, False)
+        except Exception:
+            pass
+        self.setWindowFlags(self._standard_window_flags())
 
     def _set_window_icon(self) -> None:
         icon = QIcon("lioil.ico")
@@ -394,26 +437,33 @@ class MainWindow(QMainWindow):
             return self.windowHandle().screen()
         return QGuiApplication.primaryScreen()
 
+    def _ensure_window_decorations(self) -> None:
+        try:
+            self._apply_standard_window_flags()
+            self.showNormal()
+        except Exception:
+            pass
+
+    def _apply_content_minimum_height(self) -> None:
+        desired_height = max(760, self._preferred_client_height() - 28)
+        self.setMinimumHeight(desired_height)
+
     def _fit_window_to_screen(self) -> None:
         screen = self._current_screen()
         if screen is None:
             return
-
         available = screen.availableGeometry()
         frame = self.frameGeometry()
         frame_extra_w = max(0, frame.width() - self.width())
         frame_extra_h = max(0, frame.height() - self.height())
-        border_margin = 16
-        max_client_w = max(360, available.width() - border_margin - frame_extra_w)
-        max_client_h = max(300, available.height() - border_margin - frame_extra_h)
-
-        self.setMaximumSize(max_client_w, max_client_h)
-        self.resize(min(self.width(), max_client_w), min(self.height(), max_client_h))
-
+        max_client_w = max(360, available.width() - frame_extra_w)
+        max_client_h = max(300, available.height() - frame_extra_h)
+        target_w = min(self.width(), max_client_w)
+        target_h = min(max(self.height(), self.minimumHeight()), max_client_h)
+        self.resize(target_w, target_h)
         frame = self.frameGeometry()
-        max_x = available.x() + max(0, available.width() - frame.width())
+        x = available.x() + max(0, (available.width() - frame.width()) // 2)
         max_y = available.y() + max(0, available.height() - frame.height())
-        x = min(max(frame.x(), available.x()), max_x)
         y = min(max(frame.y(), available.y()), max_y)
         self.move(x, y)
 
@@ -620,6 +670,8 @@ class MainWindow(QMainWindow):
             engine=asr_engine,
             vad=vad,
             partial_interval_ms=self.config.asr.streaming.partial_interval_ms,
+            partial_history_seconds=self.config.asr.streaming.partial_history_seconds,
+            final_history_seconds=self.config.asr.streaming.final_history_seconds,
             queue_maxsize=self.config.runtime.asr_queue_maxsize,
             on_debug=self._report_error,
         )
@@ -635,6 +687,7 @@ class MainWindow(QMainWindow):
             translator=llm,
             source_lang=source_lang,
             target_lang=target_lang,
+            enabled=self.config.llm.sliding_window.enabled,
             trigger_tokens=self.config.llm.sliding_window.trigger_tokens,
             max_context_items=self.config.llm.sliding_window.max_context_items,
         )

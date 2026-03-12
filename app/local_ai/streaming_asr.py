@@ -39,6 +39,8 @@ class StreamingAsr:
         engine: FasterWhisperEngine,
         vad: VadSegmenter,
         partial_interval_ms: int = 400,
+        partial_history_seconds: int = 8,
+        final_history_seconds: int = 20,
         queue_maxsize: int = 128,
         on_event: Callable[[AsrEvent], None] | None = None,
         on_debug: Callable[[str], None] | None = None,
@@ -46,6 +48,8 @@ class StreamingAsr:
         self._engine = engine
         self._vad = vad
         self._partial_interval_ms = max(200, int(partial_interval_ms))
+        self._partial_history_seconds = max(1, int(partial_history_seconds))
+        self._final_history_seconds = max(1, int(final_history_seconds))
         self._queue: Queue[tuple[np.ndarray, float]] = Queue(maxsize=max(16, queue_maxsize))
         self._stop_event = Event()
         self._thread: Thread | None = None
@@ -196,6 +200,7 @@ class StreamingAsr:
         if not self._on_event or not self._segment_chunks:
             return
         audio = np.concatenate(self._segment_chunks, axis=0)
+        audio = self._limited_audio(audio, self._partial_history_seconds)
         audio_ms = int(len(audio) * 1000 / max(1, self._segment_sample_rate))
         if audio_ms < self._min_partial_audio_ms:
             return
@@ -225,6 +230,7 @@ class StreamingAsr:
         if not self._on_event or not self._segment_chunks:
             return
         audio = np.concatenate(self._segment_chunks, axis=0)
+        audio = self._limited_audio(audio, self._final_history_seconds)
         start = time.perf_counter()
         try:
             text = self._engine.transcribe_final(audio=audio, sample_rate=self._segment_sample_rate) or ""
@@ -266,6 +272,12 @@ class StreamingAsr:
             return 0
         sample_count = sum(int(chunk.shape[0]) for chunk in self._segment_chunks)
         return int(sample_count * 1000 / max(1, self._segment_sample_rate))
+
+    def _limited_audio(self, audio: np.ndarray, history_seconds: int) -> np.ndarray:
+        max_frames = int(max(1, history_seconds) * self._segment_sample_rate)
+        if audio.shape[0] <= max_frames:
+            return audio
+        return audio[-max_frames:]
 
     def _reset_segment(self) -> None:
         self._segment_chunks = []

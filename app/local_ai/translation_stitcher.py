@@ -22,6 +22,7 @@ class TranslationStitcher:
         translator: OllamaClient,
         source_lang: str,
         target_lang: str,
+        enabled: bool = True,
         trigger_tokens: int = 20,
         max_context_items: int = 6,
         min_partial_interval_ms: int = 800,
@@ -29,6 +30,7 @@ class TranslationStitcher:
         self._translator = translator
         self._source_lang = source_lang
         self._target_lang = target_lang
+        self._enabled = bool(enabled)
         self._trigger_tokens = max(8, int(trigger_tokens))
         self._context: deque[str] = deque(maxlen=max(2, int(max_context_items)))
         self._last_partial_call_ms = 0
@@ -51,17 +53,19 @@ class TranslationStitcher:
         if not event.is_final and not can_translate_partial:
             return None
 
+        context = list(self._context) if self._enabled else []
         translated = self._translator.translate(
             text=text,
             source_lang=self._source_lang,
             target_lang=self._target_lang,
-            context=list(self._context),
+            context=context,
         )
         if not translated:
             return None
         if self._target_lang.lower().startswith("zh") and not _looks_like_displayable_zh_translation(translated):
             return None
-        self._context.append(text)
+        if self._enabled:
+            self._context.append(text)
         if not event.is_final:
             self._last_partial_call_ms = now_ms
 
