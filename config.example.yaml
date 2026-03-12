@@ -1,7 +1,7 @@
 audio:
   meeting_in: Windows WASAPI::CABLE Output (VB-Audio Virtual Cable)
-  microphone_in: Windows DirectSound::Voicemeeter Out B1 (VB-Audio Voicemeeter VAIO)
-  speaker_out: Windows DirectSound::Voicemeeter Input (VB-Audio Voicemeeter VAIO)
+  microphone_in: Windows WASAPI::Voicemeeter Out B1 (VB-Audio Voicemeeter VAIO)
+  speaker_out: Windows WASAPI::Voicemeeter Input (VB-Audio Voicemeeter VAIO)
   meeting_out: Windows WASAPI::CABLE Input (VB-Audio Virtual Cable)
   meeting_in_gain: 1.0
   microphone_in_gain: 1.0
@@ -16,33 +16,33 @@ language:
   local_target: zh-TW
 asr:
   engine: faster_whisper
-  model: large-v3
+  model: small
   device: cuda
   compute_type: float16
   beam_size: 1
-  condition_on_previous_text: true
+  condition_on_previous_text: false
   vad:
     enabled: true
-    min_speech_duration_ms: 120
+    min_speech_duration_ms: 160
     min_silence_duration_ms: 450
-    max_speech_duration_s: 12.0
-    speech_pad_ms: 250
-    rms_threshold: 0.015
+    max_speech_duration_s: 10.0
+    speech_pad_ms: 300
+    rms_threshold: 0.03
   streaming:
-    partial_interval_ms: 300
+    partial_interval_ms: 250
     partial_history_seconds: 2
-    final_history_seconds: 5
+    final_history_seconds: 4
 llm:
   backend: lm_studio
   base_url: http://127.0.0.1:1234
   model: qwen/qwen3.5-9b
   temperature: 0.1
   top_p: 0.75
-  request_timeout_sec: 20
+  request_timeout_sec: 15
   sliding_window:
     enabled: true
-    trigger_tokens: 20
-    max_context_items: 8
+    trigger_tokens: 18
+    max_context_items: 6
 tts:
   engine: edge_tts
   executable_path: ''
@@ -50,11 +50,22 @@ tts:
   config_path: ''
   voice_name: zh-TW-HsiaoChenNeural
   speaker_id: 0
+  length_scale: 1.0
+  noise_scale: 0.667
+  noise_w: 0.6
+  sample_rate: 24000
+meeting_tts:
+  engine: edge_tts
+  executable_path: ''
+  model_path: ''
+  config_path: ''
+  voice_name: en-US-JennyNeural
+  speaker_id: 0
   length_scale: 0.9
   noise_scale: 0.667
-  noise_w: 0.65
-  sample_rate: 48000
-meeting_tts:
+  noise_w: 0.6
+  sample_rate: 24000
+local_tts:
   engine: edge_tts
   executable_path: ''
   model_path: ''
@@ -63,21 +74,21 @@ meeting_tts:
   speaker_id: 0
   length_scale: 0.9
   noise_scale: 0.667
-  noise_w: 0.65
-  sample_rate: 48000
-local_tts:
-  engine: edge_tts
-  executable_path: ''
-  model_path: ''
-  config_path: ''
-  voice_name: en-GB-RyanNeural
-  speaker_id: 0
-  length_scale: 0.9
-  noise_scale: 0.667
-  noise_w: 0.5
-  sample_rate: 48000
+  noise_w: 0.6
+  sample_rate: 24000
 tts_channels:
   local:
+    engine: edge_tts
+    executable_path: null
+    model_path: null
+    config_path: null
+    voice_name: en-US-JennyNeural
+    speaker_id: null
+    length_scale: null
+    noise_scale: null
+    noise_w: 0.6
+    sample_rate: 24000
+  remote:
     engine: edge_tts
     executable_path: null
     model_path: null
@@ -86,25 +97,14 @@ tts_channels:
     speaker_id: null
     length_scale: null
     noise_scale: null
-    noise_w: 0.65
-    sample_rate: 48000
-  remote:
-    engine: edge_tts
-    executable_path: null
-    model_path: null
-    config_path: null
-    voice_name: en-GB-RyanNeural
-    speaker_id: null
-    length_scale: null
-    noise_scale: null
-    noise_w: 0.5
-    sample_rate: 48000
+    noise_w: 0.6
+    sample_rate: 24000
 runtime:
-  sample_rate: 16000
-  chunk_ms: 60
-  asr_queue_maxsize: 32
-  llm_queue_maxsize: 12
-  tts_queue_maxsize: 12
+  sample_rate: 24000
+  chunk_ms: 40
+  asr_queue_maxsize: 24
+  llm_queue_maxsize: 8
+  tts_queue_maxsize: 8
   warmup_on_start: true
 health_last_success:
   asr: ''

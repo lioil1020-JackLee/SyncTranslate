@@ -48,11 +48,20 @@ def _run_async_blocking(coro):
 async def _edge_tts_synthesize_audio_bytes(edge_tts_module, *, text: str, voice: str, rate: str) -> bytes:
     communicator = _create_edge_communicate(edge_tts_module, text=text, voice=voice, rate=rate)
     audio_chunks: list[bytes] = []
-    async for chunk in communicator.stream():
-        if chunk.get("type") == "audio":
-            payload = chunk.get("data")
-            if isinstance(payload, bytes):
-                audio_chunks.append(payload)
+    try:
+        async for chunk in communicator.stream():
+            if chunk.get("type") == "audio":
+                payload = chunk.get("data")
+                if isinstance(payload, bytes):
+                    audio_chunks.append(payload)
+    except Exception as exc:
+        message = str(exc).strip()
+        if "No audio was received" in message:
+            raise ValueError(
+                f"No audio was received from edge-tts for voice '{voice}'. "
+                "This usually means the voice locale is incompatible with the input text."
+            ) from exc
+        raise
 
     payload = b"".join(audio_chunks)
     if payload:

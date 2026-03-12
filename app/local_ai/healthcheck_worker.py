@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from dataclasses import asdict
 
@@ -35,8 +36,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     tts = create_tts_engine(config.meeting_tts)
     report = run_local_healthcheck(asr_engine=asr, llm_client=llm, tts_engine=tts, warmup=warmup)
-    print(json.dumps(asdict(report), ensure_ascii=False))
-    return 0
+    sys.stdout.write(json.dumps(asdict(report), ensure_ascii=False))
+    sys.stdout.flush()
+    sys.stderr.flush()
+    # faster-whisper / CUDA teardown can crash this short-lived subprocess on exit
+    # after the health report has already been produced. Exit immediately after flush.
+    os._exit(0)
 
 
 if __name__ == "__main__":

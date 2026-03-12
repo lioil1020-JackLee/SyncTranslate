@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 import json
 from pathlib import Path
@@ -479,9 +480,11 @@ class MainWindow(QMainWindow):
         device_name = self._get_speaker_output_device()
         try:
             self._sync_ui_to_config()
+            target_lang = self.config.language.local_target
+            test_tts = self._tts_for_language_target(self.config.meeting_tts, target_lang)
             audio, sample_rate, engine_label = self._build_output_test_audio(
-                primary_tts=self.config.meeting_tts,
-                text=self._tts_test_text(self.config.language.local_target),
+                primary_tts=test_tts,
+                text=self._tts_test_text(target_lang),
             )
             self.speaker_playback.play(
                 audio=audio,
@@ -829,6 +832,8 @@ class MainWindow(QMainWindow):
         text = str(exc).strip()
         if "Unable to play TTS audio" in text:
             return "無法在選定的喇叭輸出播放測試音。請改選可用的喇叭或耳機裝置。\n\n詳細資訊:\n" + text
+        if "No audio was received" in text:
+            return "TTS 沒有回傳音訊。若你使用 Edge TTS，常見原因是聲線語系和測試文字語言不相容。\n\n詳細資訊:\n" + text
         return text
 
     @staticmethod
@@ -839,4 +844,38 @@ class MainWindow(QMainWindow):
         if normalized.startswith("ja"):
             return "これは音声テストです。"
         return "This is a translated speech test."
+
+    @classmethod
+    def _tts_for_language_target(cls, base: TtsConfig, language: str) -> TtsConfig:
+        normalized = (language or "").strip().lower()
+        voice = (base.voice_name or "").strip()
+        if cls._voice_matches_language(voice, normalized):
+            return base
+        fallback_voice = cls._default_voice_for_language(normalized)
+        if not fallback_voice:
+            return base
+        return replace(base, voice_name=fallback_voice)
+
+    @staticmethod
+    def _voice_matches_language(voice_name: str, normalized_language: str) -> bool:
+        lowered = (voice_name or "").strip().lower()
+        if not lowered:
+            return False
+        if normalized_language.startswith("zh"):
+            return lowered.startswith("zh-")
+        if normalized_language.startswith("en"):
+            return lowered.startswith("en-")
+        if normalized_language.startswith("ja"):
+            return lowered.startswith("ja-")
+        return True
+
+    @staticmethod
+    def _default_voice_for_language(normalized_language: str) -> str:
+        if normalized_language.startswith("zh"):
+            return "zh-TW-HsiaoChenNeural"
+        if normalized_language.startswith("en"):
+            return "en-US-JennyNeural"
+        if normalized_language.startswith("ja"):
+            return "ja-JP-NanamiNeural"
+        return ""
 
