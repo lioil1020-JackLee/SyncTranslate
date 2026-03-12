@@ -78,16 +78,36 @@ class LlmConfig:
 
 @dataclass(slots=True)
 class TtsConfig:
-    engine: str = "piper"
-    executable_path: str = ".\\tools\\piper\\piper.exe"
-    model_path: str = ".\\models\\tts\\zh-TW-medium.onnx"
-    config_path: str = ".\\models\\tts\\zh-TW-medium.onnx.json"
-    voice_name: str = ""
+    engine: str = "edge_tts"
+    executable_path: str = ""
+    model_path: str = ""
+    config_path: str = ""
+    voice_name: str = "zh-TW-HsiaoChenNeural"
     speaker_id: int = 0
     length_scale: float = 1.0
     noise_scale: float = 0.667
     noise_w: float = 0.8
     sample_rate: int = 22050
+
+
+@dataclass(slots=True)
+class TtsChannelOverride:
+    engine: str | None = None
+    executable_path: str | None = None
+    model_path: str | None = None
+    config_path: str | None = None
+    voice_name: str | None = None
+    speaker_id: int | None = None
+    length_scale: float | None = None
+    noise_scale: float | None = None
+    noise_w: float | None = None
+    sample_rate: int | None = None
+
+
+@dataclass(slots=True)
+class TtsChannelsConfig:
+    local: TtsChannelOverride = field(default_factory=TtsChannelOverride)
+    remote: TtsChannelOverride = field(default_factory=TtsChannelOverride)
 
 
 @dataclass(slots=True)
@@ -129,6 +149,7 @@ class AppConfig:
     tts: TtsConfig = field(default_factory=TtsConfig)
     meeting_tts: TtsConfig = field(default_factory=TtsConfig)
     local_tts: TtsConfig = field(default_factory=TtsConfig)
+    tts_channels: TtsChannelsConfig = field(default_factory=TtsChannelsConfig)
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
     health_last_success: HealthStateConfig = field(default_factory=HealthStateConfig)
 
@@ -164,6 +185,15 @@ class AppConfig:
         tts = TtsConfig(**(raw.get("tts") or {}))
         meeting_tts = TtsConfig(**(raw.get("meeting_tts") or raw.get("tts") or {}))
         local_tts = TtsConfig(**(raw.get("local_tts") or raw.get("tts") or {}))
+        tts_channels_raw = raw.get("tts_channels") or {}
+        tts_channels = TtsChannelsConfig(
+            local=TtsChannelOverride(**(tts_channels_raw.get("local") or {})),
+            remote=TtsChannelOverride(**(tts_channels_raw.get("remote") or {})),
+        )
+        if "meeting_tts" not in raw:
+            meeting_tts = merge_tts_configs(tts, meeting_tts, tts_channels.local)
+        if "local_tts" not in raw:
+            local_tts = merge_tts_configs(tts, local_tts, tts_channels.remote)
         runtime = RuntimeConfig(**(raw.get("runtime") or {}))
         health_last_success = HealthStateConfig(**(raw.get("health_last_success") or {}))
 
@@ -181,9 +211,27 @@ class AppConfig:
             tts=tts,
             meeting_tts=meeting_tts,
             local_tts=local_tts,
+            tts_channels=tts_channels,
             runtime=runtime,
             health_last_success=health_last_success,
         )
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def merge_tts_configs(base: TtsConfig, fallback: TtsConfig, override: TtsChannelOverride) -> TtsConfig:
+    return TtsConfig(
+        engine=(override.engine if override.engine is not None else fallback.engine) or base.engine,
+        executable_path=(override.executable_path if override.executable_path is not None else fallback.executable_path)
+        or base.executable_path,
+        model_path=(override.model_path if override.model_path is not None else fallback.model_path) or base.model_path,
+        config_path=(override.config_path if override.config_path is not None else fallback.config_path)
+        or base.config_path,
+        voice_name=(override.voice_name if override.voice_name is not None else fallback.voice_name) or base.voice_name,
+        speaker_id=(override.speaker_id if override.speaker_id is not None else fallback.speaker_id),
+        length_scale=(override.length_scale if override.length_scale is not None else fallback.length_scale),
+        noise_scale=(override.noise_scale if override.noise_scale is not None else fallback.noise_scale),
+        noise_w=(override.noise_w if override.noise_w is not None else fallback.noise_w),
+        sample_rate=(override.sample_rate if override.sample_rate is not None else fallback.sample_rate),
+    )

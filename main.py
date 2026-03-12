@@ -45,10 +45,15 @@ def _configure_runtime_logging() -> None:
         _FAULT_LOG_HANDLE.flush()
 
     def _sys_excepthook(exc_type, exc_value, exc_tb) -> None:
+        if issubclass(exc_type, KeyboardInterrupt):
+            # Ctrl+C is an expected shutdown path in terminal runs.
+            return
         _log_exception("Unhandled exception", exc_type, exc_value, exc_tb)
         sys.__excepthook__(exc_type, exc_value, exc_tb)
 
     def _threading_excepthook(args: threading.ExceptHookArgs) -> None:
+        if issubclass(args.exc_type, KeyboardInterrupt):
+            return
         _log_exception(f"Unhandled thread exception: {args.thread.name if args.thread else 'unknown'}", args.exc_type, args.exc_value, args.exc_traceback)
 
     sys.excepthook = _sys_excepthook

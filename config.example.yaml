@@ -1,94 +1,112 @@
 audio:
-  meeting_in: "Windows DirectSound::Voicemeeter Out B2 (VB-Audio Voicemeeter VAIO)"
-  microphone_in: "Windows WASAPI::Microphone (USB Audio Device)"
-  speaker_out: "Windows WASAPI::Headphones (Realtek Audio)"
-  meeting_out: "Windows DirectSound::Voicemeeter AUX Input (VB-Audio Voicemeeter VAIO)"
-
+  meeting_in: Windows WASAPI::CABLE Output (VB-Audio Virtual Cable)
+  microphone_in: Windows DirectSound::Voicemeeter Out B1 (VB-Audio Voicemeeter VAIO)
+  speaker_out: Windows DirectSound::Voicemeeter Input (VB-Audio Voicemeeter VAIO)
+  meeting_out: Windows WASAPI::CABLE Input (VB-Audio Virtual Cable)
+  meeting_in_gain: 1.0
+  microphone_in_gain: 1.0
+  speaker_out_volume: 1.0
+  meeting_out_volume: 1.0
 direction:
-  mode: "bidirectional"
-
+  mode: bidirectional
 language:
-  meeting_source: "en"
-  meeting_target: "zh-TW"
-  local_source: "zh-TW"
-  local_target: "en"
-
+  meeting_source: zh-TW
+  meeting_target: en
+  local_source: en
+  local_target: zh-TW
 asr:
-  engine: "faster_whisper"
-  model: "small"
-  device: "cuda"
-  compute_type: "float16"
+  engine: faster_whisper
+  model: large-v3
+  device: cuda
+  compute_type: float16
   beam_size: 1
   condition_on_previous_text: true
   vad:
     enabled: true
-    min_speech_duration_ms: 300
-    min_silence_duration_ms: 200
-    max_speech_duration_s: 15
+    min_speech_duration_ms: 120
+    min_silence_duration_ms: 450
+    max_speech_duration_s: 12.0
     speech_pad_ms: 250
-    rms_threshold: 0.02
+    rms_threshold: 0.015
   streaming:
     partial_interval_ms: 300
-    partial_history_seconds: 4
-    final_history_seconds: 8
-
+    partial_history_seconds: 2
+    final_history_seconds: 5
 llm:
-  backend: "ollama"
-  base_url: "http://127.0.0.1:11434"
-  model: "llama3.1:8b"
-  temperature: 0.2
-  top_p: 0.9
+  backend: lm_studio
+  base_url: http://127.0.0.1:1234
+  model: qwen/qwen3.5-9b
+  temperature: 0.1
+  top_p: 0.75
   request_timeout_sec: 20
   sliding_window:
     enabled: true
     trigger_tokens: 20
-    max_context_items: 6
-
-meeting_tts:
-  engine: "edge_tts"
-  executable_path: ".\\tools\\piper\\piper\\piper.exe"
-  model_path: ".\\models\\tts\\zh-TW-medium.onnx"
-  config_path: ".\\models\\tts\\zh-TW-medium.onnx.json"
-  voice_name: "zh-TW-HsiaoChenNeural"
-  speaker_id: 0
-  length_scale: 1.0
-  noise_scale: 0.667
-  noise_w: 0.8
-  sample_rate: 48000
-
-local_tts:
-  engine: "piper"
-  executable_path: ".\\tools\\piper\\piper\\piper.exe"
-  model_path: ".\\models\\tts\\zh-TW-medium.onnx"
-  config_path: ".\\models\\tts\\zh-TW-medium.onnx.json"
-  voice_name: ""
-  speaker_id: 0
-  length_scale: 1.0
-  noise_scale: 0.667
-  noise_w: 0.8
-  sample_rate: 48000
-
+    max_context_items: 8
 tts:
-  engine: "piper"
-  executable_path: ".\\tools\\piper\\piper\\piper.exe"
-  model_path: ".\\models\\tts\\zh-TW-medium.onnx"
-  config_path: ".\\models\\tts\\zh-TW-medium.onnx.json"
-  voice_name: ""
+  engine: edge_tts
+  executable_path: ''
+  model_path: ''
+  config_path: ''
+  voice_name: zh-TW-HsiaoChenNeural
   speaker_id: 0
-  length_scale: 1.0
+  length_scale: 0.9
   noise_scale: 0.667
-  noise_w: 0.8
+  noise_w: 0.65
   sample_rate: 48000
-
+meeting_tts:
+  engine: edge_tts
+  executable_path: ''
+  model_path: ''
+  config_path: ''
+  voice_name: zh-TW-HsiaoChenNeural
+  speaker_id: 0
+  length_scale: 0.9
+  noise_scale: 0.667
+  noise_w: 0.65
+  sample_rate: 48000
+local_tts:
+  engine: edge_tts
+  executable_path: ''
+  model_path: ''
+  config_path: ''
+  voice_name: en-GB-RyanNeural
+  speaker_id: 0
+  length_scale: 0.9
+  noise_scale: 0.667
+  noise_w: 0.5
+  sample_rate: 48000
+tts_channels:
+  local:
+    engine: edge_tts
+    executable_path: null
+    model_path: null
+    config_path: null
+    voice_name: zh-TW-HsiaoChenNeural
+    speaker_id: null
+    length_scale: null
+    noise_scale: null
+    noise_w: 0.65
+    sample_rate: 48000
+  remote:
+    engine: edge_tts
+    executable_path: null
+    model_path: null
+    config_path: null
+    voice_name: en-GB-RyanNeural
+    speaker_id: null
+    length_scale: null
+    noise_scale: null
+    noise_w: 0.5
+    sample_rate: 48000
 runtime:
-  sample_rate: 48000
-  chunk_ms: 100
-  asr_queue_maxsize: 128
-  llm_queue_maxsize: 32
-  tts_queue_maxsize: 32
+  sample_rate: 16000
+  chunk_ms: 60
+  asr_queue_maxsize: 32
+  llm_queue_maxsize: 12
+  tts_queue_maxsize: 12
   warmup_on_start: true
-
 health_last_success:
-  asr: ""
-  llm: ""
-  tts: ""
+  asr: ''
+  llm: ''
+  tts: ''

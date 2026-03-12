@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.local_ai.ollama_client import OllamaClient
-from app.schemas import AppConfig, TtsConfig
+from app.schemas import AppConfig, TtsChannelOverride, TtsConfig, merge_tts_configs
 
 _OFFICIAL_FASTER_WHISPER_MODELS = [
     "tiny",
@@ -95,6 +95,16 @@ class TtsWidgets:
     sample_rate_spin: QSpinBox
 
 
+@dataclass(slots=True)
+class TtsChannelWidgets:
+    group: QGroupBox
+    form: QFormLayout
+    engine_combo: QComboBox
+    edge_voice_combo: QComboBox
+    sample_rate_spin: QSpinBox
+    noise_w_spin: QDoubleSpinBox
+
+
 class LocalAiPage(QWidget):
     def __init__(
         self,
@@ -110,8 +120,9 @@ class LocalAiPage(QWidget):
 
         self.asr_group, asr_form = self._build_asr_group()
         self.llm_group, llm_form = self._build_llm_group()
-        self.meeting_tts = self._create_tts_widgets("喇叭翻譯語音")
-        self.local_tts = self._create_tts_widgets("會議翻譯語音")
+        self.base_tts = self._create_tts_widgets("TTS 主設定")
+        self.local_tts_override = self._create_tts_channel_widgets("本機輸出通道覆寫（local）")
+        self.remote_tts_override = self._create_tts_channel_widgets("遠端輸出通道覆寫（remote）")
         self.runtime_group, runtime_form = self._build_runtime_group()
 
         self.runtime_status_label = QLabel("執行狀態")
@@ -127,8 +138,9 @@ class LocalAiPage(QWidget):
         top_grid.addWidget(self.asr_group, 0, 0, 2, 1)
         top_grid.addWidget(self.llm_group, 0, 1)
         top_grid.addWidget(self.runtime_group, 1, 1)
-        top_grid.addWidget(self.meeting_tts.group, 2, 0)
-        top_grid.addWidget(self.local_tts.group, 2, 1)
+        top_grid.addWidget(self.base_tts.group, 2, 0, 1, 2)
+        top_grid.addWidget(self.local_tts_override.group, 3, 0)
+        top_grid.addWidget(self.remote_tts_override.group, 3, 1)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(6, 6, 6, 6)
@@ -139,16 +151,18 @@ class LocalAiPage(QWidget):
         self._normalize_form_label_widths(
             asr_form,
             llm_form,
-            self.meeting_tts.form,
-            self.local_tts.form,
+            self.base_tts.form,
+            self.local_tts_override.form,
+            self.remote_tts_override.form,
             runtime_form,
         )
         self._apply_group_heights(
             asr_form=asr_form,
             llm_form=llm_form,
             runtime_form=runtime_form,
-            meeting_tts_form=self.meeting_tts.form,
-            local_tts_form=self.local_tts.form,
+            base_tts_form=self.base_tts.form,
+            local_tts_override_form=self.local_tts_override.form,
+            remote_tts_override_form=self.remote_tts_override.form,
         )
 
         self._wire_events()
@@ -158,8 +172,7 @@ class LocalAiPage(QWidget):
         self._model_poll_timer.timeout.connect(self._drain_model_load_queue)
         self._model_poll_timer.start()
 
-        self._reload_tts_speaker_options(self.meeting_tts)
-        self._reload_tts_speaker_options(self.local_tts)
+        self._reload_tts_speaker_options(self.base_tts)
 
     def apply_config(self, config: AppConfig) -> None:
         self._suspend_notify = True
@@ -190,8 +203,9 @@ class LocalAiPage(QWidget):
             self.llm_trigger_tokens_spin.setValue(config.llm.sliding_window.trigger_tokens)
             self.llm_context_items_spin.setValue(config.llm.sliding_window.max_context_items)
 
-            self._apply_tts_config(self.meeting_tts, config.meeting_tts)
-            self._apply_tts_config(self.local_tts, config.local_tts)
+            self._apply_tts_config(self.base_tts, config.tts)
+            self._apply_tts_override(self.local_tts_override, config.tts_channels.local, fallback=config.meeting_tts)
+            self._apply_tts_override(self.remote_tts_override, config.tts_channels.remote, fallback=config.local_tts)
 
             self.runtime_sample_rate_spin.setValue(config.runtime.sample_rate)
             self.runtime_chunk_spin.setValue(config.runtime.chunk_ms)
@@ -230,9 +244,11 @@ class LocalAiPage(QWidget):
         config.llm.sliding_window.trigger_tokens = self.llm_trigger_tokens_spin.value()
         config.llm.sliding_window.max_context_items = self.llm_context_items_spin.value()
 
-        self._update_tts_config(self.meeting_tts, config.meeting_tts)
-        self._update_tts_config(self.local_tts, config.local_tts)
-        config.tts = config.meeting_tts
+        self._update_tts_config(self.base_tts, config.tts)
+        config.tts_channels.local = self._update_tts_override(self.local_tts_override)
+        config.tts_channels.remote = self._update_tts_override(self.remote_tts_override)
+        config.meeting_tts = merge_tts_configs(config.tts, config.meeting_tts, config.tts_channels.local)
+        config.local_tts = merge_tts_configs(config.tts, config.local_tts, config.tts_channels.remote)
 
         config.runtime.sample_rate = self.runtime_sample_rate_spin.value()
         config.runtime.chunk_ms = self.runtime_chunk_spin.value()
@@ -374,7 +390,6 @@ class LocalAiPage(QWidget):
 
     def _create_tts_widgets(self, title: str) -> TtsWidgets:
         engine_combo = QComboBox()
-        engine_combo.addItem("Piper（本機）", "piper")
         engine_combo.addItem("Edge TTS（雲端）", "edge_tts")
 
         edge_voice_combo = QComboBox()
@@ -419,12 +434,6 @@ class LocalAiPage(QWidget):
 
         form = QFormLayout()
         self._configure_form_layout(form)
-        form.addRow("引擎", engine_combo)
-        form.addRow("Edge 聲線", edge_voice_combo)
-        form.addRow("Piper 執行檔", exec_edit)
-        form.addRow("模型路徑", model_edit)
-        form.addRow("設定檔路徑", config_edit)
-        form.addRow("Piper 聲線", speaker_combo)
         form.addRow("語速 Length Scale", length_scale_spin)
         form.addRow("隨機度 Noise Scale", noise_scale_spin)
         form.addRow("音色 Noise W", noise_w_spin)
@@ -445,6 +454,47 @@ class LocalAiPage(QWidget):
             noise_scale_spin=noise_scale_spin,
             noise_w_spin=noise_w_spin,
             sample_rate_spin=sample_rate_spin,
+        )
+
+    def _create_tts_channel_widgets(self, title: str) -> TtsChannelWidgets:
+        engine_combo = QComboBox()
+        engine_combo.addItem("Edge TTS（雲端）", "edge_tts")
+
+        edge_voice_combo = QComboBox()
+        edge_voice_combo.addItem("沿用主設定", "")
+        for label, voice_name in _EDGE_VOICE_OPTIONS:
+            edge_voice_combo.addItem(label, voice_name)
+
+        sample_rate_spin = QSpinBox()
+        sample_rate_spin.setRange(0, 48000)
+        sample_rate_spin.setSpecialValueText("沿用主設定")
+
+        noise_w_spin = QDoubleSpinBox()
+        noise_w_spin.setRange(0.0, 2.0)
+        noise_w_spin.setSingleStep(0.05)
+        noise_w_spin.setDecimals(3)
+        noise_w_spin.setValue(0.0)
+        noise_w_spin.setSpecialValueText("沿用主設定")
+
+        for compact in (engine_combo, edge_voice_combo, sample_rate_spin, noise_w_spin):
+            self._set_uniform_field_style(compact, minimum_width=220)
+
+        form = QFormLayout()
+        self._configure_form_layout(form)
+        form.addRow("引擎", engine_combo)
+        form.addRow("Edge 聲線", edge_voice_combo)
+        form.addRow("取樣率", sample_rate_spin)
+        form.addRow("Noise W", noise_w_spin)
+
+        group = QGroupBox(title)
+        group.setLayout(form)
+        return TtsChannelWidgets(
+            group=group,
+            form=form,
+            engine_combo=engine_combo,
+            edge_voice_combo=edge_voice_combo,
+            sample_rate_spin=sample_rate_spin,
+            noise_w_spin=noise_w_spin,
         )
 
     def _wire_events(self) -> None:
@@ -518,25 +568,31 @@ class LocalAiPage(QWidget):
         ):
             self._connect_change_signal(widget)
 
-        self._bind_tts_widget_events(self.meeting_tts, "喇叭")
-        self._bind_tts_widget_events(self.local_tts, "會議")
+        self._bind_tts_widget_events(self.base_tts, "主設定")
+        self._bind_tts_channel_events(self.local_tts_override)
+        self._bind_tts_channel_events(self.remote_tts_override)
 
     def _bind_tts_widget_events(self, widgets: TtsWidgets, title: str) -> None:
-        widgets.exec_edit.set_picker(lambda: self._pick_path(widgets.exec_edit, f"選擇{title} Piper 執行檔", True))
-        widgets.model_edit.set_picker(lambda: self._pick_path(widgets.model_edit, f"選擇{title} TTS 模型", False))
-        widgets.config_edit.set_picker(lambda: self._pick_path(widgets.config_edit, f"選擇{title} TTS 設定檔", False))
-        widgets.config_edit.textChanged.connect(lambda *_: self._reload_tts_speaker_options(widgets))
+        widgets.engine_combo.setVisible(False)
+        widgets.edge_voice_combo.setVisible(False)
+        widgets.exec_edit.setVisible(False)
+        widgets.model_edit.setVisible(False)
+        widgets.config_edit.setVisible(False)
+        widgets.speaker_combo.setVisible(False)
         for widget in (
-            widgets.engine_combo,
-            widgets.edge_voice_combo,
-            widgets.exec_edit,
-            widgets.model_edit,
-            widgets.config_edit,
-            widgets.speaker_combo,
             widgets.length_scale_spin,
             widgets.noise_scale_spin,
             widgets.noise_w_spin,
             widgets.sample_rate_spin,
+        ):
+            self._connect_change_signal(widget)
+
+    def _bind_tts_channel_events(self, widgets: TtsChannelWidgets) -> None:
+        for widget in (
+            widgets.engine_combo,
+            widgets.edge_voice_combo,
+            widgets.sample_rate_spin,
+            widgets.noise_w_spin,
         ):
             self._connect_change_signal(widget)
 
@@ -554,17 +610,38 @@ class LocalAiPage(QWidget):
 
     @staticmethod
     def _update_tts_config(widgets: TtsWidgets, config: TtsConfig) -> None:
-        config.engine = str(widgets.engine_combo.currentData() or "piper")
-        config.voice_name = str(widgets.edge_voice_combo.currentData() or "")
-        config.executable_path = widgets.exec_edit.text().strip()
-        config.model_path = widgets.model_edit.text().strip()
-        config.config_path = widgets.config_edit.text().strip()
-        speaker_id = widgets.speaker_combo.currentData()
-        config.speaker_id = int(speaker_id) if speaker_id is not None else 0
+        config.engine = "edge_tts"
+        # Base profile only stores shared synthesis params; per-channel voice is set via overrides.
+        if not (config.voice_name or "").strip():
+            config.voice_name = "zh-TW-HsiaoChenNeural"
+        config.executable_path = ""
+        config.model_path = ""
+        config.config_path = ""
+        config.speaker_id = 0
         config.length_scale = float(widgets.length_scale_spin.value())
         config.noise_scale = float(widgets.noise_scale_spin.value())
         config.noise_w = float(widgets.noise_w_spin.value())
         config.sample_rate = widgets.sample_rate_spin.value()
+
+    def _apply_tts_override(self, widgets: TtsChannelWidgets, override: TtsChannelOverride, *, fallback: TtsConfig) -> None:
+        self._select_combo_data(widgets.engine_combo, override.engine or "")
+        voice = override.voice_name if override.voice_name is not None else fallback.voice_name
+        self._select_combo_data(widgets.edge_voice_combo, voice or "")
+        widgets.sample_rate_spin.setValue(int(override.sample_rate) if override.sample_rate is not None else 0)
+        widgets.noise_w_spin.setValue(float(override.noise_w) if override.noise_w is not None else 0.0)
+
+    @staticmethod
+    def _update_tts_override(widgets: TtsChannelWidgets) -> TtsChannelOverride:
+        engine = str(widgets.engine_combo.currentData() or "")
+        voice_name = str(widgets.edge_voice_combo.currentData() or "")
+        sample_rate = widgets.sample_rate_spin.value()
+        noise_w = widgets.noise_w_spin.value()
+        return TtsChannelOverride(
+            engine=engine or None,
+            voice_name=voice_name or None,
+            sample_rate=sample_rate if sample_rate > 0 else None,
+            noise_w=noise_w if noise_w > 0 else None,
+        )
 
     def _reload_tts_speaker_options(self, widgets: TtsWidgets, selected_id: int | None = None) -> None:
         speaker_rows = self._load_speaker_rows_from_tts_config(widgets.config_edit.text().strip())
@@ -750,23 +827,28 @@ class LocalAiPage(QWidget):
         asr_form: QFormLayout,
         llm_form: QFormLayout,
         runtime_form: QFormLayout,
-        meeting_tts_form: QFormLayout,
-        local_tts_form: QFormLayout,
+        base_tts_form: QFormLayout,
+        local_tts_override_form: QFormLayout,
+        remote_tts_override_form: QFormLayout,
     ) -> None:
         llm_height = self._estimate_group_height(llm_form)
         runtime_height = self._estimate_group_height(runtime_form)
         asr_height = max(self._estimate_group_height(asr_form), llm_height + runtime_height + _GROUP_ROW_SPACING)
-        tts_height = max(
-            self._estimate_group_height(meeting_tts_form),
-            self._estimate_group_height(local_tts_form),
+        base_tts_height = self._estimate_group_height(base_tts_form)
+        tts_override_height = max(
+            self._estimate_group_height(local_tts_override_form),
+            self._estimate_group_height(remote_tts_override_form),
         )
 
         self.asr_group.setMinimumHeight(asr_height)
         self.llm_group.setMinimumHeight(llm_height)
         self.runtime_group.setMinimumHeight(runtime_height)
-        self.meeting_tts.group.setMinimumHeight(tts_height)
-        self.local_tts.group.setMinimumHeight(tts_height)
-        self.setMinimumHeight(asr_height + tts_height + (_GROUP_ROW_SPACING * 2) + _PAGE_MIN_PADDING)
+        self.base_tts.group.setMinimumHeight(base_tts_height)
+        self.local_tts_override.group.setMinimumHeight(tts_override_height)
+        self.remote_tts_override.group.setMinimumHeight(tts_override_height)
+        self.setMinimumHeight(
+            asr_height + base_tts_height + tts_override_height + (_GROUP_ROW_SPACING * 3) + _PAGE_MIN_PADDING
+        )
 
     @staticmethod
     def _estimate_group_height(form: QFormLayout) -> int:

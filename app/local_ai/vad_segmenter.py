@@ -43,8 +43,8 @@ class VadSegmenter:
 
     @property
     def effective_rms_threshold(self) -> float:
-        # Real meeting loopback levels are often far below 0.01.
-        return min(float(self._config.rms_threshold), 0.0025)
+        # Honor the user-configured threshold from UI/config directly.
+        return max(0.0, float(self._config.rms_threshold))
 
     def update(self, chunk: np.ndarray, sample_rate: float) -> VadDecision:
         if sample_rate <= 0:

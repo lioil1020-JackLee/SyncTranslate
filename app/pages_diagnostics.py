@@ -2,54 +2,103 @@ from __future__ import annotations
 
 from typing import Callable
 
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QTextEdit, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QGroupBox, QHBoxLayout, QPushButton, QTextEdit, QVBoxLayout, QWidget, QSizePolicy
 
 
 class DiagnosticsPage(QWidget):
     def __init__(
         self,
         on_health_check: Callable[[bool], None],
-        on_test_meeting_tts: Callable[[], None],
-        on_test_speaker_tts: Callable[[], None],
         on_export_diagnostics: Callable[[], None],
+        on_save_config: Callable[[], None],
+        on_reload_config: Callable[[], None],
     ) -> None:
         super().__init__()
         self._on_health_check = on_health_check
-        self._on_test_meeting_tts = on_test_meeting_tts
-        self._on_test_speaker_tts = on_test_speaker_tts
         self._on_export_diagnostics = on_export_diagnostics
+        self._on_save_config = on_save_config
+        self._on_reload_config = on_reload_config
+        self._asr_text = "-"
+        self._llm_text = "-"
+        self._tts_text = "-"
 
-        title = QLabel("\u672c\u5730\u57f7\u884c\u8a3a\u65b7")
-        self.health_label = QLabel("health: -")
-        self.details = QTextEdit()
-        self.details.setReadOnly(True)
+        self.diagnostics_details = QTextEdit()
+        self.diagnostics_details.setReadOnly(True)
+        self.diagnostics_details.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+        self.extra_panel: QWidget | None = None
 
         buttons = QHBoxLayout()
-        check_btn = QPushButton("\u5065\u5eb7\u6aa2\u67e5")
-        warmup_btn = QPushButton("\u9810\u71b1 + \u6aa2\u67e5")
-        test_meeting_btn = QPushButton("\u6e2c\u8a66\u9060\u7aef\u8f38\u51faTTS\uff08\u672c\u5730->\u9060\u7aef\uff09")
-        test_speaker_btn = QPushButton("\u6e2c\u8a66\u5587\u53ed\u8f38\u51faTTS\uff08\u9060\u7aef->\u672c\u5730\uff09")
-        export_btn = QPushButton("\u532f\u51fa\u8a3a\u65b7\u8cc7\u8a0a")
+        save_btn = QPushButton("儲存設定")
+        reload_btn = QPushButton("重新載入")
+        check_btn = QPushButton("健康檢查")
+        warmup_btn = QPushButton("預熱 + 檢查")
+        export_btn = QPushButton("匯出診斷資訊")
+        save_btn.clicked.connect(self._on_save_config)
+        reload_btn.clicked.connect(self._on_reload_config)
         check_btn.clicked.connect(lambda: self._on_health_check(False))
         warmup_btn.clicked.connect(lambda: self._on_health_check(True))
-        test_meeting_btn.clicked.connect(self._on_test_meeting_tts)
-        test_speaker_btn.clicked.connect(self._on_test_speaker_tts)
         export_btn.clicked.connect(self._on_export_diagnostics)
+        buttons.addWidget(save_btn)
+        buttons.addWidget(reload_btn)
         buttons.addWidget(check_btn)
         buttons.addWidget(warmup_btn)
-        buttons.addWidget(test_meeting_btn)
-        buttons.addWidget(test_speaker_btn)
         buttons.addWidget(export_btn)
 
-        layout = QVBoxLayout(self)
-        layout.addWidget(title)
-        layout.addWidget(self.health_label)
-        layout.addLayout(buttons)
-        layout.addWidget(self.details)
-        layout.addStretch(1)
+        diagnostics_group = QGroupBox("診斷視窗")
+        diagnostics_group_layout = QVBoxLayout(diagnostics_group)
+        diagnostics_group_layout.setContentsMargins(8, 8, 8, 8)
+        diagnostics_group_layout.addWidget(self.diagnostics_details, 1)
 
-    def set_health_summary(self, text: str) -> None:
-        self.health_label.setText(text)
+        content_layout = QVBoxLayout()
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+        content_layout.addWidget(diagnostics_group, 1)
+
+        layout = QVBoxLayout(self)
+        layout.addLayout(buttons)
+        self.extra_container = QVBoxLayout()
+        self.extra_container.setContentsMargins(0, 0, 0, 0)
+        self.extra_container.setSpacing(0)
+        content_layout.addLayout(self.extra_container, 2)
+        layout.addLayout(content_layout, 1)
+        self._refresh_diagnostics_text()
+
+    def _refresh_diagnostics_text(self) -> None:
+        self.diagnostics_details.setPlainText(
+            "\n".join(
+                [
+                    f"ASR：{self._asr_text}",
+                    f"LLM：{self._llm_text}",
+                    f"TTS：{self._tts_text}",
+                ]
+            )
+        )
+
+    def set_extra_panel(self, widget: QWidget) -> None:
+        if self.extra_panel is widget:
+            return
+        if self.extra_panel is not None:
+            self.extra_container.removeWidget(self.extra_panel)
+            self.extra_panel.setParent(None)
+        self.extra_panel = widget
+        self.extra_container.addWidget(widget, 1)
+
+    def set_asr_details(self, text: str) -> None:
+        self._asr_text = text.strip() or "-"
+        self._refresh_diagnostics_text()
+
+    def set_llm_details(self, text: str) -> None:
+        self._llm_text = text.strip() or "-"
+        self._refresh_diagnostics_text()
+
+    def set_tts_details(self, text: str) -> None:
+        self._tts_text = text.strip() or "-"
+        self._refresh_diagnostics_text()
 
     def set_health_details(self, text: str) -> None:
-        self.details.setPlainText(text)
+        clean = text.strip() or "-"
+        self._asr_text = clean
+        self._llm_text = clean
+        self._tts_text = clean
+        self._refresh_diagnostics_text()

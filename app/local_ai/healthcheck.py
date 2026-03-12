@@ -4,9 +4,7 @@ from dataclasses import dataclass
 
 from app.local_ai.faster_whisper_engine import FasterWhisperEngine
 from app.local_ai.ollama_client import OllamaClient
-from app.local_ai.piper_tts import PiperTtsEngine
 from app.model_providers import EdgeTtsProvider
-from app.local_ai.runtime_paths import path_exists
 
 
 @dataclass(slots=True)
@@ -47,13 +45,7 @@ def run_local_healthcheck(
 
     llm_ok, llm_message = llm_client.health_check()
 
-    if isinstance(tts_engine, PiperTtsEngine):
-        exe_ok = path_exists(tts_engine.executable_path)
-        model_ok = path_exists(tts_engine.model_path)
-        if not exe_ok or not model_ok:
-            tts_ok = False
-            tts_message = "piper executable/model not found"
-    elif isinstance(tts_engine, EdgeTtsProvider):
+    if isinstance(tts_engine, EdgeTtsProvider):
         try:
             import edge_tts  # type: ignore  # noqa: F401
         except Exception:

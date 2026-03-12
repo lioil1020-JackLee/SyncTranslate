@@ -4,6 +4,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 
+
 from app.local_ai.ollama_client import OllamaClient
 from app.local_ai.streaming_asr import AsrEvent
 
@@ -25,7 +26,7 @@ class TranslationStitcher:
         enabled: bool = True,
         trigger_tokens: int = 20,
         max_context_items: int = 6,
-        min_partial_interval_ms: int = 800,
+        min_partial_interval_ms: int = 600,
     ) -> None:
         self._translator = translator
         self._source_lang = source_lang
@@ -37,6 +38,16 @@ class TranslationStitcher:
         self._min_partial_interval_ms = max(300, int(min_partial_interval_ms))
         self._last_spoken = ""
 
+    @staticmethod
+    def _estimated_units(text: str) -> int:
+        # CJK sentences often contain no spaces; split()-based token counting
+        # underestimates partial readiness and delays translation.
+        cjk_count = sum(1 for ch in text if "\u4e00" <= ch <= "\u9fff")
+        if cjk_count >= 4:
+            return max(1, cjk_count // 2)
+        words = [part for part in text.split() if part.strip()]
+        return max(1, len(words))
+
     def process(self, event: AsrEvent) -> StitchResult | None:
         text = event.text.strip()
         if not text:
@@ -45,9 +56,15 @@ class TranslationStitcher:
             return None
 
         now_ms = int(time.monotonic() * 1000)
+        effective_trigger = min(self._trigger_tokens, 24)
+        units = self._estimated_units(text)
+        segment_ms = max(0, int(event.end_ms) - int(event.start_ms))
         can_translate_partial = (
             (not event.is_final)
-            and len(text.split()) >= self._trigger_tokens
+            and (
+                units >= effective_trigger
+                or (segment_ms >= 900 and units >= 6)
+            )
             and (now_ms - self._last_partial_call_ms >= self._min_partial_interval_ms)
         )
         if not event.is_final and not can_translate_partial:

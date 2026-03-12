@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import io
 import tempfile
+from threading import Lock
 import wave
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
+
+
+_TRANSCRIBE_LOCK = Lock()
 
 
 @dataclass(slots=True)
@@ -68,7 +72,10 @@ class FasterWhisperEngine:
             normalized_language = _normalize_lang(self.language)
             if normalized_language:
                 kwargs["language"] = normalized_language
-            segments, _ = model.transcribe(str(wav_path), **kwargs)
+            # Native decode/inference stack can crash under concurrent calls.
+            # Serialize transcribe to favor stability over peak throughput.
+            with _TRANSCRIBE_LOCK:
+                segments, _ = model.transcribe(str(wav_path), **kwargs)
             return "".join(str(getattr(seg, "text", "")) for seg in segments).strip()
         except RuntimeError as exc:
             if self._should_fallback_to_cpu(exc):

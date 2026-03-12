@@ -22,14 +22,20 @@ class LiveCaptionPage(QWidget):
         self,
         on_clear_clicked: Callable[[], None] | None = None,
         on_start_clicked: Callable[[], None] | None = None,
+        on_test_local_tts_clicked: Callable[[], None] | None = None,
         on_settings_changed: Callable[[], None] | None = None,
     ) -> None:
         super().__init__()
         self._on_clear_clicked = on_clear_clicked
         self._on_start_clicked = on_start_clicked
+        self._on_test_local_tts_clicked = on_test_local_tts_clicked
         self._on_settings_changed = on_settings_changed
         self._suspend_notify = False
 
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItem("遠端 -> 本地", "meeting_to_local")
+        self.mode_combo.addItem("本地 -> 遠端", "local_to_meeting")
+        self.mode_combo.addItem("雙向模式", "bidirectional")
         self.remote_lang_combo = QComboBox()
         self.local_lang_combo = QComboBox()
         for label, source, target in _LANG_CHOICES:
@@ -41,6 +47,8 @@ class LiveCaptionPage(QWidget):
         self.start_btn.clicked.connect(self._handle_start_clicked)
         self.clear_btn = QPushButton("\u6e05\u7a7a\u5b57\u5e55")
         self.clear_btn.clicked.connect(self._handle_clear_clicked)
+        self.test_local_tts_btn = QPushButton("測試本地輸出TTS")
+        self.test_local_tts_btn.clicked.connect(self._handle_test_local_tts_clicked)
 
         self.remote_original = QTextEdit()
         self.remote_translated = QTextEdit()
@@ -56,17 +64,21 @@ class LiveCaptionPage(QWidget):
             editor.setMinimumHeight(220)
             editor.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
-        for combo in (self.remote_lang_combo, self.local_lang_combo):
+        for combo in (self.mode_combo, self.remote_lang_combo, self.local_lang_combo):
             combo.currentIndexChanged.connect(self._notify_settings_changed)
 
         top_row = QHBoxLayout()
         top_row.setContentsMargins(0, 0, 0, 0)
         top_row.setSpacing(8)
+        top_row.addWidget(QLabel("模式"))
+        top_row.addWidget(self.mode_combo, 0)
+        top_row.addSpacing(8)
         top_row.addWidget(QLabel("\u9060\u7aef\u8a9e\u8a00\u65b9\u5411"))
         top_row.addWidget(self.remote_lang_combo, 0)
         top_row.addSpacing(8)
         top_row.addWidget(QLabel("\u672c\u5730\u8a9e\u8a00\u65b9\u5411"))
         top_row.addWidget(self.local_lang_combo, 0)
+        top_row.addWidget(self.test_local_tts_btn, 0)
         top_row.addStretch(1)
         top_row.addWidget(self.clear_btn, 0)
         top_row.addWidget(self.start_btn, 0)
@@ -95,18 +107,24 @@ class LiveCaptionPage(QWidget):
     def apply_config(self, config: AppConfig) -> None:
         self._suspend_notify = True
         try:
+            self._set_mode_combo(config.direction.mode)
             self._set_lang_combo(self.remote_lang_combo, config.language.meeting_source, config.language.meeting_target)
             self._set_lang_combo(self.local_lang_combo, config.language.local_source, config.language.local_target)
         finally:
             self._suspend_notify = False
 
     def update_config(self, config: AppConfig) -> None:
+        config.direction.mode = self.selected_mode()
         r_source, r_target = self._get_lang_pair(self.remote_lang_combo, default=("en", "zh-TW"))
         l_source, l_target = self._get_lang_pair(self.local_lang_combo, default=("zh-TW", "en"))
         config.language.meeting_source = r_source
         config.language.meeting_target = r_target
         config.language.local_source = l_source
         config.language.local_target = l_target
+
+    def selected_mode(self) -> str:
+        value = self.mode_combo.currentData()
+        return str(value) if value else "meeting_to_local"
 
     def set_start_enabled(self, enabled: bool) -> None:
         self.start_btn.setEnabled(enabled)
@@ -128,6 +146,10 @@ class LiveCaptionPage(QWidget):
         self.clear()
         if self._on_clear_clicked:
             self._on_clear_clicked()
+
+    def _handle_test_local_tts_clicked(self) -> None:
+        if self._on_test_local_tts_clicked:
+            self._on_test_local_tts_clicked()
 
     def clear(self) -> None:
         self.remote_original.clear()
@@ -167,3 +189,8 @@ class LiveCaptionPage(QWidget):
         idx = combo.findData(_lang_key(source, target))
         if idx >= 0:
             combo.setCurrentIndex(idx)
+
+    def _set_mode_combo(self, mode: str) -> None:
+        idx = self.mode_combo.findData(mode)
+        if idx >= 0:
+            self.mode_combo.setCurrentIndex(idx)

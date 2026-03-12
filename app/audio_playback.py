@@ -36,10 +36,19 @@ class AudioPlayback:
             return
         requested_sample_rate = float(sample_rate)
         with self._play_lock:
-            self.stop()
-            if self._try_play_via_soundcard(audio=audio, sample_rate=requested_sample_rate, output_device_name=output_device_name):
-                return
+            self._stop_current_stream()
             errors: list[str] = []
+            try:
+                if self._try_play_via_soundcard(
+                    audio=audio,
+                    sample_rate=requested_sample_rate,
+                    output_device_name=output_device_name,
+                ):
+                    return
+            except Exception as exc:
+                # If soundcard backend fails, continue to sounddevice fallback candidates.
+                errors.append(str(exc))
+
             tried_indices: set[int] = set()
             selected_candidates = self._find_output_devices(output_device_name)
             if self._try_play_on_candidates(
@@ -51,6 +60,21 @@ class AudioPlayback:
             ):
                 return
 
+            # If selector includes a hostapi and that path fails, retry by device name only.
+            # This recovers from stale/unsupported hostapi choices (e.g. DirectSound vs WASAPI).
+            canonical_name = canonical_device_name(output_device_name)
+            if canonical_name and canonical_name != output_device_name:
+                fallback_candidates = self._find_output_devices(canonical_name)
+                fallback_candidates = [pair for pair in fallback_candidates if pair[0] not in tried_indices]
+                if self._try_play_on_candidates(
+                    candidates=fallback_candidates,
+                    audio=audio,
+                    requested_sample_rate=requested_sample_rate,
+                    errors=errors,
+                    tried_indices=tried_indices,
+                ):
+                    return
+
             if not errors:
                 raise ValueError(f"Output device not found: {output_device_name}")
             raise ValueError(
@@ -59,6 +83,10 @@ class AudioPlayback:
             )
 
     def stop(self) -> None:
+        with self._play_lock:
+            self._stop_current_stream()
+
+    def _stop_current_stream(self) -> None:
         with self._state_lock:
             stream = self._stream
             self._stream = None
@@ -278,6 +306,7 @@ class AudioPlayback:
         preferred_hostapi = preferred_hostapi_index_for_platform()
         normalized_target = normalize_device_text(requested_name)
         target_tokens = device_tokens(requested_name)
+        target_looks_virtual = any(token in normalized_target for token in ("voicemeeter", "vb audio", "virtual", "cable"))
         ranked: list[tuple[int, int, int, int, dict[str, object]]] = []
 
         for idx, item in devices:
@@ -306,10 +335,29 @@ class AudioPlayback:
 
             hostapi = int(item.get("hostapi", -1))
             if hostapi_name:
-                hostapi_matches = str(sd.query_hostapis()[hostapi].get("name", "")) == hostapi_name
+                resolved_hostapi_name = str(sd.query_hostapis()[hostapi].get("name", ""))
+                hostapi_matches = resolved_hostapi_name == hostapi_name
+                # For virtual devices, tolerate stale DirectSound selection and prefer WASAPI/KS.
                 if not hostapi_matches:
-                    continue
-                hostapi_rank = 0
+                    if target_looks_virtual:
+                        lowered = resolved_hostapi_name.strip().lower()
+                        if lowered not in ("windows wasapi", "windows wdm-ks"):
+                            continue
+                    else:
+                        continue
+
+                if target_looks_virtual:
+                    lowered = resolved_hostapi_name.strip().lower()
+                    if lowered == "windows wasapi":
+                        hostapi_rank = -2
+                    elif lowered == "windows wdm-ks":
+                        hostapi_rank = -1
+                    elif hostapi_matches:
+                        hostapi_rank = 0
+                    else:
+                        hostapi_rank = 1
+                else:
+                    hostapi_rank = 0 if hostapi_matches else 1
             else:
                 hostapi_rank = 0 if hostapi == preferred_hostapi else 1
             extra_token_penalty = max(0, len(name_tokens) - len(target_tokens))

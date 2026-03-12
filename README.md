@@ -1,61 +1,41 @@
 # SyncTranslate
 
-SyncTranslate 是一個 Windows 桌面即時口譯工具，專注在「會議雙向翻譯」場景。
+SyncTranslate 是一個 Windows 桌面即時口譯工具，聚焦在會議雙向翻譯場景。
 
-它可以同時處理兩條音訊方向：
-- 會議來音 (英文) -> 中文字幕 + 中文語音播到你的耳機
-- 本地麥克風 (中文) -> 英文字幕 + 英文語音送回會議軟體
-
-整體流程為 Audio Capture -> ASR -> LLM 翻譯 -> TTS -> Audio Playback，並提供 GUI 介面做路由設定、健康檢查、字幕監看與除錯。
-
-## 目錄
-
-- [核心功能](#核心功能)
-- [系統需求](#系統需求)
-- [快速開始](#快速開始)
-- [執行方式](#執行方式)
-- [操作流程](#操作流程)
-- [設定檔說明](#設定檔說明)
-- [專案架構](#專案架構)
-- [執行架構與資料流](#執行架構與資料流)
-- [健康檢查與診斷](#健康檢查與診斷)
-- [常見問題](#常見問題)
-- [開發者說明](#開發者說明)
+目前版本的實際流程是：音訊擷取 -> 串流 ASR -> LLM 翻譯 -> Edge TTS -> 指定輸出裝置播放，並以 PySide6 GUI 管理音訊路由、模型參數、即時字幕與健康檢查。
 
 ## 核心功能
 
-- 雙向翻譯管線
-	- `meeting_to_local`: 會議音訊翻譯到本地
-	- `local_to_meeting`: 麥克風音訊翻譯回會議
+- 雙向翻譯模式
+	- `meeting_to_local`: 遠端會議語音翻成本地字幕與本地播放
+	- `local_to_meeting`: 本地麥克風語音翻成遠端字幕與遠端播放
 	- `bidirectional`: 雙向同時執行
-- 即時字幕與最終字幕分離顯示
-	- partial/final 事件分流，降低延遲與誤觸發
 - 本地 ASR
-	- 使用 `faster-whisper`，支援模型、裝置、VAD 參數調整
+	- 使用 `faster-whisper`
+	- 支援模型、裝置、VAD 與 streaming 參數調整
 - 本地 LLM 翻譯
-	- 支援 `Ollama` 與 `LM Studio` 相容路徑
-	- Sliding Window 拼接上下文，減少句子切割帶來的語意斷裂
-- 雙 TTS 引擎
-	- `piper`: 離線語音
-	- `edge_tts`: 雲端語音
-- 音訊路由與系統音量整合
-	- 裝置選擇、增益/音量控制、路由檢查、Voicemeeter 輔助
-- 診斷能力
-	- 子程序健康檢查 (ASR/LLM/TTS)
-	- 輸出裝置語音測試
-	- 錯誤事件紀錄與診斷匯出
+	- 支援 `Ollama` 與 `LM Studio`
+	- Sliding window 翻譯拼接，降低片段切分造成的語意斷裂
+- TTS
+	- 現行只保留 `edge-tts`
+	- 支援主設定加通道覆寫：本機輸出與遠端輸出可用不同聲線/取樣率
+- 音訊路由
+	- 本地輸入與本地輸出可從 GUI 選擇
+	- 遠端輸入與遠端輸出目前固定為 VB-CABLE 裝置
+	- 支援 Windows 系統音量同步
+- 診斷與除錯
+	- 健康檢查：ASR / LLM / TTS
+	- 即時 runtime stats 與最近錯誤
+	- 匯出診斷資訊
 
 ## 系統需求
 
-- OS: Windows 10/11
-- Python: 3.11 以上
-- 套件管理: `uv` (建議)
-- 音訊需求:
-	- `sounddevice` + PortAudio 可正常列出裝置
-	- 若使用虛擬混音路由，建議搭配 Voicemeeter
-- 建議硬體:
-	- NVIDIA GPU (執行 ASR 會更順)
-	- 足夠 CPU 與 RAM 以支援雙向即時處理
+- Windows 10/11
+- Python 3.11+
+- 建議使用 `uv`
+- `sounddevice` 與 PortAudio 可正常列出音訊裝置
+- 若要走會議雙向路由，需先安裝並設定 VB-CABLE 或相容虛擬音訊裝置
+- 若要順跑 `faster-whisper`，建議使用 NVIDIA GPU；CPU 也可運行但延遲較高
 
 ## 快速開始
 
@@ -65,39 +45,19 @@ SyncTranslate 是一個 Windows 桌面即時口譯工具，專注在「會議雙
 uv sync --extra local
 ```
 
-2. 複製設定檔
+2. 建立設定檔
 
 ```powershell
 Copy-Item .\config.example.yaml .\config.yaml
 ```
 
-3. 啟動程式
+3. 啟動 GUI
 
 ```powershell
 uv run python .\main.py
 ```
 
-4. 先跑快速檢查 (可選)
-
-```powershell
-uv run python .\main.py --check
-```
-
-## 執行方式
-
-- 開啟 GUI:
-
-```powershell
-uv run python .\main.py
-```
-
-- 指定設定檔:
-
-```powershell
-uv run python .\main.py --config .\config.yaml
-```
-
-- 僅做設定與裝置檢查:
+4. 只做快速檢查
 
 ```powershell
 uv run python .\main.py --check
@@ -105,155 +65,194 @@ uv run python .\main.py --check
 
 ## 操作流程
 
-1. 開啟「音訊路由與診斷」
-2. 選擇 `meeting_in`、`microphone_in`、`speaker_out`、`meeting_out`
-3. 設定方向模式 (`meeting_to_local` / `local_to_meeting` / `bidirectional`)
-4. 到「參數設定」調整 ASR、LLM、TTS
-5. 執行健康檢查，確認三段狀態為正常
-6. 到「即時字幕」按「開始」
-7. 視需要在除錯頁觀察路由與 runtime stats
+1. 到「音訊路由與診斷」確認本地輸入與本地輸出裝置。
+2. 遠端路由使用固定 VB-CABLE 裝置；若系統名稱不同，先調整 config.example.yaml 或程式常數。
+3. 到「參數設定」調整 ASR、LLM、TTS 主設定與通道覆寫。
+4. 執行健康檢查，確認 ASR / LLM / TTS 都可用。
+5. 到「即時字幕」選擇模式與語言方向。
+6. 需要時先按「測試本地輸出TTS」。
+7. 按「開始」啟動 session。
 
 ## 設定檔說明
 
-主設定檔為 `config.yaml`。若不存在，程式會以 `config.example.yaml` 當 fallback。
+主設定檔為 `config.yaml`。如果檔案不存在，程式會使用 `config.example.yaml` 作為 fallback。
 
-### audio
+### `audio`
 
-- `meeting_in`: 會議來音的輸入裝置名稱
-- `microphone_in`: 本地麥克風輸入裝置
-- `speaker_out`: 翻譯後播放到本地耳機/喇叭的輸出裝置
-- `meeting_out`: 翻譯後回送會議的輸出裝置
-- `meeting_in_gain`: 會議輸入增益，預設 `1.0`
-- `microphone_in_gain`: 麥克風輸入增益，預設 `1.0`
-- `speaker_out_volume`: 本地播放音量比例，預設 `1.0`
-- `meeting_out_volume`: 回送會議音量比例，預設 `1.0`
+- `meeting_in`: 遠端輸入裝置。現行 UI 固定為 `Windows WASAPI::CABLE Output (VB-Audio Virtual Cable)`。
+- `microphone_in`: 本地麥克風輸入裝置。
+- `speaker_out`: 本地播放裝置。
+- `meeting_out`: 遠端輸出裝置。現行 UI 固定為 `Windows WASAPI::CABLE Input (VB-Audio Virtual Cable)`。
+- `meeting_in_gain`: 遠端輸入增益。
+- `microphone_in_gain`: 本地麥克風增益。
+- `speaker_out_volume`: 本地輸出音量比例。
+- `meeting_out_volume`: 遠端輸出音量比例。
 
-### direction
+### `direction`
 
-- `mode`: 
-	- `meeting_to_local`
-	- `local_to_meeting`
-	- `bidirectional`
+- `mode`: `meeting_to_local`、`local_to_meeting`、`bidirectional`
 
-### language
+### `language`
 
-- `meeting_source`: 會議來源語言 (例如 `en`)
-- `meeting_target`: 會議翻譯目標語言 (例如 `zh-TW`)
-- `local_source`: 本地來源語言
-- `local_target`: 本地翻譯目標語言
+- `meeting_source` / `meeting_target`: 遠端方向語言
+- `local_source` / `local_target`: 本地方向語言
 
-### asr
+### `asr`
 
-- `engine`: 目前預設 `faster_whisper`
+- `engine`: 目前為 `faster_whisper`
 - `model`: 例如 `small`、`medium`、`large-v3`
-- `device`: `cuda` / `cpu` / `auto`
-- `compute_type`: `float16` / `int8` 等
+- `device`: `cuda`、`cpu`、`auto`
+- `compute_type`: 通常由裝置推導，GUI 會自動處理
 - `beam_size`: Beam Search 寬度
-- `condition_on_previous_text`: 是否參考前文
+- `condition_on_previous_text`: 是否延續前文
 
 `asr.vad`:
-- `enabled`: 啟用 VAD
-- `min_speech_duration_ms`: 最短語音段長
-- `min_silence_duration_ms`: 最短靜音段長
-- `max_speech_duration_s`: 最長語音段
-- `speech_pad_ms`: 語音前後補白
-- `rms_threshold`: 音量門檻
+
+- `enabled`
+- `min_speech_duration_ms`
+- `min_silence_duration_ms`
+- `max_speech_duration_s`
+- `speech_pad_ms`
+- `rms_threshold`
 
 `asr.streaming`:
-- `partial_interval_ms`: partial 更新間隔
-- `partial_history_seconds`: partial 保留秒數
-- `final_history_seconds`: final 保留秒數
 
-### llm
+- `partial_interval_ms`
+- `partial_history_seconds`
+- `final_history_seconds`
+
+### `llm`
 
 - `backend`: `ollama` 或 `lm_studio`
-- `base_url`: 後端 API URL
+- `base_url`: 後端 API 位址
 - `model`: 模型名稱
-- `temperature`: 溫度
-- `top_p`: nucleus sampling
-- `request_timeout_sec`: 逾時秒數
+- `temperature`
+- `top_p`
+- `request_timeout_sec`
 
 `llm.sliding_window`:
-- `enabled`: 是否啟用上下文拼接
-- `trigger_tokens`: 觸發翻譯最小 token 門檻
-- `max_context_items`: 最多帶入歷史片段數
 
-### meeting_tts / local_tts / tts
+- `enabled`
+- `trigger_tokens`
+- `max_context_items`
 
-- `engine`: `piper` 或 `edge_tts`
-- `executable_path`: piper 執行檔路徑
-- `model_path`: piper 語音模型路徑
-- `config_path`: piper 模型設定路徑
-- `voice_name`: edge_tts voice 名稱
-- `speaker_id`: piper speaker id
-- `length_scale`: 語速控制
-- `noise_scale`: 音色擾動
-- `noise_w`: 發音節奏擾動
-- `sample_rate`: TTS 輸出採樣率
+### `tts`
 
-說明:
-- `meeting_tts` 用於「會議來音 -> 本地」方向
-- `local_tts` 用於「本地麥克風 -> 會議」方向
-- `tts` 為舊欄位相容；目前 UI 會以 `meeting_tts`、`local_tts` 為主
+`tts` 是共用主設定，儲存兩個方向共用的語音參數。
 
-### runtime
+- `engine`: 目前固定 `edge_tts`
+- `voice_name`: 預設聲線
+- `length_scale`
+- `noise_scale`
+- `noise_w`
+- `sample_rate`
 
-- `sample_rate`: 全域擷取採樣率
-- `chunk_ms`: 音訊切塊大小
-- `asr_queue_maxsize`: ASR 佇列上限
-- `llm_queue_maxsize`: LLM 佇列上限
-- `tts_queue_maxsize`: TTS 佇列上限
-- `warmup_on_start`: 啟動時是否自動預熱/健康檢查
+### `tts_channels`
 
-### health_last_success
+用來覆寫單一輸出通道設定。
 
-- `asr` / `llm` / `tts`: 最近一次成功狀態的摘要字串
+- `tts_channels.local`: 遠端來音翻譯後，播到本機喇叭的通道
+- `tts_channels.remote`: 本地麥克風翻譯後，送往遠端會議的通道
 
-## 專案架構
+可覆寫欄位包含：
+
+- `engine`
+- `voice_name`
+- `sample_rate`
+- `noise_w`
+
+### `meeting_tts` / `local_tts`
+
+這兩個欄位目前仍保留，主要用於相容既有設定與執行期展開後的有效設定。
+
+### `runtime`
+
+- `sample_rate`
+- `chunk_ms`
+- `asr_queue_maxsize`
+- `llm_queue_maxsize`
+- `tts_queue_maxsize`
+- `warmup_on_start`
+
+### `health_last_success`
+
+- `asr`
+- `llm`
+- `tts`
+
+## 目前架構
 
 ```text
 SyncTranslate/
-	main.py                        # 程式入口與 UI 啟動
-	config.example.yaml            # 範例設定
-	config.yaml                    # 本機設定 (不建議提交)
+	main.py
+	config.example.yaml
+	config.yaml
 	app/
-		ui_main.py                   # 主視窗、分頁與 session 控制
-		session_controller.py        # 雙向 pipeline 啟停協調
-		pipeline_direction.py        # 單方向處理管線
-		audio_capture.py             # 音訊擷取
-		audio_playback.py            # 音訊播放與 fallback
-		audio_device_selection.py    # 裝置名稱比對/選擇
-		device_manager.py            # 輸入輸出裝置查詢
-		router.py                    # 路由檢查
-		settings.py                  # YAML 設定載入/儲存
-		schemas.py                   # 設定與資料結構
-		transcript_buffer.py         # 字幕緩衝
-		debug_panel.py               # 除錯分頁
-		pages_*.py                   # 各 UI 子頁面
-		windows_volume.py            # Windows 系統音量整合
+		ui_main.py                 # 主視窗與整體流程控制
+		session_controller.py      # session 啟停協調
+		audio_router.py            # 新的雙向音訊路由中樞
+		audio_input_manager.py     # 本地/遠端輸入管理
+		asr_manager.py             # 串流 ASR 管理
+		translator_manager.py      # 翻譯與 channel 對應
+		tts_manager.py             # TTS 佇列與播放
+		state_manager.py           # 執行中狀態與回授抑制
+		audio_capture.py
+		audio_playback.py
+		audio_device_selection.py
+		device_manager.py
+		model_providers.py         # 目前只保留 EdgeTtsProvider
+		schemas.py
+		settings.py
+		transcript_buffer.py
+		debug_panel.py
+		pages_audio_routing.py
+		pages_diagnostics.py
+		pages_io_control.py
+		pages_live_caption.py
+		pages_local_ai.py
+		windows_volume.py
 		local_ai/
-			faster_whisper_engine.py   # ASR 封裝
-			streaming_asr.py           # 串流 ASR 管理
-			vad_segmenter.py           # 語音切段
-			translation_stitcher.py    # 翻譯上下文拼接
-			ollama_client.py           # LLM 客戶端
-			piper_tts.py               # Piper TTS 引擎
-			tts_factory.py             # TTS 工廠
-			healthcheck.py             # 健康檢查邏輯
-			healthcheck_worker.py      # 子程序健康檢查入口
-			runtime_paths.py           # 路徑解析工具
+			faster_whisper_engine.py
+			streaming_asr.py
+			vad_segmenter.py
+			translation_stitcher.py
+			ollama_client.py
+			tts_factory.py
+			healthcheck.py
+			healthcheck_worker.py
+			runtime_paths.py
 ```
 
-## 執行架構與資料流
+## 執行資料流
 
-每個方向都使用 `DirectionalPipeline`，流程如下：
+目前不再使用舊的 `DirectionalPipeline`。新的流程由 `AudioRouter` 統一協調：
 
-1. `AudioCapture` 依 `chunk_ms` 擷取音訊
-2. `StreamingAsr` 收 chunk，VAD 判斷切段
-3. 產生 `AsrEvent` (partial/final)
-4. `TranslationStitcher` 收斂語境後呼叫 LLM
-5. 翻譯結果進入 `TranscriptBuffer`
-6. 需播報時送入 TTS queue
+1. `AudioInputManager` 啟動本地或遠端音訊擷取。
+2. `ASRManager` 為每個來源維護 `StreamingAsr` 實例。
+3. `TranslatorManager` 根據來源方向呼叫對應的 `TranslationStitcher`。
+4. `TranscriptBuffer` 同時保存 original / translated 字幕。
+5. `TTSManager` 依通道將翻譯文字送到本地或遠端輸出。
+6. `StateManager` 在遠端 TTS 播放期間暫停遠端 ASR，降低回授與自我收音。
+
+## 健康檢查與診斷
+
+- 健康檢查透過 `app.local_ai.healthcheck_worker` 子程序執行。
+- 檢查項目：
+	- ASR 模型是否可載入
+	- LLM 後端是否可連線
+	- `edge-tts` 套件是否可用
+- 診斷頁可執行：
+	- 儲存設定
+	- 重新載入設定
+	- 健康檢查
+	- 預熱 + 檢查
+	- 匯出診斷資訊
+
+## 開發備註
+
+- `requirements.txt` 是 `pyproject.toml` 的平面鏡像。
+- 舊的 `piper_tts.py`、`pipeline_direction.py`、`router.py`、`asr_worker.py` 已移除。
+- `model_providers.py` 目前只保留實際被使用的 Edge TTS provider，避免留下未接線的舊 provider 假象。
 7. TTS worker 合成語音後交給 `AudioPlayback`
 
 `SessionController` 依 mode 控制兩條 pipeline 的啟停。UI 端會持續拉取狀態更新字幕與除錯面板。
@@ -264,7 +263,7 @@ SyncTranslate/
 - 檢查項目:
 	- ASR 模型可用性
 	- LLM 後端可連通性
-	- TTS 引擎可用性 (Piper 路徑、Edge 套件)
+	- TTS 引擎可用性 (Edge 套件)
 - 診斷匯出:
 	- 產生 `diagnostics_YYYYMMDD_HHMMSS.txt`
 	- 包含路由、模型、執行參數與最近錯誤

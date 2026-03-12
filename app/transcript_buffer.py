@@ -22,9 +22,17 @@ class TranscriptBuffer:
     def append(self, source: str, text: str, is_final: bool) -> None:
         item = TranscriptItem(source=source, text=text, is_final=is_final, created_at=datetime.now())
         with self._lock:
-            if self._items and self._items[-1].source == source and not self._items[-1].is_final:
-                self._items.pop()
+            self._remove_latest_partial_locked(source)
             self._items.append(item)
+
+    def _remove_latest_partial_locked(self, source: str) -> None:
+        items = list(self._items)
+        for idx in range(len(items) - 1, -1, -1):
+            current = items[idx]
+            if current.source == source and not current.is_final:
+                items.pop(idx)
+                self._items = deque(items, maxlen=self._items.maxlen)
+                return
 
     def clear(self) -> None:
         with self._lock:

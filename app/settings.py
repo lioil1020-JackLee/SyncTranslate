@@ -100,6 +100,8 @@ def migrate_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
     result["tts"]["sample_rate"] = int(tts.get("sample_rate", result["tts"]["sample_rate"]))
     result["meeting_tts"] = deepcopy(result["tts"])
     result["local_tts"] = deepcopy(result["tts"])
+    result["tts_channels"]["local"] = deepcopy(result["meeting_tts"])
+    result["tts_channels"]["remote"] = deepcopy(result["local_tts"])
 
     runtime = raw.get("runtime") or {}
     result["runtime"]["sample_rate"] = int(runtime.get("sample_rate", raw.get("sample_rate", 48000)))
@@ -125,8 +127,6 @@ def is_legacy_config(raw: dict[str, Any]) -> bool:
         or "asr" not in raw
         or "llm" not in raw
         or "tts" not in raw
-        or "meeting_tts" not in raw
-        or "local_tts" not in raw
         or "runtime" not in raw
     ):
         return True

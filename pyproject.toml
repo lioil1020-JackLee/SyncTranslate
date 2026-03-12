@@ -1,7 +1,7 @@
 [project]
 name = "synctranslate"
 version = "0.1.0"
-description = "Local desktop interpreter assistant for meetings"
+description = "Windows desktop live interpreter for meeting audio with local ASR and local LLM backends"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -15,6 +15,9 @@ dependencies = [
     "soundcard>=0.4.5",
     "sounddevice>=0.5.5",
 ]
+
+[project.scripts]
+synctranslate = "main:main"
 
 [project.optional-dependencies]
 local = [
