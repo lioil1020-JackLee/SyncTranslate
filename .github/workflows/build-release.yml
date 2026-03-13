@@ -54,7 +54,18 @@ jobs:
         if: matrix.build_type == 'onedir'
         shell: pwsh
         run: |
-          Compress-Archive -Path .\dist\SyncTranslate-onedir\* -DestinationPath .\dist\SyncTranslate-onedir-windows.zip -Force
+          if (Test-Path .\release_staging) {
+            Remove-Item .\release_staging -Recurse -Force
+          }
+          New-Item -ItemType Directory -Path .\release_staging | Out-Null
+          Copy-Item .\dist\SyncTranslate-onedir .\release_staging\SyncTranslate-onedir -Recurse
+          Compress-Archive -Path .\release_staging\SyncTranslate-onedir -DestinationPath .\dist\SyncTranslate-onedir-windows.zip -Force
+
+      - name: Rename onefile output
+        if: matrix.build_type == 'onefile'
+        shell: pwsh
+        run: |
+          Copy-Item .\dist\SyncTranslate.exe .\dist\SyncTranslate-onefile-windows.exe -Force
 
       - name: Upload artifacts
         if: matrix.build_type == 'onedir'
@@ -71,7 +82,7 @@ jobs:
         with:
           name: SyncTranslate-${{ matrix.build_type }}-windows
           path: |
-            dist/SyncTranslate.exe
+            dist/SyncTranslate-onefile-windows.exe
           if-no-files-found: error
 
   release:
@@ -89,7 +100,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p final_assets
-          find raw_artifacts -type f \( -name "SyncTranslate-onedir-windows.zip" -o -name "SyncTranslate.exe" \) -exec cp {} final_assets/ \;
+          find raw_artifacts -type f \( -name "SyncTranslate-onedir-windows.zip" -o -name "SyncTranslate-onefile-windows.exe" \) -exec cp {} final_assets/ \;
           ls -lh final_assets
 
       - name: Create release
