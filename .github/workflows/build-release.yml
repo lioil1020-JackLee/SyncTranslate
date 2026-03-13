@@ -36,9 +36,14 @@ jobs:
       - name: Install dependencies
         shell: pwsh
         run: |
-          uv venv
-          uv pip install pyinstaller
-          uv pip install -r requirements.txt
+          uv sync --locked --extra local --group dev
+
+      - name: Verify runtime imports
+        shell: pwsh
+        run: |
+          uv run python -c "import ssl; print('ssl ok')"
+          uv run python -c "import edge_tts; print('edge_tts ok')"
+          uv run python -c "import faster_whisper; print('faster_whisper ok')"
 
       - name: Build with PyInstaller
         shell: pwsh
