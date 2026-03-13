@@ -20,6 +20,8 @@ class FasterWhisperEngine:
     compute_type: str = "int8_float16"
     beam_size: int = 1
     condition_on_previous_text: bool = True
+    temperature_fallback: str = "0.0,0.2,0.4"
+    no_speech_threshold: float = 0.6
     language: str = ""
     _model: object | None = field(default=None, init=False, repr=False)
     _runtime_device: str | None = field(default=None, init=False, repr=False)
@@ -68,6 +70,8 @@ class FasterWhisperEngine:
                 "beam_size": max(1, int(self.beam_size)),
                 "condition_on_previous_text": bool(self.condition_on_previous_text),
                 "vad_filter": vad_filter,
+                "temperature": _parse_temperature_fallback(self.temperature_fallback),
+                "no_speech_threshold": max(0.0, min(1.0, float(self.no_speech_threshold))),
             }
             normalized_language = _normalize_lang(self.language)
             if normalized_language:
@@ -170,3 +174,22 @@ def _normalize_lang(language: str) -> str:
     if "-" in text:
         return text.split("-", 1)[0]
     return text
+
+
+def _parse_temperature_fallback(raw: str) -> list[float]:
+    text = (raw or "").strip()
+    if not text:
+        return [0.0, 0.2, 0.4]
+    values: list[float] = []
+    for part in text.split(","):
+        token = part.strip()
+        if not token:
+            continue
+        try:
+            value = float(token)
+        except Exception:
+            continue
+        value = max(0.0, min(2.0, value))
+        if value not in values:
+            values.append(value)
+    return values or [0.0, 0.2, 0.4]

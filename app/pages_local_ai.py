@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPlainTextEdit,
     QPushButton,
     QSpinBox,
     QSizePolicy,
@@ -30,19 +31,25 @@ from app.local_ai.lm_studio_client import LmStudioClient
 from app.schemas import AppConfig, TtsChannelOverride, TtsConfig, merge_tts_configs
 
 _OFFICIAL_FASTER_WHISPER_MODELS = [
-    "tiny",
-    "tiny.en",
-    "base",
-    "base.en",
-    "small",
-    "small.en",
-    "medium",
-    "medium.en",
-    "large-v1",
-    "large-v2",
+    # 多語言模型（由大到小）
     "large-v3",
-    "distil-large-v2",
+    "large-v3-turbo",
+    "large-v2",
+    "large-v1",
+    "medium",
+    "small",
+    "base",
+    "tiny",
+    # 英文專用模型
+    "medium.en",
+    "small.en",
+    "base.en",
+    "tiny.en",
+    # Distil 輕量縮小版
     "distil-large-v3",
+    "distil-large-v2",
+    "distil-medium.en",
+    "distil-small.en",
 ]
 
 # 常用取樣率選項（顯示用與資料用）
@@ -58,13 +65,13 @@ _EDGE_VOICE_OPTIONS: list[tuple[str, str]] = [
     ("英文男聲（英國）- Ryan", "en-GB-RyanNeural"),
 ]
 
-_CONTROL_HEIGHT = 30
-_FORM_V_SPACING = 6
+_CONTROL_HEIGHT = 26
+_FORM_V_SPACING = 4
 # reduce extra group height to free vertical space
-_GROUP_EXTRA_HEIGHT = 24
+_GROUP_EXTRA_HEIGHT = 18
 _GROUP_ROW_SPACING = 8
 # reduce page padding to allow slightly more content
-_PAGE_MIN_PADDING = 8
+_PAGE_MIN_PADDING = 6
 
 
 class PathPickerLineEdit(QLineEdit):
@@ -120,13 +127,15 @@ class LocalAiPage(QWidget):
         self._model_load_queue: Queue[tuple[bool, list[str] | str]] = Queue()
         self._model_loading = False
         self._preferred_llm_model = ""
+        self.setStyleSheet("QWidget { font-size: 10pt; }")
 
         self.asr_group, asr_form = self._build_asr_group()
         self.llm_group, llm_form = self._build_llm_group()
-        self.base_tts = self._create_tts_widgets("TTS 主設定")
-        self.local_tts_override = self._create_tts_channel_widgets("本機輸出通道覆寫（local）")
-        self.remote_tts_override = self._create_tts_channel_widgets("遠端輸出通道覆寫（remote）")
         self.runtime_group, runtime_form = self._build_runtime_group()
+        self.base_tts = self._create_tts_widgets("TTS 模型設定")
+        self.local_tts_override = self._create_tts_channel_widgets("中文輸出通道覆寫", "zh")
+        self.remote_tts_override = self._create_tts_channel_widgets("英文輸出通道覆寫", "en")
+        self.tts_channel_group = self._build_tts_channel_compact_group()
 
         self.runtime_status_label = QLabel("執行狀態")
         self.runtime_status_label.setWordWrap(True)
@@ -137,16 +146,15 @@ class LocalAiPage(QWidget):
         left_column.setContentsMargins(0, 0, 0, 0)
         left_column.setSpacing(8)
         left_column.addWidget(self.asr_group)
-        left_column.addWidget(self.llm_group)
+        left_column.addWidget(self.runtime_group)
         left_column.addStretch(1)
 
         right_column = QVBoxLayout()
         right_column.setContentsMargins(0, 0, 0, 0)
         right_column.setSpacing(8)
-        right_column.addWidget(self.runtime_group)
+        right_column.addWidget(self.llm_group)
         right_column.addWidget(self.base_tts.group)
-        right_column.addWidget(self.local_tts_override.group)
-        right_column.addWidget(self.remote_tts_override.group)
+        right_column.addWidget(self.tts_channel_group)
         right_column.addStretch(1)
 
         top_columns = QHBoxLayout()
@@ -156,8 +164,8 @@ class LocalAiPage(QWidget):
         top_columns.addLayout(right_column, 1)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(6, 6, 6, 6)
-        root.setSpacing(8)
+        root.setContentsMargins(_PAGE_MIN_PADDING, _PAGE_MIN_PADDING, _PAGE_MIN_PADDING, _PAGE_MIN_PADDING)
+        root.setSpacing(6)
         root.addLayout(top_columns)
         root.addStretch(1)
 
@@ -165,8 +173,6 @@ class LocalAiPage(QWidget):
             asr_form,
             llm_form,
             self.base_tts.form,
-            self.local_tts_override.form,
-            self.remote_tts_override.form,
             runtime_form,
         )
         # Let layout use natural heights to avoid visual compression and large empty blocks.
@@ -183,43 +189,99 @@ class LocalAiPage(QWidget):
     def apply_config(self, config: AppConfig) -> None:
         self._suspend_notify = True
         try:
-            self._select_combo_data(self.asr_engine_combo, config.asr.engine)
-            self._set_combo_text(self.asr_model_combo, config.asr.model)
-            self._select_combo_data(self.asr_device_combo, config.asr.device)
-            self.asr_compute_label.setText(self._compute_type_for_device(config.asr.device))
-            self.asr_beam_spin.setValue(config.asr.beam_size)
-            self.asr_condition_prev_check.setChecked(config.asr.condition_on_previous_text)
-            self.asr_partial_interval_spin.setValue(config.asr.streaming.partial_interval_ms)
-            self.asr_partial_history_spin.setValue(config.asr.streaming.partial_history_seconds)
-            self.asr_final_history_spin.setValue(config.asr.streaming.final_history_seconds)
-            self.asr_vad_enabled.setChecked(config.asr.vad.enabled)
-            self.asr_min_speech_spin.setValue(config.asr.vad.min_speech_duration_ms)
-            self.asr_min_silence_spin.setValue(config.asr.vad.min_silence_duration_ms)
-            self.asr_speech_pad_spin.setValue(config.asr.vad.speech_pad_ms)
-            self.asr_max_speech_spin.setValue(int(config.asr.vad.max_speech_duration_s))
-            self.asr_rms_threshold_spin.setValue(config.asr.vad.rms_threshold)
+            zh_asr = config.asr_channels.local
+            en_asr = config.asr_channels.remote
+            self._select_combo_data(self.asr_engine_combo, zh_asr.engine)
+            self._set_combo_text(self.asr_model_combo, zh_asr.model)
+            self._set_combo_text(self.remote_asr_model_combo, en_asr.model)
+            self._select_combo_data(self.asr_device_combo, zh_asr.device)
+            self.asr_compute_label.setText(self._compute_type_for_device(zh_asr.device))
+            self.asr_beam_spin.setValue(zh_asr.beam_size)
+            self.remote_asr_beam_spin.setValue(en_asr.beam_size)
+            self.asr_condition_prev_check.setChecked(zh_asr.condition_on_previous_text)
+            self.remote_asr_condition_prev_check.setChecked(en_asr.condition_on_previous_text)
+            self.asr_temperature_fallback_local_edit.setText(zh_asr.temperature_fallback)
+            self.asr_temperature_fallback_remote_edit.setText(en_asr.temperature_fallback)
+            self.asr_partial_interval_spin.setValue(zh_asr.streaming.partial_interval_ms)
+            self.remote_asr_partial_interval_spin.setValue(en_asr.streaming.partial_interval_ms)
+            self.asr_partial_history_spin.setValue(zh_asr.streaming.partial_history_seconds)
+            self.remote_asr_partial_history_spin.setValue(en_asr.streaming.partial_history_seconds)
+            self.asr_final_history_spin.setValue(zh_asr.streaming.final_history_seconds)
+            self.remote_asr_final_history_spin.setValue(en_asr.streaming.final_history_seconds)
+            self.asr_vad_enabled.setChecked(zh_asr.vad.enabled)
+            self.remote_asr_vad_enabled.setChecked(en_asr.vad.enabled)
+            self.asr_min_speech_spin.setValue(zh_asr.vad.min_speech_duration_ms)
+            self.remote_asr_min_speech_spin.setValue(en_asr.vad.min_speech_duration_ms)
+            self.asr_min_silence_spin.setValue(zh_asr.vad.min_silence_duration_ms)
+            self.remote_asr_min_silence_spin.setValue(en_asr.vad.min_silence_duration_ms)
+            self.asr_speech_pad_spin.setValue(zh_asr.vad.speech_pad_ms)
+            self.remote_asr_speech_pad_spin.setValue(en_asr.vad.speech_pad_ms)
+            self.asr_max_speech_spin.setValue(int(zh_asr.vad.max_speech_duration_s))
+            self.remote_asr_max_speech_spin.setValue(int(en_asr.vad.max_speech_duration_s))
+            self.asr_rms_threshold_spin.setValue(zh_asr.vad.rms_threshold)
+            self.remote_asr_rms_threshold_spin.setValue(en_asr.vad.rms_threshold)
+            self.asr_no_speech_threshold_spin.setValue(zh_asr.no_speech_threshold)
+            self.remote_asr_no_speech_threshold_spin.setValue(en_asr.no_speech_threshold)
+            self.asr_queue_local_spin.setValue(
+                int(getattr(config.runtime, "asr_queue_maxsize_local", config.runtime.asr_queue_maxsize))
+            )
+            self.asr_queue_remote_spin.setValue(
+                int(getattr(config.runtime, "asr_queue_maxsize_remote", config.runtime.asr_queue_maxsize))
+            )
 
-            self._select_combo_data(self.llm_backend_combo, config.llm.backend)
-            self._apply_backend_url(config.llm.backend)
-            self._preferred_llm_model = config.llm.model.strip()
-            self._set_combo_text(self.llm_model_combo, config.llm.model)
-            self.llm_timeout_spin.setValue(config.llm.request_timeout_sec)
-            self.llm_temperature_spin.setValue(config.llm.temperature)
-            self.llm_top_p_spin.setValue(config.llm.top_p)
-            self.llm_sliding_window_enabled.setChecked(config.llm.sliding_window.enabled)
-            self.llm_trigger_tokens_spin.setValue(config.llm.sliding_window.trigger_tokens)
-            self.llm_context_items_spin.setValue(config.llm.sliding_window.max_context_items)
+            zh_en_llm = config.llm_channels.local
+            en_zh_llm = config.llm_channels.remote
+            self._select_combo_data(self.llm_backend_combo, zh_en_llm.backend)
+            self._apply_backend_url(zh_en_llm.backend, self.llm_url_label)
+            self._preferred_llm_model = zh_en_llm.model.strip()
+            self._set_combo_text(self.llm_model_combo, zh_en_llm.model)
+            self._set_combo_text(self.remote_llm_model_combo, en_zh_llm.model)
+            self.llm_timeout_spin.setValue(zh_en_llm.request_timeout_sec)
+            self.remote_llm_timeout_spin.setValue(en_zh_llm.request_timeout_sec)
+            self.llm_temperature_spin.setValue(zh_en_llm.temperature)
+            self.remote_llm_temperature_spin.setValue(en_zh_llm.temperature)
+            self.llm_top_p_spin.setValue(zh_en_llm.top_p)
+            self.remote_llm_top_p_spin.setValue(en_zh_llm.top_p)
+            self.llm_max_tokens_spin.setValue(zh_en_llm.max_output_tokens)
+            self.remote_llm_max_tokens_spin.setValue(en_zh_llm.max_output_tokens)
+            self.llm_repeat_penalty_spin.setValue(zh_en_llm.repeat_penalty)
+            self.remote_llm_repeat_penalty_spin.setValue(en_zh_llm.repeat_penalty)
+            self.llm_stop_tokens_edit.setPlainText(zh_en_llm.stop_tokens)
+            self.remote_llm_stop_tokens_edit.setPlainText(en_zh_llm.stop_tokens)
+            self.llm_sliding_window_enabled.setChecked(zh_en_llm.sliding_window.enabled)
+            self.remote_llm_sliding_window_enabled.setChecked(en_zh_llm.sliding_window.enabled)
+            self.llm_trigger_tokens_spin.setValue(zh_en_llm.sliding_window.trigger_tokens)
+            self.remote_llm_trigger_tokens_spin.setValue(en_zh_llm.sliding_window.trigger_tokens)
+            self.llm_context_items_spin.setValue(zh_en_llm.sliding_window.max_context_items)
+            self.remote_llm_context_items_spin.setValue(en_zh_llm.sliding_window.max_context_items)
+            self.llm_queue_local_spin.setValue(
+                int(getattr(config.runtime, "llm_queue_maxsize_local", config.runtime.llm_queue_maxsize))
+            )
+            self.llm_queue_remote_spin.setValue(
+                int(getattr(config.runtime, "llm_queue_maxsize_remote", config.runtime.llm_queue_maxsize))
+            )
 
             self._apply_tts_config(self.base_tts, config.tts)
             self._apply_tts_override(self.local_tts_override, config.tts_channels.local, fallback=config.meeting_tts)
             self._apply_tts_override(self.remote_tts_override, config.tts_channels.remote, fallback=config.local_tts)
+            self.tts_queue_local_spin.setValue(
+                int(getattr(config.runtime, "tts_queue_maxsize_local", config.runtime.tts_queue_maxsize))
+            )
+            self.tts_queue_remote_spin.setValue(
+                int(getattr(config.runtime, "tts_queue_maxsize_remote", config.runtime.tts_queue_maxsize))
+            )
 
             self._select_combo_data(self.runtime_sample_rate_spin, config.runtime.sample_rate)
             self.runtime_chunk_spin.setValue(config.runtime.chunk_ms)
-            self.runtime_asr_q_spin.setValue(config.runtime.asr_queue_maxsize)
-            self.runtime_llm_q_spin.setValue(config.runtime.llm_queue_maxsize)
-            self.runtime_tts_q_spin.setValue(config.runtime.tts_queue_maxsize)
-            self.runtime_warmup_on_start_check.setChecked(config.runtime.warmup_on_start)
+            self.runtime_tts_cancel_pending_check.setChecked(config.runtime.tts_cancel_pending_on_new_final)
+            self._select_combo_data(self.runtime_tts_cancel_policy_combo, str(getattr(config.runtime, "tts_cancel_policy", "all_pending")))
+            self.runtime_tts_max_wait_spin.setValue(int(getattr(config.runtime, "tts_max_wait_ms", 4000)))
+            self.runtime_tts_max_chars_spin.setValue(int(getattr(config.runtime, "tts_max_chars", 200)))
+            self.runtime_llm_streaming_tokens_spin.setValue(int(getattr(config.runtime, "llm_streaming_tokens", 16)))
+            self.runtime_max_pipeline_latency_spin.setValue(int(getattr(config.runtime, "max_pipeline_latency_ms", 3000)))
+            self.runtime_translation_cache_spin.setValue(config.runtime.translation_exact_cache_size)
+            self.runtime_prefix_delta_spin.setValue(config.runtime.translation_prefix_min_delta_chars)
+            self.runtime_tts_drop_threshold_spin.setValue(int(getattr(config.runtime, "tts_drop_backlog_threshold", 6)))
             self.runtime_local_echo_guard_enabled_check.setChecked(config.runtime.local_echo_guard_enabled)
             self.runtime_local_echo_guard_resume_delay_spin.setValue(config.runtime.local_echo_guard_resume_delay_ms)
             self.runtime_remote_echo_guard_resume_delay_spin.setValue(config.runtime.remote_echo_guard_resume_delay_ms)
@@ -228,57 +290,122 @@ class LocalAiPage(QWidget):
         self._reload_llm_models()
 
     def update_config(self, config: AppConfig) -> None:
-        config.asr.engine = str(self.asr_engine_combo.currentData() or "faster_whisper")
-        config.asr.model = self.asr_model_combo.currentText().strip() or "large-v3"
-        config.asr.device = str(self.asr_device_combo.currentData() or "auto")
-        config.asr.compute_type = self._compute_type_for_device(config.asr.device)
-        config.asr.beam_size = self.asr_beam_spin.value()
-        config.asr.condition_on_previous_text = self.asr_condition_prev_check.isChecked()
-        config.asr.streaming.partial_interval_ms = self.asr_partial_interval_spin.value()
-        config.asr.streaming.partial_history_seconds = self.asr_partial_history_spin.value()
-        config.asr.streaming.final_history_seconds = self.asr_final_history_spin.value()
-        config.asr.vad.enabled = self.asr_vad_enabled.isChecked()
-        config.asr.vad.min_speech_duration_ms = self.asr_min_speech_spin.value()
-        config.asr.vad.min_silence_duration_ms = self.asr_min_silence_spin.value()
-        config.asr.vad.speech_pad_ms = self.asr_speech_pad_spin.value()
-        config.asr.vad.max_speech_duration_s = float(self.asr_max_speech_spin.value())
-        config.asr.vad.rms_threshold = float(self.asr_rms_threshold_spin.value())
+        zh_asr = config.asr_channels.local
+        en_asr = config.asr_channels.remote
+        shared_engine = str(self.asr_engine_combo.currentData() or "faster_whisper")
+        shared_device = str(self.asr_device_combo.currentData() or "cuda")
+        shared_compute = self._compute_type_for_device(shared_device)
+        zh_asr.engine = shared_engine
+        zh_asr.model = self.asr_model_combo.currentText().strip() or "large-v3"
+        zh_asr.device = shared_device
+        zh_asr.compute_type = shared_compute
+        zh_asr.beam_size = self.asr_beam_spin.value()
+        zh_asr.condition_on_previous_text = self.asr_condition_prev_check.isChecked()
+        zh_asr.temperature_fallback = self.asr_temperature_fallback_local_edit.text().strip() or "0.0,0.2"
+        zh_asr.streaming.partial_interval_ms = self.asr_partial_interval_spin.value()
+        zh_asr.streaming.partial_history_seconds = self.asr_partial_history_spin.value()
+        zh_asr.streaming.final_history_seconds = self.asr_final_history_spin.value()
+        zh_asr.vad.enabled = self.asr_vad_enabled.isChecked()
+        zh_asr.vad.min_speech_duration_ms = self.asr_min_speech_spin.value()
+        zh_asr.vad.min_silence_duration_ms = self.asr_min_silence_spin.value()
+        zh_asr.vad.speech_pad_ms = self.asr_speech_pad_spin.value()
+        zh_asr.vad.max_speech_duration_s = float(self.asr_max_speech_spin.value())
+        zh_asr.vad.rms_threshold = float(self.asr_rms_threshold_spin.value())
+        zh_asr.no_speech_threshold = float(self.asr_no_speech_threshold_spin.value())
+        config.runtime.asr_queue_maxsize_local = self.asr_queue_local_spin.value()
+
+        en_asr.engine = shared_engine
+        en_asr.model = self.remote_asr_model_combo.currentText().strip() or "large-v3"
+        en_asr.device = shared_device
+        en_asr.compute_type = shared_compute
+        en_asr.beam_size = self.remote_asr_beam_spin.value()
+        en_asr.condition_on_previous_text = self.remote_asr_condition_prev_check.isChecked()
+        en_asr.temperature_fallback = self.asr_temperature_fallback_remote_edit.text().strip() or "0.0,0.2,0.4"
+        en_asr.streaming.partial_interval_ms = self.remote_asr_partial_interval_spin.value()
+        en_asr.streaming.partial_history_seconds = self.remote_asr_partial_history_spin.value()
+        en_asr.streaming.final_history_seconds = self.remote_asr_final_history_spin.value()
+        en_asr.vad.enabled = self.remote_asr_vad_enabled.isChecked()
+        en_asr.vad.min_speech_duration_ms = self.remote_asr_min_speech_spin.value()
+        en_asr.vad.min_silence_duration_ms = self.remote_asr_min_silence_spin.value()
+        en_asr.vad.speech_pad_ms = self.remote_asr_speech_pad_spin.value()
+        en_asr.vad.max_speech_duration_s = float(self.remote_asr_max_speech_spin.value())
+        en_asr.vad.rms_threshold = float(self.remote_asr_rms_threshold_spin.value())
+        en_asr.no_speech_threshold = float(self.remote_asr_no_speech_threshold_spin.value())
+        config.runtime.asr_queue_maxsize_remote = self.asr_queue_remote_spin.value()
+        config.asr = zh_asr
 
         backend = str(self.llm_backend_combo.currentData() or "lm_studio")
-        config.llm.backend = backend
-        config.llm.base_url = self._backend_url(backend)
+        zh_en_llm = config.llm_channels.local
+        en_zh_llm = config.llm_channels.remote
+        shared_url = self._backend_url(backend)
+        for llm_cfg, model_text in (
+            (zh_en_llm, self.llm_model_combo.currentText().strip()),
+            (en_zh_llm, self.remote_llm_model_combo.currentText().strip()),
+        ):
+            llm_cfg.backend = backend
+            llm_cfg.base_url = shared_url
+            llm_cfg.model = model_text or "qwen/qwen3.5-9b"
+        zh_en_llm.request_timeout_sec = self.llm_timeout_spin.value()
+        en_zh_llm.request_timeout_sec = self.remote_llm_timeout_spin.value()
+        zh_en_llm.temperature = float(self.llm_temperature_spin.value())
+        en_zh_llm.temperature = float(self.remote_llm_temperature_spin.value())
+        zh_en_llm.top_p = float(self.llm_top_p_spin.value())
+        en_zh_llm.top_p = float(self.remote_llm_top_p_spin.value())
+        zh_en_llm.max_output_tokens = self.llm_max_tokens_spin.value()
+        en_zh_llm.max_output_tokens = self.remote_llm_max_tokens_spin.value()
+        zh_en_llm.repeat_penalty = float(self.llm_repeat_penalty_spin.value())
+        en_zh_llm.repeat_penalty = float(self.remote_llm_repeat_penalty_spin.value())
+        zh_en_llm.stop_tokens = self.llm_stop_tokens_edit.toPlainText().strip()
+        en_zh_llm.stop_tokens = self.remote_llm_stop_tokens_edit.toPlainText().strip()
+        zh_en_llm.sliding_window.enabled = self.llm_sliding_window_enabled.isChecked()
+        en_zh_llm.sliding_window.enabled = self.remote_llm_sliding_window_enabled.isChecked()
+        zh_en_llm.sliding_window.trigger_tokens = self.llm_trigger_tokens_spin.value()
+        en_zh_llm.sliding_window.trigger_tokens = self.remote_llm_trigger_tokens_spin.value()
+        zh_en_llm.sliding_window.max_context_items = self.llm_context_items_spin.value()
+        en_zh_llm.sliding_window.max_context_items = self.remote_llm_context_items_spin.value()
+        config.runtime.llm_queue_maxsize_local = self.llm_queue_local_spin.value()
+        config.runtime.llm_queue_maxsize_remote = self.llm_queue_remote_spin.value()
+
         chosen_model = self.llm_model_combo.currentText().strip()
         if not chosen_model:
             chosen_model = (self._preferred_llm_model or "").strip()
         if not chosen_model:
-            chosen_model = (config.llm.model or "").strip()
-        config.llm.model = chosen_model or "qwen/qwen3.5-9b"
-        self._preferred_llm_model = config.llm.model
-        config.llm.request_timeout_sec = self.llm_timeout_spin.value()
-        config.llm.temperature = float(self.llm_temperature_spin.value())
-        config.llm.top_p = float(self.llm_top_p_spin.value())
-        config.llm.sliding_window.enabled = self.llm_sliding_window_enabled.isChecked()
-        config.llm.sliding_window.trigger_tokens = self.llm_trigger_tokens_spin.value()
-        config.llm.sliding_window.max_context_items = self.llm_context_items_spin.value()
+            chosen_model = (zh_en_llm.model or "").strip()
+        zh_en_llm.model = chosen_model or "qwen/qwen3.5-9b"
+        if not (en_zh_llm.model or "").strip():
+            en_zh_llm.model = zh_en_llm.model
+        self._preferred_llm_model = zh_en_llm.model
+        config.llm = zh_en_llm
 
         self._update_tts_config(self.base_tts, config.tts)
         config.tts_channels.local = self._update_tts_override(self.local_tts_override)
         config.tts_channels.remote = self._update_tts_override(self.remote_tts_override)
         config.meeting_tts = merge_tts_configs(config.tts, config.meeting_tts, config.tts_channels.local)
         config.local_tts = merge_tts_configs(config.tts, config.local_tts, config.tts_channels.remote)
+        config.runtime.tts_queue_maxsize_local = self.tts_queue_local_spin.value()
+        config.runtime.tts_queue_maxsize_remote = self.tts_queue_remote_spin.value()
 
         try:
             config.runtime.sample_rate = int(self.runtime_sample_rate_spin.currentData() or config.runtime.sample_rate)
         except Exception:
             config.runtime.sample_rate = int(str(self.runtime_sample_rate_spin.currentText()).strip() or config.runtime.sample_rate)
         config.runtime.chunk_ms = self.runtime_chunk_spin.value()
-        config.runtime.warmup_on_start = self.runtime_warmup_on_start_check.isChecked()
-        config.runtime.asr_queue_maxsize = self.runtime_asr_q_spin.value()
-        config.runtime.llm_queue_maxsize = self.runtime_llm_q_spin.value()
-        config.runtime.tts_queue_maxsize = self.runtime_tts_q_spin.value()
+        config.runtime.tts_cancel_pending_on_new_final = self.runtime_tts_cancel_pending_check.isChecked()
+        config.runtime.tts_cancel_policy = str(self.runtime_tts_cancel_policy_combo.currentData() or "all_pending")
+        config.runtime.tts_max_wait_ms = self.runtime_tts_max_wait_spin.value()
+        config.runtime.tts_max_chars = self.runtime_tts_max_chars_spin.value()
+        config.runtime.llm_streaming_tokens = self.runtime_llm_streaming_tokens_spin.value()
+        config.runtime.max_pipeline_latency_ms = self.runtime_max_pipeline_latency_spin.value()
+        # Keep legacy shared fields aligned for backward compatibility.
+        config.runtime.asr_queue_maxsize = config.runtime.asr_queue_maxsize_local
+        config.runtime.llm_queue_maxsize = config.runtime.llm_queue_maxsize_local
+        config.runtime.tts_queue_maxsize = config.runtime.tts_queue_maxsize_local
         config.runtime.local_echo_guard_enabled = self.runtime_local_echo_guard_enabled_check.isChecked()
         config.runtime.local_echo_guard_resume_delay_ms = self.runtime_local_echo_guard_resume_delay_spin.value()
         config.runtime.remote_echo_guard_resume_delay_ms = self.runtime_remote_echo_guard_resume_delay_spin.value()
+        config.runtime.translation_exact_cache_size = self.runtime_translation_cache_spin.value()
+        config.runtime.translation_prefix_min_delta_chars = self.runtime_prefix_delta_spin.value()
+        config.runtime.tts_drop_backlog_threshold = self.runtime_tts_drop_threshold_spin.value()
 
     def set_runtime_status(self, text: str) -> None:
         self.runtime_status_label.setText(text)
@@ -286,63 +413,154 @@ class LocalAiPage(QWidget):
     def _build_asr_group(self) -> tuple[QGroupBox, QFormLayout]:
         self.asr_engine_combo = QComboBox()
         self.asr_engine_combo.addItem("faster-whisper", "faster_whisper")
+        self._configure_combo_popup(self.asr_engine_combo)
 
         self.asr_model_combo = QComboBox()
-        # 與後端模型清單一致，禁止自由輸入
-        self.asr_model_combo.setEditable(False)
+        # 中文 ASR 模型
+        self.asr_model_combo.setEditable(True)
         for model in self._discover_asr_models():
             self.asr_model_combo.addItem(model)
-        self.asr_model_combo.setToolTip("本機 models/asr 與 faster-whisper 官方模型名稱")
+        self._configure_combo_popup(self.asr_model_combo)
+        self.asr_model_combo.setToolTip("可手動輸入自定義模型名稱或本地路徑")
+
+        self.remote_asr_model_combo = QComboBox()
+        # 英文 ASR 模型
+        self.remote_asr_model_combo.setEditable(True)
+        for model in self._discover_asr_models():
+            self.remote_asr_model_combo.addItem(model)
+        self._configure_combo_popup(self.remote_asr_model_combo)
+        self.remote_asr_model_combo.setToolTip("可手動輸入自定義模型名稱或本地路徑")
 
         self.asr_device_combo = QComboBox()
-        self.asr_device_combo.addItem("auto", "auto")
         self.asr_device_combo.addItem("cuda", "cuda")
         self.asr_device_combo.addItem("cpu", "cpu")
+        self._configure_combo_popup(self.asr_device_combo)
+        self.asr_device_combo.setMinimumWidth(150)
+        self.asr_device_combo.setMaximumWidth(150)
 
         self.asr_compute_label = QLabel("-")
-        self.asr_compute_label.setMinimumWidth(160)
+        self.asr_compute_label.setMinimumWidth(78)
+        self.asr_compute_label.setMaximumWidth(78)
 
         self.asr_beam_spin = QSpinBox()
         self.asr_beam_spin.setRange(1, 8)
+        self.remote_asr_beam_spin = QSpinBox()
+        self.remote_asr_beam_spin.setRange(1, 8)
         self.asr_condition_prev_check = QCheckBox("延續前文")
+        self.remote_asr_condition_prev_check = QCheckBox("延續前文")
         self.asr_partial_interval_spin = QSpinBox()
         self.asr_partial_interval_spin.setRange(200, 5000)
+        self.remote_asr_partial_interval_spin = QSpinBox()
+        self.remote_asr_partial_interval_spin.setRange(200, 5000)
         self.asr_partial_history_spin = QSpinBox()
         self.asr_partial_history_spin.setRange(1, 30)
+        self.remote_asr_partial_history_spin = QSpinBox()
+        self.remote_asr_partial_history_spin.setRange(1, 30)
         self.asr_final_history_spin = QSpinBox()
         self.asr_final_history_spin.setRange(1, 60)
-        self.asr_vad_enabled = QCheckBox("啟用 VAD")
+        self.remote_asr_final_history_spin = QSpinBox()
+        self.remote_asr_final_history_spin.setRange(1, 60)
+        self.asr_vad_enabled = QCheckBox("VAD")
+        self.remote_asr_vad_enabled = QCheckBox("VAD")
         self.asr_min_speech_spin = QSpinBox()
         self.asr_min_speech_spin.setRange(100, 4000)
+        self.remote_asr_min_speech_spin = QSpinBox()
+        self.remote_asr_min_speech_spin.setRange(100, 4000)
         self.asr_min_silence_spin = QSpinBox()
         self.asr_min_silence_spin.setRange(300, 8000)
+        self.remote_asr_min_silence_spin = QSpinBox()
+        self.remote_asr_min_silence_spin.setRange(300, 8000)
         self.asr_speech_pad_spin = QSpinBox()
         self.asr_speech_pad_spin.setRange(0, 2000)
+        self.remote_asr_speech_pad_spin = QSpinBox()
+        self.remote_asr_speech_pad_spin.setRange(0, 2000)
         self.asr_max_speech_spin = QSpinBox()
         self.asr_max_speech_spin.setRange(3, 60)
+        self.remote_asr_max_speech_spin = QSpinBox()
+        self.remote_asr_max_speech_spin.setRange(3, 60)
         self.asr_rms_threshold_spin = QDoubleSpinBox()
         self.asr_rms_threshold_spin.setRange(0.001, 0.2)
         self.asr_rms_threshold_spin.setSingleStep(0.001)
         self.asr_rms_threshold_spin.setDecimals(3)
-        # we'll render precision (compute type) and the two toggles on the same row
-        compute_and_toggles_row = self._build_inline_row(self.asr_compute_label, self.asr_condition_prev_check, self.asr_vad_enabled)
+        self.remote_asr_rms_threshold_spin = QDoubleSpinBox()
+        self.remote_asr_rms_threshold_spin.setRange(0.001, 0.2)
+        self.remote_asr_rms_threshold_spin.setSingleStep(0.001)
+        self.remote_asr_rms_threshold_spin.setDecimals(3)
+        self.asr_no_speech_threshold_spin = QDoubleSpinBox()
+        self.asr_no_speech_threshold_spin.setRange(0.0, 1.0)
+        self.asr_no_speech_threshold_spin.setSingleStep(0.05)
+        self.asr_no_speech_threshold_spin.setDecimals(2)
+        self.remote_asr_no_speech_threshold_spin = QDoubleSpinBox()
+        self.remote_asr_no_speech_threshold_spin.setRange(0.0, 1.0)
+        self.remote_asr_no_speech_threshold_spin.setSingleStep(0.05)
+        self.remote_asr_no_speech_threshold_spin.setDecimals(2)
+        self.asr_temperature_fallback_local_edit = QLineEdit()
+        self.asr_temperature_fallback_local_edit.setPlaceholderText("0.0,0.2")
+        self.asr_temperature_fallback_remote_edit = QLineEdit()
+        self.asr_temperature_fallback_remote_edit.setPlaceholderText("0.0,0.2,0.4")
+        self.asr_queue_local_spin = QSpinBox()
+        self.asr_queue_local_spin.setRange(8, 512)
+        self.asr_queue_remote_spin = QSpinBox()
+        self.asr_queue_remote_spin.setRange(8, 512)
+        self._set_dual_field_style(
+            self.asr_model_combo,
+            self.remote_asr_model_combo,
+            self.asr_beam_spin,
+            self.remote_asr_beam_spin,
+            self.asr_partial_interval_spin,
+            self.remote_asr_partial_interval_spin,
+            self.asr_partial_history_spin,
+            self.remote_asr_partial_history_spin,
+            self.asr_final_history_spin,
+            self.remote_asr_final_history_spin,
+            self.asr_min_speech_spin,
+            self.remote_asr_min_speech_spin,
+            self.asr_min_silence_spin,
+            self.remote_asr_min_silence_spin,
+            self.asr_speech_pad_spin,
+            self.remote_asr_speech_pad_spin,
+            self.asr_max_speech_spin,
+            self.remote_asr_max_speech_spin,
+            self.asr_rms_threshold_spin,
+            self.remote_asr_rms_threshold_spin,
+            self.asr_no_speech_threshold_spin,
+            self.remote_asr_no_speech_threshold_spin,
+            self.asr_queue_local_spin,
+            self.asr_queue_remote_spin,
+            self.asr_condition_prev_check,
+            self.remote_asr_condition_prev_check,
+            self.asr_vad_enabled,
+            self.remote_asr_vad_enabled,
+            self.asr_temperature_fallback_local_edit,
+            self.asr_temperature_fallback_remote_edit,
+        )
+
+        asr_device_row = self._build_inline_row(self.asr_device_combo, self.asr_compute_label)
 
         form = QFormLayout()
         self._configure_form_layout(form)
-        form.addRow("引擎", self.asr_engine_combo)
-        form.addRow("模型", self.asr_model_combo)
-        form.addRow("裝置", self.asr_device_combo)
-        # place Beam above precision, and show precision with inline toggles on same line
-        form.addRow("Beam 寬度", self.asr_beam_spin)
-        form.addRow("精度", compute_and_toggles_row)
-        form.addRow("局部更新間隔(ms)", self.asr_partial_interval_spin)
-        form.addRow("Partial 保留(s)", self.asr_partial_history_spin)
-        form.addRow("Final 保留(s)", self.asr_final_history_spin)
-        form.addRow("最短語音(ms)", self.asr_min_speech_spin)
-        form.addRow("最短靜音(ms)", self.asr_min_silence_spin)
-        form.addRow("語音補白(ms)", self.asr_speech_pad_spin)
-        form.addRow("最長語音(s)", self.asr_max_speech_spin)
-        form.addRow("RMS 門檻", self.asr_rms_threshold_spin)
+        form.addRow("", self._build_dual_header_row("中文", "英文"))
+        form.addRow("模型", self._build_dual_field_row(self.asr_model_combo, self.remote_asr_model_combo))
+        form.addRow("引擎(共用)", self.asr_engine_combo)
+        form.addRow("裝置/精度(共用)", asr_device_row)
+        form.addRow("溫度 fallback", self._build_dual_field_row(self.asr_temperature_fallback_local_edit, self.asr_temperature_fallback_remote_edit))
+        form.addRow("ASR 佇列", self._build_dual_field_row(self.asr_queue_local_spin, self.asr_queue_remote_spin))
+        form.addRow("Beam 寬度", self._build_dual_field_row(self.asr_beam_spin, self.remote_asr_beam_spin))
+        zh_cond_vad = self._build_inline_row(self.asr_condition_prev_check, self.asr_vad_enabled)
+        en_cond_vad = self._build_inline_row(self.remote_asr_condition_prev_check, self.remote_asr_vad_enabled)
+        form.addRow("延續前文/VAD", self._build_dual_field_row(zh_cond_vad, en_cond_vad))
+        form.addRow(
+            "局部更新間隔(ms)",
+            self._build_dual_field_row(self.asr_partial_interval_spin, self.remote_asr_partial_interval_spin),
+        )
+        form.addRow("Partial 保留(s)", self._build_dual_field_row(self.asr_partial_history_spin, self.remote_asr_partial_history_spin))
+        form.addRow("Final 保留(s)", self._build_dual_field_row(self.asr_final_history_spin, self.remote_asr_final_history_spin))
+        form.addRow("最短語音(ms)", self._build_dual_field_row(self.asr_min_speech_spin, self.remote_asr_min_speech_spin))
+        form.addRow("最短靜音(ms)", self._build_dual_field_row(self.asr_min_silence_spin, self.remote_asr_min_silence_spin))
+        form.addRow("語音補白(ms)", self._build_dual_field_row(self.asr_speech_pad_spin, self.remote_asr_speech_pad_spin))
+        form.addRow("最長語音(s)", self._build_dual_field_row(self.asr_max_speech_spin, self.remote_asr_max_speech_spin))
+        form.addRow("No Speech 門檻", self._build_dual_field_row(self.asr_no_speech_threshold_spin, self.remote_asr_no_speech_threshold_spin))
+        form.addRow("RMS 門檻", self._build_dual_field_row(self.asr_rms_threshold_spin, self.remote_asr_rms_threshold_spin))
 
         group = QGroupBox("語音辨識 ASR")
         group.setLayout(form)
@@ -351,39 +569,110 @@ class LocalAiPage(QWidget):
     def _build_llm_group(self) -> tuple[QGroupBox, QFormLayout]:
         self.llm_backend_combo = QComboBox()
         self.llm_backend_combo.addItem("LM Studio", "lm_studio")
+        self._configure_combo_popup(self.llm_backend_combo)
         self.llm_url_label = QLabel("http://127.0.0.1:1234")
         self.llm_url_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.llm_model_combo = QComboBox()
-        # 從後端讀取模型清單，禁止自由輸入
+        # 中翻英模型
         self.llm_model_combo.setEditable(False)
+        self._configure_combo_popup(self.llm_model_combo)
+        self.remote_llm_model_combo = QComboBox()
+        # 英翻中模型
+        self.remote_llm_model_combo.setEditable(False)
+        self._configure_combo_popup(self.remote_llm_model_combo)
         self.llm_reload_models_btn = QPushButton("重新載入模型")
         self.llm_timeout_spin = QSpinBox()
         self.llm_timeout_spin.setRange(5, 120)
+        self.remote_llm_timeout_spin = QSpinBox()
+        self.remote_llm_timeout_spin.setRange(5, 120)
         self.llm_temperature_spin = QDoubleSpinBox()
         self.llm_temperature_spin.setRange(0.0, 2.0)
         self.llm_temperature_spin.setSingleStep(0.1)
         self.llm_temperature_spin.setDecimals(2)
+        self.remote_llm_temperature_spin = QDoubleSpinBox()
+        self.remote_llm_temperature_spin.setRange(0.0, 2.0)
+        self.remote_llm_temperature_spin.setSingleStep(0.1)
+        self.remote_llm_temperature_spin.setDecimals(2)
         self.llm_top_p_spin = QDoubleSpinBox()
         self.llm_top_p_spin.setRange(0.0, 1.0)
         self.llm_top_p_spin.setSingleStep(0.05)
         self.llm_top_p_spin.setDecimals(2)
+        self.remote_llm_top_p_spin = QDoubleSpinBox()
+        self.remote_llm_top_p_spin.setRange(0.0, 1.0)
+        self.remote_llm_top_p_spin.setSingleStep(0.05)
+        self.remote_llm_top_p_spin.setDecimals(2)
+        self.llm_max_tokens_spin = QSpinBox()
+        self.llm_max_tokens_spin.setRange(16, 2048)
+        self.remote_llm_max_tokens_spin = QSpinBox()
+        self.remote_llm_max_tokens_spin.setRange(16, 2048)
+        self.llm_repeat_penalty_spin = QDoubleSpinBox()
+        self.llm_repeat_penalty_spin.setRange(0.8, 2.0)
+        self.llm_repeat_penalty_spin.setSingleStep(0.01)
+        self.llm_repeat_penalty_spin.setDecimals(2)
+        self.remote_llm_repeat_penalty_spin = QDoubleSpinBox()
+        self.remote_llm_repeat_penalty_spin.setRange(0.8, 2.0)
+        self.remote_llm_repeat_penalty_spin.setSingleStep(0.01)
+        self.remote_llm_repeat_penalty_spin.setDecimals(2)
+        self.llm_stop_tokens_edit = QPlainTextEdit()
+        self.llm_stop_tokens_edit.setPlaceholderText("每行一個 stop token，例如:\n</target>\nTranslation:")
+        self.remote_llm_stop_tokens_edit = QPlainTextEdit()
+        self.remote_llm_stop_tokens_edit.setPlaceholderText("每行一個 stop token，例如:\n</target>\nTranslation:")
+        self._set_multiline_field_style(self.llm_stop_tokens_edit)
+        self._set_multiline_field_style(self.remote_llm_stop_tokens_edit)
         self.llm_sliding_window_enabled = QCheckBox("啟用上下文拼接")
+        self.remote_llm_sliding_window_enabled = QCheckBox("啟用上下文拼接")
         self.llm_trigger_tokens_spin = QSpinBox()
         self.llm_trigger_tokens_spin.setRange(5, 120)
+        self.remote_llm_trigger_tokens_spin = QSpinBox()
+        self.remote_llm_trigger_tokens_spin.setRange(5, 120)
         self.llm_context_items_spin = QSpinBox()
         self.llm_context_items_spin.setRange(2, 20)
-        llm_service_row = self._build_inline_row(self.llm_url_label, self.llm_reload_models_btn, self.llm_sliding_window_enabled)
+        self.remote_llm_context_items_spin = QSpinBox()
+        self.remote_llm_context_items_spin.setRange(2, 20)
+        self.llm_queue_local_spin = QSpinBox()
+        self.llm_queue_local_spin.setRange(8, 512)
+        self.llm_queue_remote_spin = QSpinBox()
+        self.llm_queue_remote_spin.setRange(8, 512)
+        self._set_dual_field_style(
+            self.llm_model_combo,
+            self.remote_llm_model_combo,
+            self.llm_timeout_spin,
+            self.remote_llm_timeout_spin,
+            self.llm_temperature_spin,
+            self.remote_llm_temperature_spin,
+            self.llm_top_p_spin,
+            self.remote_llm_top_p_spin,
+            self.llm_max_tokens_spin,
+            self.remote_llm_max_tokens_spin,
+            self.llm_repeat_penalty_spin,
+            self.remote_llm_repeat_penalty_spin,
+            self.llm_trigger_tokens_spin,
+            self.remote_llm_trigger_tokens_spin,
+            self.llm_context_items_spin,
+            self.remote_llm_context_items_spin,
+            self.llm_queue_local_spin,
+            self.llm_queue_remote_spin,
+            self.llm_sliding_window_enabled,
+            self.remote_llm_sliding_window_enabled,
+        )
+        llm_service_row = self._build_inline_row(self.llm_url_label, self.llm_reload_models_btn)
 
         form = QFormLayout()
         self._configure_form_layout(form)
-        form.addRow("後端", self.llm_backend_combo)
-        form.addRow("服務位址", llm_service_row)
-        form.addRow("模型", self.llm_model_combo)
-        form.addRow("逾時(秒)", self.llm_timeout_spin)
-        form.addRow("溫度", self.llm_temperature_spin)
-        form.addRow("Top P", self.llm_top_p_spin)
-        form.addRow("觸發 Token", self.llm_trigger_tokens_spin)
-        form.addRow("上下文項數", self.llm_context_items_spin)
+        form.addRow("", self._build_dual_header_row("中翻英", "英翻中"))
+        form.addRow("模型", self._build_dual_field_row(self.llm_model_combo, self.remote_llm_model_combo))
+        form.addRow("後端(共用)", self.llm_backend_combo)
+        form.addRow("服務位址(共用)", llm_service_row)
+        form.addRow("LLM 佇列", self._build_dual_field_row(self.llm_queue_local_spin, self.llm_queue_remote_spin))
+        form.addRow("逾時(秒)", self._build_dual_field_row(self.llm_timeout_spin, self.remote_llm_timeout_spin))
+        form.addRow("溫度", self._build_dual_field_row(self.llm_temperature_spin, self.remote_llm_temperature_spin))
+        form.addRow("Top P", self._build_dual_field_row(self.llm_top_p_spin, self.remote_llm_top_p_spin))
+        form.addRow("最大輸出 Token", self._build_dual_field_row(self.llm_max_tokens_spin, self.remote_llm_max_tokens_spin))
+        form.addRow("Repeat Penalty", self._build_dual_field_row(self.llm_repeat_penalty_spin, self.remote_llm_repeat_penalty_spin))
+        form.addRow("Stop Tokens", self._build_dual_field_row(self.llm_stop_tokens_edit, self.remote_llm_stop_tokens_edit))
+        form.addRow("啟用上下文拼接", self._build_dual_field_row(self.llm_sliding_window_enabled, self.remote_llm_sliding_window_enabled))
+        form.addRow("觸發 Token", self._build_dual_field_row(self.llm_trigger_tokens_spin, self.remote_llm_trigger_tokens_spin))
+        form.addRow("上下文項數", self._build_dual_field_row(self.llm_context_items_spin, self.remote_llm_context_items_spin))
 
         group = QGroupBox("翻譯模型 LLM")
         group.setLayout(form)
@@ -394,15 +683,28 @@ class LocalAiPage(QWidget):
         self.runtime_sample_rate_spin.setEditable(False)
         for r in _COMMON_SAMPLE_RATES:
             self.runtime_sample_rate_spin.addItem(str(r), r)
+        self._configure_combo_popup(self.runtime_sample_rate_spin)
         self.runtime_chunk_spin = QSpinBox()
         self.runtime_chunk_spin.setRange(20, 1000)
-        self.runtime_asr_q_spin = QSpinBox()
-        self.runtime_asr_q_spin.setRange(8, 512)
-        self.runtime_llm_q_spin = QSpinBox()
-        self.runtime_llm_q_spin.setRange(8, 512)
-        self.runtime_tts_q_spin = QSpinBox()
-        self.runtime_tts_q_spin.setRange(8, 512)
-        self.runtime_warmup_on_start_check = QCheckBox("啟動後自動預熱")
+        self.runtime_tts_cancel_pending_check = QCheckBox("新句取消舊語音")
+        self.runtime_tts_cancel_policy_combo = QComboBox()
+        self.runtime_tts_cancel_policy_combo.addItem("取消所有未播", "all_pending")
+        self.runtime_tts_cancel_policy_combo.addItem("只取消舊句", "older_only")
+        self._configure_combo_popup(self.runtime_tts_cancel_policy_combo)
+        self.runtime_tts_max_wait_spin = QSpinBox()
+        self.runtime_tts_max_wait_spin.setRange(500, 15000)
+        self.runtime_tts_max_chars_spin = QSpinBox()
+        self.runtime_tts_max_chars_spin.setRange(20, 2000)
+        self.runtime_tts_drop_threshold_spin = QSpinBox()
+        self.runtime_tts_drop_threshold_spin.setRange(2, 20)
+        self.runtime_translation_cache_spin = QSpinBox()
+        self.runtime_translation_cache_spin.setRange(64, 4096)
+        self.runtime_prefix_delta_spin = QSpinBox()
+        self.runtime_prefix_delta_spin.setRange(1, 50)
+        self.runtime_llm_streaming_tokens_spin = QSpinBox()
+        self.runtime_llm_streaming_tokens_spin.setRange(8, 256)
+        self.runtime_max_pipeline_latency_spin = QSpinBox()
+        self.runtime_max_pipeline_latency_spin.setRange(500, 20000)
         self.runtime_local_echo_guard_enabled_check = QCheckBox("啟用本地防回授")
         self.runtime_local_echo_guard_resume_delay_spin = QSpinBox()
         self.runtime_local_echo_guard_resume_delay_spin.setRange(0, 5000)
@@ -413,26 +715,26 @@ class LocalAiPage(QWidget):
         self._configure_form_layout(form)
         form.addRow("執行取樣率", self.runtime_sample_rate_spin)
         form.addRow("音訊切片(ms)", self.runtime_chunk_spin)
-        form.addRow("ASR 佇列", self.runtime_asr_q_spin)
-        form.addRow("LLM 佇列", self.runtime_llm_q_spin)
-        form.addRow("TTS 佇列", self.runtime_tts_q_spin)
+        form.addRow("翻譯快取大小", self.runtime_translation_cache_spin)
+        form.addRow("局部觸發差異字數", self.runtime_prefix_delta_spin)
+        form.addRow("Streaming tokens", self.runtime_llm_streaming_tokens_spin)
+        form.addRow("最大 pipeline 延遲(ms)", self.runtime_max_pipeline_latency_spin)
         form.addRow("本地防回授恢復(ms)", self.runtime_local_echo_guard_resume_delay_spin)
         form.addRow("遠端防回授恢復(ms)", self.runtime_remote_echo_guard_resume_delay_spin)
-        # put warmup and local-echo-guard checkbox on the same inline row
-        warmup_and_localguard = self._build_inline_row(self.runtime_warmup_on_start_check, self.runtime_local_echo_guard_enabled_check)
-        form.addRow("", warmup_and_localguard)
 
-        group = QGroupBox("執行階段")
+        group = QGroupBox("系統執行")
         group.setLayout(form)
         return group, form
 
     def _create_tts_widgets(self, title: str) -> TtsWidgets:
         engine_combo = QComboBox()
         engine_combo.addItem("Edge TTS（雲端）", "edge_tts")
+        self._configure_combo_popup(engine_combo)
 
         edge_voice_combo = QComboBox()
         for label, voice_name in _EDGE_VOICE_OPTIONS:
             edge_voice_combo.addItem(label, voice_name)
+        self._configure_combo_popup(edge_voice_combo)
 
         exec_edit = PathPickerLineEdit()
         model_edit = PathPickerLineEdit()
@@ -454,6 +756,7 @@ class LocalAiPage(QWidget):
         sample_rate_spin.setEditable(True)
         for r in [8000, 16000, 22050, 24000, 32000, 44100, 48000]:
             sample_rate_spin.addItem(str(r), r)
+        self._configure_combo_popup(sample_rate_spin)
 
         for editor in (exec_edit, model_edit, config_edit):
             editor.setReadOnly(True)
@@ -478,6 +781,12 @@ class LocalAiPage(QWidget):
         form.addRow("隨機度 Noise Scale", noise_scale_spin)
         form.addRow("音色 Noise W", noise_w_spin)
         form.addRow("取樣率", sample_rate_spin)
+        form.addRow("TTS 丟棄積壓門檻", self.runtime_tts_drop_threshold_spin)
+        form.addRow("TTS 最大等待(ms)", self.runtime_tts_max_wait_spin)
+        form.addRow("TTS 最大字數", self.runtime_tts_max_chars_spin)
+        form.addRow("取消策略", self.runtime_tts_cancel_policy_combo)
+        cancel_and_guard = self._build_inline_row(self.runtime_tts_cancel_pending_check, self.runtime_local_echo_guard_enabled_check)
+        form.addRow("", cancel_and_guard)
 
         group = QGroupBox(title)
         group.setLayout(form)
@@ -496,27 +805,27 @@ class LocalAiPage(QWidget):
             sample_rate_spin=sample_rate_spin,
         )
 
-    def _create_tts_channel_widgets(self, title: str) -> TtsChannelWidgets:
+    def _create_tts_channel_widgets(self, title: str, language_kind: str) -> TtsChannelWidgets:
         engine_combo = QComboBox()
         engine_combo.addItem("Edge TTS（雲端）", "edge_tts")
+        self._configure_combo_popup(engine_combo)
 
         edge_voice_combo = QComboBox()
-        edge_voice_combo.addItem("沿用主設定", "")
-        for label, voice_name in _EDGE_VOICE_OPTIONS:
+        for label, voice_name in self._edge_voice_options_for(language_kind):
             edge_voice_combo.addItem(label, voice_name)
+        self._configure_combo_popup(edge_voice_combo)
 
         sample_rate_spin = QComboBox()
         sample_rate_spin.setEditable(False)
-        sample_rate_spin.addItem("沿用主設定", 0)
         for r in [8000, 16000, 22050, 24000, 32000, 44100, 48000]:
             sample_rate_spin.addItem(str(r), r)
+        self._configure_combo_popup(sample_rate_spin)
 
         noise_w_spin = QDoubleSpinBox()
         noise_w_spin.setRange(0.0, 2.0)
         noise_w_spin.setSingleStep(0.05)
         noise_w_spin.setDecimals(3)
-        noise_w_spin.setValue(0.0)
-        noise_w_spin.setSpecialValueText("沿用主設定")
+        noise_w_spin.setValue(0.6)
 
         for compact in (engine_combo, edge_voice_combo, sample_rate_spin, noise_w_spin):
             self._set_uniform_field_style(compact, minimum_width=220)
@@ -539,46 +848,82 @@ class LocalAiPage(QWidget):
             noise_w_spin=noise_w_spin,
         )
 
+    def _build_tts_channel_compact_group(self) -> QGroupBox:
+        group = QGroupBox("輸出通道覆寫（共用欄位）")
+        form = QFormLayout()
+        self._configure_form_layout(form)
+        form.addRow("", self._build_dual_header_row("中文", "英文"))
+        form.addRow(
+            "引擎",
+            self._build_dual_field_row(
+                self.local_tts_override.engine_combo,
+                self.remote_tts_override.engine_combo,
+            ),
+        )
+        form.addRow(
+            "Edge 聲線",
+            self._build_dual_field_row(
+                self.local_tts_override.edge_voice_combo,
+                self.remote_tts_override.edge_voice_combo,
+            ),
+        )
+        form.addRow(
+            "取樣率",
+            self._build_dual_field_row(
+                self.local_tts_override.sample_rate_spin,
+                self.remote_tts_override.sample_rate_spin,
+            ),
+        )
+        form.addRow(
+            "Noise W",
+            self._build_dual_field_row(
+                self.local_tts_override.noise_w_spin,
+                self.remote_tts_override.noise_w_spin,
+            ),
+        )
+        self.tts_queue_local_spin = QSpinBox()
+        self.tts_queue_local_spin.setRange(8, 512)
+        self.tts_queue_remote_spin = QSpinBox()
+        self.tts_queue_remote_spin.setRange(8, 512)
+        self._set_dual_field_style(self.tts_queue_local_spin, self.tts_queue_remote_spin)
+        form.addRow("TTS 佇列", self._build_dual_field_row(self.tts_queue_local_spin, self.tts_queue_remote_spin))
+        group.setLayout(form)
+        return group
+
+    @staticmethod
+    def _edge_voice_options_for(language_kind: str) -> list[tuple[str, str]]:
+        normalized = (language_kind or "").strip().lower()
+        if normalized.startswith("en"):
+            return [item for item in _EDGE_VOICE_OPTIONS if item[1].lower().startswith("en-")]
+        return [item for item in _EDGE_VOICE_OPTIONS if item[1].lower().startswith("zh-")]
+
     def _wire_events(self) -> None:
         for compact in (
             self.asr_engine_combo,
-            self.asr_model_combo,
-            self.asr_device_combo,
-            self.asr_beam_spin,
-            self.asr_partial_interval_spin,
-            self.asr_partial_history_spin,
-            self.asr_final_history_spin,
-            self.asr_min_speech_spin,
-            self.asr_min_silence_spin,
-            self.asr_speech_pad_spin,
-            self.asr_max_speech_spin,
-            self.asr_rms_threshold_spin,
             self.llm_backend_combo,
-            self.llm_model_combo,
-            self.llm_timeout_spin,
-            self.llm_temperature_spin,
-            self.llm_top_p_spin,
-            self.llm_trigger_tokens_spin,
-            self.llm_context_items_spin,
             self.runtime_sample_rate_spin,
             self.runtime_chunk_spin,
-            self.runtime_asr_q_spin,
-            self.runtime_llm_q_spin,
-            self.runtime_tts_q_spin,
-            self.runtime_warmup_on_start_check,
+            self.runtime_translation_cache_spin,
+            self.runtime_prefix_delta_spin,
+            self.runtime_tts_drop_threshold_spin,
+            self.runtime_tts_cancel_pending_check,
+            self.runtime_tts_cancel_policy_combo,
+            self.runtime_tts_max_wait_spin,
+            self.runtime_tts_max_chars_spin,
+            self.runtime_llm_streaming_tokens_spin,
+            self.runtime_max_pipeline_latency_spin,
             self.runtime_local_echo_guard_enabled_check,
             self.runtime_local_echo_guard_resume_delay_spin,
             self.runtime_remote_echo_guard_resume_delay_spin,
         ):
-            self._set_uniform_field_style(compact, minimum_width=220)
+            self._set_uniform_field_style(compact, minimum_width=140)
 
-        self.llm_url_label.setMinimumWidth(220)
-        self.llm_url_label.setMinimumHeight(30)
-        self.asr_compute_label.setMinimumHeight(30)
-        self.llm_reload_models_btn.setMinimumHeight(30)
-        self.asr_condition_prev_check.setMinimumHeight(30)
-        self.asr_vad_enabled.setMinimumHeight(30)
-        self.llm_sliding_window_enabled.setMinimumHeight(30)
+        self._set_uniform_field_style(self.asr_device_combo, minimum_width=150)
+
+        self.llm_url_label.setMinimumWidth(140)
+        self.llm_url_label.setMinimumHeight(_CONTROL_HEIGHT)
+        self.asr_compute_label.setMinimumHeight(_CONTROL_HEIGHT)
+        self.llm_reload_models_btn.setMinimumHeight(_CONTROL_HEIGHT)
         self.llm_backend_combo.currentIndexChanged.connect(self._on_backend_changed)
         self.asr_device_combo.currentIndexChanged.connect(self._on_asr_device_changed)
         self.llm_reload_models_btn.clicked.connect(self._reload_llm_models)
@@ -586,32 +931,72 @@ class LocalAiPage(QWidget):
         for widget in (
             self.asr_engine_combo,
             self.asr_model_combo,
+            self.remote_asr_model_combo,
             self.asr_device_combo,
             self.asr_beam_spin,
+            self.remote_asr_beam_spin,
             self.asr_partial_interval_spin,
+            self.remote_asr_partial_interval_spin,
             self.asr_partial_history_spin,
+            self.remote_asr_partial_history_spin,
             self.asr_final_history_spin,
+            self.remote_asr_final_history_spin,
             self.asr_vad_enabled,
+            self.remote_asr_vad_enabled,
             self.asr_condition_prev_check,
+            self.remote_asr_condition_prev_check,
+            self.asr_temperature_fallback_local_edit,
+            self.asr_temperature_fallback_remote_edit,
             self.asr_min_speech_spin,
+            self.remote_asr_min_speech_spin,
             self.asr_min_silence_spin,
+            self.remote_asr_min_silence_spin,
             self.asr_speech_pad_spin,
+            self.remote_asr_speech_pad_spin,
             self.asr_max_speech_spin,
+            self.remote_asr_max_speech_spin,
+            self.asr_no_speech_threshold_spin,
+            self.remote_asr_no_speech_threshold_spin,
             self.asr_rms_threshold_spin,
+            self.remote_asr_rms_threshold_spin,
             self.llm_backend_combo,
             self.llm_model_combo,
+            self.remote_llm_model_combo,
             self.llm_timeout_spin,
+            self.remote_llm_timeout_spin,
             self.llm_temperature_spin,
+            self.remote_llm_temperature_spin,
             self.llm_top_p_spin,
+            self.remote_llm_top_p_spin,
+            self.llm_max_tokens_spin,
+            self.remote_llm_max_tokens_spin,
+            self.llm_repeat_penalty_spin,
+            self.remote_llm_repeat_penalty_spin,
+            self.llm_stop_tokens_edit,
+            self.remote_llm_stop_tokens_edit,
             self.llm_sliding_window_enabled,
+            self.remote_llm_sliding_window_enabled,
             self.llm_trigger_tokens_spin,
+            self.remote_llm_trigger_tokens_spin,
             self.llm_context_items_spin,
+            self.remote_llm_context_items_spin,
             self.runtime_sample_rate_spin,
             self.runtime_chunk_spin,
-            self.runtime_asr_q_spin,
-            self.runtime_llm_q_spin,
-            self.runtime_tts_q_spin,
-            self.runtime_warmup_on_start_check,
+            self.asr_queue_local_spin,
+            self.asr_queue_remote_spin,
+            self.llm_queue_local_spin,
+            self.llm_queue_remote_spin,
+            self.tts_queue_local_spin,
+            self.tts_queue_remote_spin,
+            self.runtime_translation_cache_spin,
+            self.runtime_prefix_delta_spin,
+            self.runtime_tts_drop_threshold_spin,
+            self.runtime_tts_cancel_pending_check,
+            self.runtime_tts_cancel_policy_combo,
+            self.runtime_tts_max_wait_spin,
+            self.runtime_tts_max_chars_spin,
+            self.runtime_llm_streaming_tokens_spin,
+            self.runtime_max_pipeline_latency_spin,
             self.runtime_local_echo_guard_enabled_check,
             self.runtime_local_echo_guard_resume_delay_spin,
             self.runtime_remote_echo_guard_resume_delay_spin,
@@ -719,6 +1104,7 @@ class LocalAiPage(QWidget):
         for label, sid in speaker_rows:
             widgets.speaker_combo.addItem(label, sid)
         widgets.speaker_combo.blockSignals(False)
+        self._configure_combo_popup(widgets.speaker_combo)
 
         idx = widgets.speaker_combo.findData(current_id)
         widgets.speaker_combo.setCurrentIndex(idx if idx >= 0 else 0)
@@ -790,6 +1176,7 @@ class LocalAiPage(QWidget):
             return
 
         current = (self._preferred_llm_model or self.llm_model_combo.currentText().strip()).strip()
+        remote_current_before = self.remote_llm_model_combo.currentText().strip()
         models = payload if isinstance(payload, list) else []
         if not models:
             self.runtime_status_label.setText("找不到可用的 LLM 模型")
@@ -799,25 +1186,34 @@ class LocalAiPage(QWidget):
             models = [current, *models]
 
         self.llm_model_combo.blockSignals(True)
+        self.remote_llm_model_combo.blockSignals(True)
         self.llm_model_combo.clear()
+        self.remote_llm_model_combo.clear()
         for model in models:
             self.llm_model_combo.addItem(model)
+            self.remote_llm_model_combo.addItem(model)
         self.llm_model_combo.blockSignals(False)
+        self.remote_llm_model_combo.blockSignals(False)
+        self._configure_combo_popup(self.llm_model_combo)
+        self._configure_combo_popup(self.remote_llm_model_combo)
 
         if current:
             self._set_combo_text(self.llm_model_combo, current)
         else:
             self._set_combo_text(self.llm_model_combo, models[0])
+        remote_current = remote_current_before or models[0]
+        if remote_current:
+            self._set_combo_text(self.remote_llm_model_combo, remote_current)
         self._preferred_llm_model = self.llm_model_combo.currentText().strip()
 
     def _on_backend_changed(self) -> None:
         backend = str(self.llm_backend_combo.currentData() or "lm_studio")
-        self._apply_backend_url(backend)
+        self._apply_backend_url(backend, self.llm_url_label)
         self._reload_llm_models()
         self._notify_settings_changed()
 
     def _on_asr_device_changed(self) -> None:
-        device = str(self.asr_device_combo.currentData() or "auto")
+        device = str(self.asr_device_combo.currentData() or "cuda")
         self.asr_compute_label.setText(self._compute_type_for_device(device))
         self._notify_settings_changed()
 
@@ -854,14 +1250,46 @@ class LocalAiPage(QWidget):
         container.setMaximumHeight(_CONTROL_HEIGHT)
         row = QHBoxLayout(container)
         row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(6)
+        row.setSpacing(8)
         for widget in widgets:
             row.addWidget(widget)
         row.addStretch(1)
         return container
 
     @staticmethod
+    def _build_dual_header_row(left_title: str, right_title: str) -> QWidget:
+        container = QWidget()
+        row = QHBoxLayout(container)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+        left = QLabel(left_title)
+        right = QLabel(right_title)
+        left.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        right.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        row.addWidget(left, 1)
+        row.addWidget(right, 1)
+        return container
+
+    @staticmethod
+    def _build_dual_field_row(left_widget: QWidget, right_widget: QWidget) -> QWidget:
+        container = QWidget()
+        row = QHBoxLayout(container)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(10)
+        row.addWidget(left_widget, 1)
+        row.addSpacing(8)
+        row.addWidget(right_widget, 1)
+        return container
+
+    @staticmethod
     def _set_uniform_field_style(widget: QWidget, minimum_width: int = 220, control_height: int = _CONTROL_HEIGHT) -> None:
+        widget.setMinimumWidth(minimum_width)
+        widget.setMinimumHeight(control_height)
+        widget.setMaximumHeight(control_height)
+        widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    @staticmethod
+    def _set_multiline_field_style(widget: QPlainTextEdit, minimum_width: int = 220, control_height: int = 72) -> None:
         widget.setMinimumWidth(minimum_width)
         widget.setMinimumHeight(control_height)
         widget.setMaximumHeight(control_height)
@@ -921,12 +1349,18 @@ class LocalAiPage(QWidget):
     def _compute_type_for_device(device: str) -> str:
         if device == "cpu":
             return "int8"
-        if device == "cuda":
-            return "float16"
-        return "auto"
+        return "float16"
 
-    def _apply_backend_url(self, backend: str) -> None:
-        self.llm_url_label.setText(self._backend_url(backend))
+    @staticmethod
+    def _set_dual_field_style(*widgets: QWidget) -> None:
+        for widget in widgets:
+            widget.setMinimumWidth(80)
+            widget.setMinimumHeight(_CONTROL_HEIGHT)
+            widget.setMaximumHeight(_CONTROL_HEIGHT)
+            widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def _apply_backend_url(self, backend: str, label: QLabel) -> None:
+        label.setText(self._backend_url(backend))
 
     @staticmethod
     def _backend_url(backend: str) -> str:
@@ -949,22 +1383,30 @@ class LocalAiPage(QWidget):
 
     @staticmethod
     def _discover_asr_models() -> list[str]:
-        model_root = Path("models") / "asr"
-        local_models: list[str] = []
-        if model_root.exists():
-            for path in sorted(model_root.iterdir()):
-                if path.is_dir():
-                    local_models.append(path.name)
-                elif path.suffix.lower() in {".bin", ".gguf", ".pt"}:
-                    local_models.append(path.stem)
+        models = list(_OFFICIAL_FASTER_WHISPER_MODELS)
+        # 掃描 HuggingFace 本地快取中已下載的 faster-whisper 模型
+        try:
+            from pathlib import Path
+            hf_cache = Path.home() / ".cache" / "huggingface" / "hub"
+            if hf_cache.is_dir():
+                for entry in sorted(hf_cache.iterdir()):
+                    name = entry.name
+                    if name.startswith("models--Systran--faster-whisper-"):
+                        short = name[len("models--Systran--faster-whisper-"):]
+                        if short and short not in models:
+                            models.insert(0, short)
+        except Exception:
+            pass
+        return models
 
-        merged: list[str] = []
-        seen: set[str] = set()
-        for name in local_models + _OFFICIAL_FASTER_WHISPER_MODELS:
-            if name and name not in seen:
-                seen.add(name)
-                merged.append(name)
-        return merged
+    @staticmethod
+    def _configure_combo_popup(combo: QComboBox) -> None:
+        combo.setMaxVisibleItems(max(1, combo.count()))
+        view = combo.view()
+        if view is None:
+            return
+        view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
     def _connect_change_signal(self, widget: QWidget) -> None:
         if hasattr(widget, "textChanged"):

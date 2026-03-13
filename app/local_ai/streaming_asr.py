@@ -81,7 +81,12 @@ class StreamingAsr:
     def stop(self) -> None:
         self._stop_event.set()
         if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=1.5)
+            self._thread.join(timeout=8.0)
+            if self._thread.is_alive():
+                # Do not clear/reset the shared stop event if old worker is still alive,
+                # otherwise a subsequent start() can revive the previous worker thread.
+                self._debug("asr worker stop timeout; skip reset to avoid concurrent workers")
+                raise RuntimeError("ASR worker did not stop in time")
         self._thread = None
         self._vad.reset()
         self._segment_chunks = []

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QComboBox, QGridLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QTextEdit, QVBoxLayout, QWidget
 
 from app.schemas import AppConfig
@@ -11,6 +11,13 @@ _LANG_CHOICES: list[tuple[str, str, str]] = [
     ("\u82f1\u7ffb\u4e2d", "en", "zh-TW"),
     ("\u4e2d\u7ffb\u82f1", "zh-TW", "en"),
 ]
+
+_LANG_LABELS: dict[str, str] = {
+    "en": "英文",
+    "zh": "中文",
+    "zh-tw": "中文",
+    "ja": "日文",
+}
 
 
 def _lang_key(source: str, target: str) -> str:
@@ -36,12 +43,15 @@ class LiveCaptionPage(QWidget):
         self.mode_combo.addItem("遠端 -> 本地", "meeting_to_local")
         self.mode_combo.addItem("本地 -> 遠端", "local_to_meeting")
         self.mode_combo.addItem("雙向模式", "bidirectional")
+        self._configure_combo_popup(self.mode_combo)
         self.remote_lang_combo = QComboBox()
         self.local_lang_combo = QComboBox()
         for label, source, target in _LANG_CHOICES:
             key = _lang_key(source, target)
             self.remote_lang_combo.addItem(label, key)
             self.local_lang_combo.addItem(label, key)
+        self._configure_combo_popup(self.remote_lang_combo)
+        self._configure_combo_popup(self.local_lang_combo)
 
         self.start_btn = QPushButton("\u958b\u59cb")
         self.start_btn.clicked.connect(self._handle_start_clicked)
@@ -54,6 +64,10 @@ class LiveCaptionPage(QWidget):
         self.remote_translated = QTextEdit()
         self.local_original = QTextEdit()
         self.local_translated = QTextEdit()
+        self.remote_original_label = QLabel("\u9060\u7aef\u539f\u6587")
+        self.remote_translated_label = QLabel("\u9060\u7aef\u7ffb\u8b6f")
+        self.local_original_label = QLabel("\u672c\u5730\u539f\u6587")
+        self.local_translated_label = QLabel("\u672c\u5730\u7ffb\u8b6f")
         for editor in (
             self.remote_original,
             self.remote_translated,
@@ -87,12 +101,12 @@ class LiveCaptionPage(QWidget):
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setHorizontalSpacing(6)
         grid.setVerticalSpacing(4)
-        grid.addWidget(QLabel("\u9060\u7aef\u539f\u6587"), 0, 0)
-        grid.addWidget(QLabel("\u9060\u7aef\u7ffb\u8b6f"), 0, 1)
+        grid.addWidget(self.remote_original_label, 0, 0)
+        grid.addWidget(self.remote_translated_label, 0, 1)
         grid.addWidget(self.remote_original, 1, 0)
         grid.addWidget(self.remote_translated, 1, 1)
-        grid.addWidget(QLabel("\u672c\u5730\u539f\u6587"), 2, 0)
-        grid.addWidget(QLabel("\u672c\u5730\u7ffb\u8b6f"), 2, 1)
+        grid.addWidget(self.local_original_label, 2, 0)
+        grid.addWidget(self.local_translated_label, 2, 1)
         grid.addWidget(self.local_original, 3, 0)
         grid.addWidget(self.local_translated, 3, 1)
         grid.setRowStretch(1, 1)
@@ -112,6 +126,7 @@ class LiveCaptionPage(QWidget):
             self._set_lang_combo(self.local_lang_combo, config.language.local_source, config.language.local_target)
         finally:
             self._suspend_notify = False
+        self._refresh_panel_labels()
 
     def update_config(self, config: AppConfig) -> None:
         config.direction.mode = self.selected_mode()
@@ -132,6 +147,10 @@ class LiveCaptionPage(QWidget):
     def set_start_label(self, text: str) -> None:
         self.start_btn.setText(text)
 
+    def set_direction_controls_enabled(self, enabled: bool) -> None:
+        for widget in (self.mode_combo, self.remote_lang_combo, self.local_lang_combo):
+            widget.setEnabled(enabled)
+
     def _handle_start_clicked(self) -> None:
         if self._on_start_clicked:
             self._on_start_clicked()
@@ -139,6 +158,7 @@ class LiveCaptionPage(QWidget):
     def _notify_settings_changed(self, *_args) -> None:
         if self._suspend_notify:
             return
+        self._refresh_panel_labels()
         if self._on_settings_changed:
             self._on_settings_changed()
 
@@ -194,3 +214,33 @@ class LiveCaptionPage(QWidget):
         idx = self.mode_combo.findData(mode)
         if idx >= 0:
             self.mode_combo.setCurrentIndex(idx)
+
+    def _refresh_panel_labels(self) -> None:
+        remote_source, remote_target = self._get_lang_pair(self.remote_lang_combo, default=("en", "zh-TW"))
+        local_source, local_target = self._get_lang_pair(self.local_lang_combo, default=("zh-TW", "en"))
+        self.remote_original_label.setText(f"遠端原文（{self._language_label(remote_source)} ASR）")
+        self.remote_translated_label.setText(f"遠端翻譯（{self._language_label(remote_target)} LLM）")
+        self.local_original_label.setText(f"本地原文（{self._language_label(local_source)} ASR）")
+        self.local_translated_label.setText(f"本地翻譯（{self._language_label(local_target)} LLM）")
+
+    @staticmethod
+    def _language_label(language: str) -> str:
+        normalized = (language or "").strip().lower()
+        if not normalized:
+            return "未設定"
+        if normalized in _LANG_LABELS:
+            return _LANG_LABELS[normalized]
+        if "-" in normalized:
+            short = normalized.split("-", 1)[0]
+            if short in _LANG_LABELS:
+                return _LANG_LABELS[short]
+        return normalized
+
+    @staticmethod
+    def _configure_combo_popup(combo: QComboBox) -> None:
+        combo.setMaxVisibleItems(max(1, combo.count()))
+        view = combo.view()
+        if view is None:
+            return
+        view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)

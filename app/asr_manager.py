@@ -167,18 +167,22 @@ class ASRManager:
             self._stream_fingerprints.pop(key, None)
 
         language = self._config.language.local_source if key == "local" else self._config.language.meeting_source
-        asr_cfg = self._config.asr
+        asr_cfg = self._asr_profile_for_language(language)
         runtime_cfg = self._config.runtime
         vad_cfg = asr_cfg.vad
         stream_cfg = asr_cfg.streaming
+        model_name = self._resolve_model_for_language(asr_cfg.model, language)
+        queue_maxsize = self._asr_queue_maxsize_for_language(language)
 
         stream = StreamingAsr(
             engine=FasterWhisperEngine(
-                model=asr_cfg.model,
+                model=model_name,
                 device=asr_cfg.device,
                 compute_type=asr_cfg.compute_type,
                 beam_size=asr_cfg.beam_size,
                 condition_on_previous_text=asr_cfg.condition_on_previous_text,
+                temperature_fallback=asr_cfg.temperature_fallback,
+                no_speech_threshold=asr_cfg.no_speech_threshold,
                 language=language,
             ),
             vad=VadSegmenter(
@@ -194,33 +198,92 @@ class ASRManager:
             partial_interval_ms=stream_cfg.partial_interval_ms,
             partial_history_seconds=stream_cfg.partial_history_seconds,
             final_history_seconds=stream_cfg.final_history_seconds,
-            queue_maxsize=runtime_cfg.asr_queue_maxsize,
+            queue_maxsize=queue_maxsize,
             on_debug=self._on_error,
         )
         self._streams[key] = stream
         self._stream_fingerprints[key] = fingerprint
         return stream
 
+    def _asr_profile_for_language(self, language: str):
+        normalized = (language or "").strip().lower()
+        if "-" in normalized:
+            normalized = normalized.split("-", 1)[0]
+        # local profile = 中文, remote profile = 英文
+        if normalized.startswith("en"):
+            return self._config.asr_channels.remote
+        return self._config.asr_channels.local
+
+    def _asr_queue_maxsize_for_language(self, language: str) -> int:
+        normalized = (language or "").strip().lower()
+        if "-" in normalized:
+            normalized = normalized.split("-", 1)[0]
+        runtime = self._config.runtime
+        if normalized.startswith("en"):
+            value = int(getattr(runtime, "asr_queue_maxsize_remote", runtime.asr_queue_maxsize))
+        else:
+            value = int(getattr(runtime, "asr_queue_maxsize_local", runtime.asr_queue_maxsize))
+        return max(8, value)
+
+    def _resolve_model_for_language(self, model: str, language: str) -> str:
+        normalized_model = (model or "").strip()
+        normalized_lang = (language or "").strip().lower()
+        if "-" in normalized_lang:
+            normalized_lang = normalized_lang.split("-", 1)[0]
+        if normalized_model == "distil-large-v3" and normalized_lang in {"zh", "ja"}:
+            if self._on_error:
+                self._on_error(
+                    f"asr model fallback: distil-large-v3 is weak for {normalized_lang}, use large-v3 instead"
+                )
+            return "large-v3"
+        return normalized_model or "large-v3"
+
     def _build_runtime_fingerprint(self) -> str:
         payload = {
             "asr": {
-                "model": self._config.asr.model,
-                "device": self._config.asr.device,
-                "compute_type": self._config.asr.compute_type,
-                "beam_size": self._config.asr.beam_size,
-                "condition_on_previous_text": self._config.asr.condition_on_previous_text,
-                "vad": {
-                    "enabled": self._config.asr.vad.enabled,
-                    "min_speech_duration_ms": self._config.asr.vad.min_speech_duration_ms,
-                    "min_silence_duration_ms": self._config.asr.vad.min_silence_duration_ms,
-                    "max_speech_duration_s": self._config.asr.vad.max_speech_duration_s,
-                    "speech_pad_ms": self._config.asr.vad.speech_pad_ms,
-                    "rms_threshold": self._config.asr.vad.rms_threshold,
+                "local": {
+                    "model": self._config.asr_channels.local.model,
+                    "device": self._config.asr_channels.local.device,
+                    "compute_type": self._config.asr_channels.local.compute_type,
+                    "beam_size": self._config.asr_channels.local.beam_size,
+                    "condition_on_previous_text": self._config.asr_channels.local.condition_on_previous_text,
+                    "temperature_fallback": self._config.asr_channels.local.temperature_fallback,
+                    "no_speech_threshold": self._config.asr_channels.local.no_speech_threshold,
+                    "vad": {
+                        "enabled": self._config.asr_channels.local.vad.enabled,
+                        "min_speech_duration_ms": self._config.asr_channels.local.vad.min_speech_duration_ms,
+                        "min_silence_duration_ms": self._config.asr_channels.local.vad.min_silence_duration_ms,
+                        "max_speech_duration_s": self._config.asr_channels.local.vad.max_speech_duration_s,
+                        "speech_pad_ms": self._config.asr_channels.local.vad.speech_pad_ms,
+                        "rms_threshold": self._config.asr_channels.local.vad.rms_threshold,
+                    },
+                    "streaming": {
+                        "partial_interval_ms": self._config.asr_channels.local.streaming.partial_interval_ms,
+                        "partial_history_seconds": self._config.asr_channels.local.streaming.partial_history_seconds,
+                        "final_history_seconds": self._config.asr_channels.local.streaming.final_history_seconds,
+                    },
                 },
-                "streaming": {
-                    "partial_interval_ms": self._config.asr.streaming.partial_interval_ms,
-                    "partial_history_seconds": self._config.asr.streaming.partial_history_seconds,
-                    "final_history_seconds": self._config.asr.streaming.final_history_seconds,
+                "remote": {
+                    "model": self._config.asr_channels.remote.model,
+                    "device": self._config.asr_channels.remote.device,
+                    "compute_type": self._config.asr_channels.remote.compute_type,
+                    "beam_size": self._config.asr_channels.remote.beam_size,
+                    "condition_on_previous_text": self._config.asr_channels.remote.condition_on_previous_text,
+                    "temperature_fallback": self._config.asr_channels.remote.temperature_fallback,
+                    "no_speech_threshold": self._config.asr_channels.remote.no_speech_threshold,
+                    "vad": {
+                        "enabled": self._config.asr_channels.remote.vad.enabled,
+                        "min_speech_duration_ms": self._config.asr_channels.remote.vad.min_speech_duration_ms,
+                        "min_silence_duration_ms": self._config.asr_channels.remote.vad.min_silence_duration_ms,
+                        "max_speech_duration_s": self._config.asr_channels.remote.vad.max_speech_duration_s,
+                        "speech_pad_ms": self._config.asr_channels.remote.vad.speech_pad_ms,
+                        "rms_threshold": self._config.asr_channels.remote.vad.rms_threshold,
+                    },
+                    "streaming": {
+                        "partial_interval_ms": self._config.asr_channels.remote.streaming.partial_interval_ms,
+                        "partial_history_seconds": self._config.asr_channels.remote.streaming.partial_history_seconds,
+                        "final_history_seconds": self._config.asr_channels.remote.streaming.final_history_seconds,
+                    },
                 },
             },
             "language": {
@@ -228,7 +291,8 @@ class ASRManager:
                 "meeting_source": self._config.language.meeting_source,
             },
             "runtime": {
-                "asr_queue_maxsize": self._config.runtime.asr_queue_maxsize,
+                "asr_queue_maxsize_local": self._config.runtime.asr_queue_maxsize_local,
+                "asr_queue_maxsize_remote": self._config.runtime.asr_queue_maxsize_remote,
             },
         }
         raw = json.dumps(payload, sort_keys=True, ensure_ascii=True)

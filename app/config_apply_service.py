@@ -33,10 +33,14 @@ class ConfigApplyService:
         self._local_ai_page.update_config(config)
 
     def apply_audio_route_levels(self, audio: AudioRouteConfig) -> None:
-        self._meeting_capture.set_gain(audio.meeting_in_gain)
-        self._local_capture.set_gain(audio.microphone_in_gain)
-        self._speaker_playback.set_volume(audio.speaker_out_volume)
-        self._meeting_playback.set_volume(audio.meeting_out_volume)
+        self._meeting_capture.set_gain(1.0)
+        self._local_capture.set_gain(1.0)
+        self._speaker_playback.set_volume(1.0)
+        self._meeting_playback.set_volume(1.0)
+        audio.meeting_in_gain = 1.0
+        audio.microphone_in_gain = 1.0
+        audio.speaker_out_volume = 1.0
+        audio.meeting_out_volume = 1.0
 
     def apply_audio_route_levels_from_ui(self) -> None:
         audio = self._audio_routing_page.selected_audio_routes()

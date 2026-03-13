@@ -13,6 +13,9 @@ class LmStudioClient:
     model: str = "qwen/qwen3.5-9b"
     temperature: float = 0.2
     top_p: float = 0.9
+    max_output_tokens: int = 128
+    repeat_penalty: float = 1.05
+    stop_tokens: str = "</target>\nTranslation:"
     request_timeout_sec: float = 20.0
 
     def health_check(self) -> tuple[bool, str]:
@@ -66,7 +69,7 @@ class LmStudioClient:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            max_tokens=256,
+            max_tokens=max(16, int(self.max_output_tokens)),
             response_format=_translation_response_format(),
         )
         cleaned = self._extract_translation_text(response, target_lang=target_lang)
@@ -87,7 +90,7 @@ class LmStudioClient:
                         ),
                     },
                 ],
-                max_tokens=128,
+                max_tokens=max(16, min(128, int(self.max_output_tokens))),
                 response_format=_translation_response_format(),
             )
             cleaned = self._extract_translation_text(response, target_lang=target_lang)
@@ -106,7 +109,11 @@ class LmStudioClient:
             "temperature": self.temperature,
             "top_p": self.top_p,
             "max_tokens": max_tokens,
+            "repeat_penalty": self.repeat_penalty,
         }
+        stop = _parse_stop_tokens(self.stop_tokens)
+        if stop:
+            payload["stop"] = stop
         if response_format:
             payload["response_format"] = response_format
         try:
@@ -315,3 +322,14 @@ def _profile_hint(profile: TranslationProfileConfig | None) -> str:
         "allow light subject completion" if profile.allow_subject_completion else "avoid adding implied subjects"
     )
     return ", ".join(rules)
+
+
+def _parse_stop_tokens(raw: str) -> list[str]:
+    text = (raw or "").strip()
+    if not text:
+        return []
+    rows = [row.strip() for row in text.replace("\r", "\n").split("\n")]
+    tokens = [row for row in rows if row]
+    if len(tokens) == 1 and "," in tokens[0]:
+        tokens = [item.strip() for item in tokens[0].split(",") if item.strip()]
+    return tokens[:8]

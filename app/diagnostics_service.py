@@ -91,6 +91,12 @@ def export_session_report(
         "runtime": {
             "sample_rate": config.runtime.sample_rate,
             "chunk_ms": config.runtime.chunk_ms,
+            "asr_queue_maxsize_local": config.runtime.asr_queue_maxsize_local,
+            "asr_queue_maxsize_remote": config.runtime.asr_queue_maxsize_remote,
+            "llm_queue_maxsize_local": config.runtime.llm_queue_maxsize_local,
+            "llm_queue_maxsize_remote": config.runtime.llm_queue_maxsize_remote,
+            "tts_queue_maxsize_local": config.runtime.tts_queue_maxsize_local,
+            "tts_queue_maxsize_remote": config.runtime.tts_queue_maxsize_remote,
             "asr_queue_maxsize": config.runtime.asr_queue_maxsize,
             "llm_queue_maxsize": config.runtime.llm_queue_maxsize,
             "tts_queue_maxsize": config.runtime.tts_queue_maxsize,

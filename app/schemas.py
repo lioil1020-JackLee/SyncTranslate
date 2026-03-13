@@ -54,8 +54,16 @@ class AsrConfig:
     compute_type: str = "float16"
     beam_size: int = 1
     condition_on_previous_text: bool = True
+    temperature_fallback: str = "0.0,0.2,0.4"
+    no_speech_threshold: float = 0.6
     vad: VadSettings = field(default_factory=VadSettings)
     streaming: AsrStreamingSettings = field(default_factory=AsrStreamingSettings)
+
+
+@dataclass(slots=True)
+class AsrChannelsConfig:
+    local: AsrConfig = field(default_factory=AsrConfig)
+    remote: AsrConfig = field(default_factory=AsrConfig)
 
 
 @dataclass(slots=True)
@@ -136,11 +144,20 @@ class LlmConfig:
     model: str = "qwen/qwen3.5-9b"
     temperature: float = 0.2
     top_p: float = 0.9
+    max_output_tokens: int = 128
+    repeat_penalty: float = 1.05
+    stop_tokens: str = "</target>\nTranslation:"
     request_timeout_sec: int = 20
     sliding_window: SlidingWindowConfig = field(default_factory=SlidingWindowConfig)
     profiles: TranslationProfilesConfig = field(default_factory=TranslationProfilesConfig)
     caption_profile: str = "live_caption_fast"
     speech_profile: str = "speech_output_natural"
+
+
+@dataclass(slots=True)
+class LlmChannelsConfig:
+    local: LlmConfig = field(default_factory=LlmConfig)
+    remote: LlmConfig = field(default_factory=LlmConfig)
 
 
 @dataclass(slots=True)
@@ -181,17 +198,29 @@ class TtsChannelsConfig:
 class RuntimeConfig:
     sample_rate: int = 48000
     chunk_ms: int = 100
+    asr_queue_maxsize_local: int = 128
+    asr_queue_maxsize_remote: int = 128
+    llm_queue_maxsize_local: int = 32
+    llm_queue_maxsize_remote: int = 32
+    tts_queue_maxsize_local: int = 32
+    tts_queue_maxsize_remote: int = 32
+    # Legacy shared queue settings kept for backward compatibility.
     asr_queue_maxsize: int = 128
     llm_queue_maxsize: int = 32
     tts_queue_maxsize: int = 32
     translation_exact_cache_size: int = 256
     translation_prefix_min_delta_chars: int = 6
     tts_cancel_pending_on_new_final: bool = True
+    tts_cancel_policy: str = "all_pending"
+    tts_max_wait_ms: int = 4000
+    tts_max_chars: int = 200
     tts_drop_backlog_threshold: int = 6
+    llm_streaming_tokens: int = 16
+    max_pipeline_latency_ms: int = 3000
     local_echo_guard_enabled: bool = False
     local_echo_guard_resume_delay_ms: int = 300
     remote_echo_guard_resume_delay_ms: int = 300
-    config_schema_version: int = 2
+    config_schema_version: int = 3
     last_migration_note: str = ""
     warmup_on_start: bool = True
 
@@ -221,7 +250,9 @@ class AppConfig:
     direction: DirectionConfig = field(default_factory=DirectionConfig)
     language: LanguageConfig = field(default_factory=LanguageConfig)
     asr: AsrConfig = field(default_factory=AsrConfig)
+    asr_channels: AsrChannelsConfig = field(default_factory=AsrChannelsConfig)
     llm: LlmConfig = field(default_factory=LlmConfig)
+    llm_channels: LlmChannelsConfig = field(default_factory=LlmChannelsConfig)
     tts: TtsConfig = field(default_factory=TtsConfig)
     meeting_tts: TtsConfig = field(default_factory=TtsConfig)
     local_tts: TtsConfig = field(default_factory=TtsConfig)
@@ -243,8 +274,43 @@ class AppConfig:
             compute_type=str(asr_raw.get("compute_type", "float16")),
             beam_size=int(asr_raw.get("beam_size", 1)),
             condition_on_previous_text=bool(asr_raw.get("condition_on_previous_text", True)),
+            temperature_fallback=str(asr_raw.get("temperature_fallback", "0.0,0.2,0.4")),
+            no_speech_threshold=float(asr_raw.get("no_speech_threshold", 0.6)),
             vad=VadSettings(**(asr_raw.get("vad") or {})),
             streaming=AsrStreamingSettings(**(asr_raw.get("streaming") or {})),
+        )
+        asr_channels_raw = raw.get("asr_channels") or {}
+        asr_local_raw = asr_channels_raw.get("local") or asr_raw
+        asr_remote_raw = asr_channels_raw.get("remote") or asr_raw
+        asr_channels = AsrChannelsConfig(
+            local=AsrConfig(
+                engine=str(asr_local_raw.get("engine", asr.engine)),
+                model=str(asr_local_raw.get("model", asr.model)),
+                device=str(asr_local_raw.get("device", asr.device)),
+                compute_type=str(asr_local_raw.get("compute_type", asr.compute_type)),
+                beam_size=int(asr_local_raw.get("beam_size", asr.beam_size)),
+                condition_on_previous_text=bool(
+                    asr_local_raw.get("condition_on_previous_text", asr.condition_on_previous_text)
+                ),
+                temperature_fallback=str(asr_local_raw.get("temperature_fallback", asr.temperature_fallback)),
+                no_speech_threshold=float(asr_local_raw.get("no_speech_threshold", asr.no_speech_threshold)),
+                vad=VadSettings(**(asr_local_raw.get("vad") or asdict(asr.vad))),
+                streaming=AsrStreamingSettings(**(asr_local_raw.get("streaming") or asdict(asr.streaming))),
+            ),
+            remote=AsrConfig(
+                engine=str(asr_remote_raw.get("engine", asr.engine)),
+                model=str(asr_remote_raw.get("model", asr.model)),
+                device=str(asr_remote_raw.get("device", asr.device)),
+                compute_type=str(asr_remote_raw.get("compute_type", asr.compute_type)),
+                beam_size=int(asr_remote_raw.get("beam_size", asr.beam_size)),
+                condition_on_previous_text=bool(
+                    asr_remote_raw.get("condition_on_previous_text", asr.condition_on_previous_text)
+                ),
+                temperature_fallback=str(asr_remote_raw.get("temperature_fallback", asr.temperature_fallback)),
+                no_speech_threshold=float(asr_remote_raw.get("no_speech_threshold", asr.no_speech_threshold)),
+                vad=VadSettings(**(asr_remote_raw.get("vad") or asdict(asr.vad))),
+                streaming=AsrStreamingSettings(**(asr_remote_raw.get("streaming") or asdict(asr.streaming))),
+            ),
         )
 
         llm_raw = raw.get("llm") or {}
@@ -254,6 +320,9 @@ class AppConfig:
             model=str(llm_raw.get("model", "qwen/qwen3.5-9b")),
             temperature=float(llm_raw.get("temperature", 0.2)),
             top_p=float(llm_raw.get("top_p", 0.9)),
+            max_output_tokens=int(llm_raw.get("max_output_tokens", 128)),
+            repeat_penalty=float(llm_raw.get("repeat_penalty", 1.05)),
+            stop_tokens=str(llm_raw.get("stop_tokens", "</target>\nTranslation:")),
             request_timeout_sec=int(llm_raw.get("request_timeout_sec", 20)),
             sliding_window=SlidingWindowConfig(**(llm_raw.get("sliding_window") or {})),
             profiles=TranslationProfilesConfig(
@@ -272,6 +341,75 @@ class AppConfig:
             ),
             caption_profile=str(llm_raw.get("caption_profile", "live_caption_fast")),
             speech_profile=str(llm_raw.get("speech_profile", "speech_output_natural")),
+        )
+        llm_channels_raw = raw.get("llm_channels") or {}
+        llm_local_raw = llm_channels_raw.get("local") or llm_raw
+        llm_remote_raw = llm_channels_raw.get("remote") or llm_raw
+        llm_channels = LlmChannelsConfig(
+            local=LlmConfig(
+                backend=str(llm_local_raw.get("backend", llm.backend)),
+                base_url=str(llm_local_raw.get("base_url", llm.base_url)),
+                model=str(llm_local_raw.get("model", llm.model)),
+                temperature=float(llm_local_raw.get("temperature", llm.temperature)),
+                top_p=float(llm_local_raw.get("top_p", llm.top_p)),
+                max_output_tokens=int(llm_local_raw.get("max_output_tokens", llm.max_output_tokens)),
+                repeat_penalty=float(llm_local_raw.get("repeat_penalty", llm.repeat_penalty)),
+                stop_tokens=str(llm_local_raw.get("stop_tokens", llm.stop_tokens)),
+                request_timeout_sec=int(llm_local_raw.get("request_timeout_sec", llm.request_timeout_sec)),
+                sliding_window=SlidingWindowConfig(**(llm_local_raw.get("sliding_window") or asdict(llm.sliding_window))),
+                profiles=TranslationProfilesConfig(
+                    live_caption_fast=TranslationProfileConfig(
+                        **((llm_local_raw.get("profiles") or {}).get("live_caption_fast") or asdict(llm.profiles.live_caption_fast))
+                    ),
+                    live_caption_stable=TranslationProfileConfig(
+                        **((llm_local_raw.get("profiles") or {}).get("live_caption_stable") or asdict(llm.profiles.live_caption_stable))
+                    ),
+                    speech_output_natural=TranslationProfileConfig(
+                        **(
+                            (llm_local_raw.get("profiles") or {}).get("speech_output_natural")
+                            or asdict(llm.profiles.speech_output_natural)
+                        )
+                    ),
+                    technical_meeting=TranslationProfileConfig(
+                        **((llm_local_raw.get("profiles") or {}).get("technical_meeting") or asdict(llm.profiles.technical_meeting))
+                    ),
+                ),
+                caption_profile=str(llm_local_raw.get("caption_profile", llm.caption_profile)),
+                speech_profile=str(llm_local_raw.get("speech_profile", llm.speech_profile)),
+            ),
+            remote=LlmConfig(
+                backend=str(llm_remote_raw.get("backend", llm.backend)),
+                base_url=str(llm_remote_raw.get("base_url", llm.base_url)),
+                model=str(llm_remote_raw.get("model", llm.model)),
+                temperature=float(llm_remote_raw.get("temperature", llm.temperature)),
+                top_p=float(llm_remote_raw.get("top_p", llm.top_p)),
+                max_output_tokens=int(llm_remote_raw.get("max_output_tokens", llm.max_output_tokens)),
+                repeat_penalty=float(llm_remote_raw.get("repeat_penalty", llm.repeat_penalty)),
+                stop_tokens=str(llm_remote_raw.get("stop_tokens", llm.stop_tokens)),
+                request_timeout_sec=int(llm_remote_raw.get("request_timeout_sec", llm.request_timeout_sec)),
+                sliding_window=SlidingWindowConfig(
+                    **(llm_remote_raw.get("sliding_window") or asdict(llm.sliding_window))
+                ),
+                profiles=TranslationProfilesConfig(
+                    live_caption_fast=TranslationProfileConfig(
+                        **((llm_remote_raw.get("profiles") or {}).get("live_caption_fast") or asdict(llm.profiles.live_caption_fast))
+                    ),
+                    live_caption_stable=TranslationProfileConfig(
+                        **((llm_remote_raw.get("profiles") or {}).get("live_caption_stable") or asdict(llm.profiles.live_caption_stable))
+                    ),
+                    speech_output_natural=TranslationProfileConfig(
+                        **(
+                            (llm_remote_raw.get("profiles") or {}).get("speech_output_natural")
+                            or asdict(llm.profiles.speech_output_natural)
+                        )
+                    ),
+                    technical_meeting=TranslationProfileConfig(
+                        **((llm_remote_raw.get("profiles") or {}).get("technical_meeting") or asdict(llm.profiles.technical_meeting))
+                    ),
+                ),
+                caption_profile=str(llm_remote_raw.get("caption_profile", llm.caption_profile)),
+                speech_profile=str(llm_remote_raw.get("speech_profile", llm.speech_profile)),
+            ),
         )
 
         tts = TtsConfig(**(raw.get("tts") or {}))
@@ -306,7 +444,9 @@ class AppConfig:
             direction=direction,
             language=language,
             asr=asr,
+            asr_channels=asr_channels,
             llm=llm,
+            llm_channels=llm_channels,
             tts=tts,
             meeting_tts=meeting_tts,
             local_tts=local_tts,

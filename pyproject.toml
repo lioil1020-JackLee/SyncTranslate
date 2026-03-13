@@ -5,11 +5,9 @@ description = "Windows desktop live interpreter for meeting audio with local ASR
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "comtypes>=1.4.16",
     "edge-tts>=7.2.7",
     "miniaudio>=1.61",
     "numpy>=2.4.3",
-    "pycaw>=20251023",
     "pyside6>=6.10.2",
     "pyyaml>=6.0.3",
     "soundcard>=0.4.5",

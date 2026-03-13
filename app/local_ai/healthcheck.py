@@ -43,7 +43,11 @@ def run_local_healthcheck(
         asr_ok = False
         asr_message = str(exc)
 
-    llm_ok, llm_message = llm_client.health_check()
+    try:
+        llm_ok, llm_message = llm_client.health_check()
+    except BaseException as exc:
+        llm_ok = False
+        llm_message = _format_healthcheck_exception(exc)
 
     if isinstance(tts_engine, EdgeTtsProvider):
         try:
@@ -60,3 +64,10 @@ def run_local_healthcheck(
         llm_message=llm_message,
         tts_message=tts_message,
     )
+
+
+def _format_healthcheck_exception(exc: BaseException) -> str:
+    if isinstance(exc, KeyboardInterrupt):
+        return "interrupted while waiting for local LLM response"
+    text = str(exc).strip()
+    return text or exc.__class__.__name__

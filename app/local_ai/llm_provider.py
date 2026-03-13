@@ -42,6 +42,9 @@ class LmStudioTranslationProvider:
             model=config.model,
             temperature=config.temperature,
             top_p=config.top_p,
+            max_output_tokens=config.max_output_tokens,
+            repeat_penalty=config.repeat_penalty,
+            stop_tokens=config.stop_tokens,
             request_timeout_sec=config.request_timeout_sec,
         )
 

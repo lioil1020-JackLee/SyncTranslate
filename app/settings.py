@@ -28,11 +28,13 @@ language:
     local_target: en
 asr:
     engine: faster_whisper
-    model: distil-large-v3
+    model: large-v3
     device: cuda
     compute_type: float16
     beam_size: 1
     condition_on_previous_text: true
+    temperature_fallback: 0.0,0.2,0.4
+    no_speech_threshold: 0.6
     vad:
         enabled: true
         min_speech_duration_ms: 160
@@ -44,12 +46,56 @@ asr:
         partial_interval_ms: 250
         partial_history_seconds: 2
         final_history_seconds: 4
+asr_channels:
+    chinese:
+        engine: faster_whisper
+        model: large-v3
+        device: cuda
+        compute_type: float16
+        beam_size: 1
+        condition_on_previous_text: true
+        temperature_fallback: 0.0,0.2
+        no_speech_threshold: 0.65
+        vad:
+            enabled: true
+            min_speech_duration_ms: 160
+            min_silence_duration_ms: 450
+            max_speech_duration_s: 10.0
+            speech_pad_ms: 300
+            rms_threshold: 0.03
+        streaming:
+            partial_interval_ms: 250
+            partial_history_seconds: 2
+            final_history_seconds: 4
+    english:
+        engine: faster_whisper
+        model: large-v3
+        device: cuda
+        compute_type: float16
+        beam_size: 1
+        condition_on_previous_text: true
+        temperature_fallback: 0.0,0.2,0.4
+        no_speech_threshold: 0.55
+        vad:
+            enabled: true
+            min_speech_duration_ms: 160
+            min_silence_duration_ms: 450
+            max_speech_duration_s: 10.0
+            speech_pad_ms: 300
+            rms_threshold: 0.03
+        streaming:
+            partial_interval_ms: 250
+            partial_history_seconds: 2
+            final_history_seconds: 4
 llm:
     backend: lm_studio
     base_url: http://127.0.0.1:1234
     model: hy-mt1.5-7b
     temperature: 0.1
     top_p: 0.8
+    max_output_tokens: 128
+    repeat_penalty: 1.05
+    stop_tokens: "</target>,Translation:"
     request_timeout_sec: 15
     sliding_window:
         enabled: true
@@ -94,6 +140,113 @@ llm:
             allow_subject_completion: false
     caption_profile: live_caption_fast
     speech_profile: speech_output_natural
+llm_channels:
+    zh_to_en:
+        backend: lm_studio
+        base_url: http://127.0.0.1:1234
+        model: hy-mt1.5-7b
+        temperature: 0.1
+        top_p: 0.8
+        max_output_tokens: 96
+        repeat_penalty: 1.05
+        stop_tokens: "</target>,Translation:"
+        request_timeout_sec: 15
+        sliding_window:
+            enabled: true
+            trigger_tokens: 18
+            max_context_items: 6
+        profiles:
+            live_caption_fast:
+                name: live_caption_fast
+                prompt_style: literal
+                context_items: 4
+                partial_trigger_tokens: 18
+                max_tokens: 256
+                preserve_terms: true
+                naturalize_tone: false
+                allow_subject_completion: false
+            live_caption_stable:
+                name: live_caption_fast
+                prompt_style: literal
+                context_items: 4
+                partial_trigger_tokens: 18
+                max_tokens: 256
+                preserve_terms: true
+                naturalize_tone: false
+                allow_subject_completion: false
+            speech_output_natural:
+                name: live_caption_fast
+                prompt_style: literal
+                context_items: 4
+                partial_trigger_tokens: 18
+                max_tokens: 256
+                preserve_terms: true
+                naturalize_tone: false
+                allow_subject_completion: false
+            technical_meeting:
+                name: live_caption_fast
+                prompt_style: literal
+                context_items: 4
+                partial_trigger_tokens: 18
+                max_tokens: 256
+                preserve_terms: true
+                naturalize_tone: false
+                allow_subject_completion: false
+        caption_profile: live_caption_fast
+        speech_profile: speech_output_natural
+    en_to_zh:
+        backend: lm_studio
+        base_url: http://127.0.0.1:1234
+        model: hy-mt1.5-7b
+        temperature: 0.1
+        top_p: 0.8
+        max_output_tokens: 160
+        repeat_penalty: 1.05
+        stop_tokens: "</target>,翻譯:"
+        request_timeout_sec: 15
+        sliding_window:
+            enabled: true
+            trigger_tokens: 18
+            max_context_items: 6
+        profiles:
+            live_caption_fast:
+                name: live_caption_fast
+                prompt_style: literal
+                context_items: 4
+                partial_trigger_tokens: 18
+                max_tokens: 256
+                preserve_terms: true
+                naturalize_tone: false
+                allow_subject_completion: false
+            live_caption_stable:
+                name: live_caption_fast
+                prompt_style: literal
+                context_items: 4
+                partial_trigger_tokens: 18
+                max_tokens: 256
+                preserve_terms: true
+                naturalize_tone: false
+                allow_subject_completion: false
+            speech_output_natural:
+                name: live_caption_fast
+                prompt_style: literal
+                context_items: 4
+                partial_trigger_tokens: 18
+                max_tokens: 256
+                preserve_terms: true
+                naturalize_tone: false
+                allow_subject_completion: false
+            technical_meeting:
+                name: live_caption_fast
+                prompt_style: literal
+                context_items: 4
+                partial_trigger_tokens: 18
+                max_tokens: 256
+                preserve_terms: true
+                naturalize_tone: false
+                allow_subject_completion: false
+        caption_profile: live_caption_fast
+        speech_profile: speech_output_natural
 tts:
     engine: edge_tts
     executable_path: ''
@@ -105,18 +258,7 @@ tts:
     noise_scale: 0.667
     noise_w: 0.6
     sample_rate: 24000
-meeting_tts:
-    engine: edge_tts
-    executable_path: ''
-    model_path: ''
-    config_path: ''
-    voice_name: en-US-JennyNeural
-    speaker_id: 0
-    length_scale: 0.9
-    noise_scale: 0.667
-    noise_w: 0.6
-    sample_rate: 24000
-local_tts:
+chinese_tts:
     engine: edge_tts
     executable_path: ''
     model_path: ''
@@ -127,19 +269,19 @@ local_tts:
     noise_scale: 0.667
     noise_w: 0.6
     sample_rate: 24000
+english_tts:
+    engine: edge_tts
+    executable_path: ''
+    model_path: ''
+    config_path: ''
+    voice_name: en-US-JennyNeural
+    speaker_id: 0
+    length_scale: 0.9
+    noise_scale: 0.667
+    noise_w: 0.6
+    sample_rate: 24000
 tts_channels:
-    local:
-        engine: edge_tts
-        executable_path: null
-        model_path: null
-        config_path: null
-        voice_name: en-US-JennyNeural
-        speaker_id: null
-        length_scale: null
-        noise_scale: null
-        noise_w: 0.6
-        sample_rate: 24000
-    remote:
+    chinese:
         engine: edge_tts
         executable_path: null
         model_path: null
@@ -150,20 +292,42 @@ tts_channels:
         noise_scale: null
         noise_w: 0.6
         sample_rate: 24000
+    english:
+        engine: edge_tts
+        executable_path: null
+        model_path: null
+        config_path: null
+        voice_name: en-US-JennyNeural
+        speaker_id: null
+        length_scale: null
+        noise_scale: null
+        noise_w: 0.6
+        sample_rate: 24000
 runtime:
     sample_rate: 24000
     chunk_ms: 40
+    asr_queue_maxsize_chinese: 24
+    asr_queue_maxsize_english: 24
+    llm_queue_maxsize_zh_to_en: 8
+    llm_queue_maxsize_en_to_zh: 8
+    tts_queue_maxsize_chinese: 8
+    tts_queue_maxsize_english: 8
     asr_queue_maxsize: 24
     llm_queue_maxsize: 8
     tts_queue_maxsize: 8
     translation_exact_cache_size: 256
     translation_prefix_min_delta_chars: 6
     tts_cancel_pending_on_new_final: true
+    tts_cancel_policy: all_pending
+    tts_max_wait_ms: 4000
+    tts_max_chars: 200
     tts_drop_backlog_threshold: 6
+    llm_streaming_tokens: 16
+    max_pipeline_latency_ms: 3000
     local_echo_guard_enabled: true
     local_echo_guard_resume_delay_ms: 300
     remote_echo_guard_resume_delay_ms: 300
-    config_schema_version: 2
+    config_schema_version: 3
     last_migration_note: ''
     warmup_on_start: true
 health_last_success:
@@ -233,6 +397,7 @@ def load_config(config_path: str | Path = "config.yaml", fallback_path: str | Pa
 
     with path.open("r", encoding="utf-8") as fp:
         raw: dict[str, Any] = yaml.safe_load(fp) or {}
+    raw = _normalize_external_config_keys(raw)
 
     migrated = migrate_legacy_config(raw)
     config = AppConfig.from_dict(migrated)
@@ -242,9 +407,93 @@ def load_config(config_path: str | Path = "config.yaml", fallback_path: str | Pa
 def save_config(config: AppConfig, config_path: str | Path = "config.yaml") -> Path:
     path = _resolve_write_path(config_path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    payload = _present_external_config_keys(config.to_dict())
     with path.open("w", encoding="utf-8") as fp:
-        yaml.safe_dump(config.to_dict(), fp, sort_keys=False, allow_unicode=True)
+        yaml.safe_dump(payload, fp, sort_keys=False, allow_unicode=True)
     return path
+
+
+def _normalize_external_config_keys(raw: dict[str, Any]) -> dict[str, Any]:
+    data = deepcopy(raw)
+    asr_channels = data.get("asr_channels")
+    if isinstance(asr_channels, dict):
+        if "chinese" in asr_channels and "local" not in asr_channels:
+            asr_channels["local"] = asr_channels.get("chinese")
+        if "english" in asr_channels and "remote" not in asr_channels:
+            asr_channels["remote"] = asr_channels.get("english")
+    llm_channels = data.get("llm_channels")
+    if isinstance(llm_channels, dict):
+        if "zh_to_en" in llm_channels and "local" not in llm_channels:
+            llm_channels["local"] = llm_channels.get("zh_to_en")
+        if "en_to_zh" in llm_channels and "remote" not in llm_channels:
+            llm_channels["remote"] = llm_channels.get("en_to_zh")
+    tts_channels = data.get("tts_channels")
+    if isinstance(tts_channels, dict):
+        if "chinese" in tts_channels and "local" not in tts_channels:
+            tts_channels["local"] = tts_channels.get("chinese")
+        if "english" in tts_channels and "remote" not in tts_channels:
+            tts_channels["remote"] = tts_channels.get("english")
+    if "chinese_tts" in data and "meeting_tts" not in data:
+        data["meeting_tts"] = data.get("chinese_tts")
+    if "english_tts" in data and "local_tts" not in data:
+        data["local_tts"] = data.get("english_tts")
+    runtime = data.get("runtime")
+    if isinstance(runtime, dict):
+        mapping = {
+            "asr_queue_maxsize_chinese": "asr_queue_maxsize_local",
+            "asr_queue_maxsize_english": "asr_queue_maxsize_remote",
+            "llm_queue_maxsize_zh_to_en": "llm_queue_maxsize_local",
+            "llm_queue_maxsize_en_to_zh": "llm_queue_maxsize_remote",
+            "tts_queue_maxsize_chinese": "tts_queue_maxsize_local",
+            "tts_queue_maxsize_english": "tts_queue_maxsize_remote",
+        }
+        for src, dst in mapping.items():
+            if src in runtime and dst not in runtime:
+                runtime[dst] = runtime.get(src)
+        for src in mapping:
+            runtime.pop(src, None)
+    return data
+
+
+def _present_external_config_keys(raw: dict[str, Any]) -> dict[str, Any]:
+    data = deepcopy(raw)
+    asr_channels = data.get("asr_channels")
+    if isinstance(asr_channels, dict):
+        asr_channels["chinese"] = asr_channels.get("local")
+        asr_channels["english"] = asr_channels.get("remote")
+        asr_channels.pop("local", None)
+        asr_channels.pop("remote", None)
+    llm_channels = data.get("llm_channels")
+    if isinstance(llm_channels, dict):
+        llm_channels["zh_to_en"] = llm_channels.get("local")
+        llm_channels["en_to_zh"] = llm_channels.get("remote")
+        llm_channels.pop("local", None)
+        llm_channels.pop("remote", None)
+    tts_channels = data.get("tts_channels")
+    if isinstance(tts_channels, dict):
+        tts_channels["chinese"] = tts_channels.get("local")
+        tts_channels["english"] = tts_channels.get("remote")
+        tts_channels.pop("local", None)
+        tts_channels.pop("remote", None)
+    if "meeting_tts" in data:
+        data["chinese_tts"] = data.pop("meeting_tts")
+    if "local_tts" in data:
+        data["english_tts"] = data.pop("local_tts")
+    runtime = data.get("runtime")
+    if isinstance(runtime, dict):
+        runtime["asr_queue_maxsize_chinese"] = runtime.get("asr_queue_maxsize_local")
+        runtime["asr_queue_maxsize_english"] = runtime.get("asr_queue_maxsize_remote")
+        runtime["llm_queue_maxsize_zh_to_en"] = runtime.get("llm_queue_maxsize_local")
+        runtime["llm_queue_maxsize_en_to_zh"] = runtime.get("llm_queue_maxsize_remote")
+        runtime["tts_queue_maxsize_chinese"] = runtime.get("tts_queue_maxsize_local")
+        runtime["tts_queue_maxsize_english"] = runtime.get("tts_queue_maxsize_remote")
+        runtime.pop("asr_queue_maxsize_local", None)
+        runtime.pop("asr_queue_maxsize_remote", None)
+        runtime.pop("llm_queue_maxsize_local", None)
+        runtime.pop("llm_queue_maxsize_remote", None)
+        runtime.pop("tts_queue_maxsize_local", None)
+        runtime.pop("tts_queue_maxsize_remote", None)
+    return data
 
 
 def migrate_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
@@ -280,10 +529,18 @@ def migrate_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
     result["asr"]["compute_type"] = str(asr.get("compute_type") or "float16")
     result["asr"]["beam_size"] = int(asr.get("beam_size", 1))
     result["asr"]["condition_on_previous_text"] = bool(asr.get("condition_on_previous_text", True))
+    result["asr"]["temperature_fallback"] = str(asr.get("temperature_fallback", result["asr"]["temperature_fallback"]))
+    result["asr"]["no_speech_threshold"] = float(asr.get("no_speech_threshold", result["asr"]["no_speech_threshold"]))
     if isinstance(asr.get("vad"), dict):
         result["asr"]["vad"].update(asr["vad"])
     if isinstance(asr.get("streaming"), dict):
         result["asr"]["streaming"].update(asr["streaming"])
+    result["asr_channels"]["local"] = deepcopy(result["asr"])
+    result["asr_channels"]["remote"] = deepcopy(result["asr"])
+    result["asr_channels"]["local"]["temperature_fallback"] = "0.0,0.2"
+    result["asr_channels"]["remote"]["temperature_fallback"] = "0.0,0.2,0.4"
+    result["asr_channels"]["local"]["no_speech_threshold"] = 0.65
+    result["asr_channels"]["remote"]["no_speech_threshold"] = 0.55
 
     llm = raw.get("llm") or {}
     result["llm"]["backend"] = "lm_studio"
@@ -298,6 +555,9 @@ def migrate_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
     result["llm"]["model"] = str(llm.get("model") or openai.get("translate_model") or result["llm"]["model"])
     result["llm"]["temperature"] = float(llm.get("temperature", result["llm"]["temperature"]))
     result["llm"]["top_p"] = float(llm.get("top_p", result["llm"]["top_p"]))
+    result["llm"]["max_output_tokens"] = int(llm.get("max_output_tokens", result["llm"]["max_output_tokens"]))
+    result["llm"]["repeat_penalty"] = float(llm.get("repeat_penalty", result["llm"]["repeat_penalty"]))
+    result["llm"]["stop_tokens"] = str(llm.get("stop_tokens", result["llm"]["stop_tokens"]))
     result["llm"]["request_timeout_sec"] = int(llm.get("request_timeout_sec", result["llm"]["request_timeout_sec"]))
     if isinstance(llm.get("sliding_window"), dict):
         result["llm"]["sliding_window"].update(llm["sliding_window"])
@@ -308,6 +568,12 @@ def migrate_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
                 result["llm"]["profiles"][key].update(profile_raw)
     result["llm"]["caption_profile"] = str(llm.get("caption_profile", result["llm"]["caption_profile"]))
     result["llm"]["speech_profile"] = str(llm.get("speech_profile", result["llm"]["speech_profile"]))
+    result["llm_channels"]["local"] = deepcopy(result["llm"])
+    result["llm_channels"]["remote"] = deepcopy(result["llm"])
+    result["llm_channels"]["local"]["max_output_tokens"] = 96
+    result["llm_channels"]["remote"]["max_output_tokens"] = 160
+    result["llm_channels"]["local"]["stop_tokens"] = "</target>,Translation:"
+    result["llm_channels"]["remote"]["stop_tokens"] = "</target>,翻譯:"
 
     tts = raw.get("tts") or {}
     result["tts"]["executable_path"] = str(tts.get("executable_path", result["tts"]["executable_path"]))
@@ -321,15 +587,28 @@ def migrate_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
     result["tts"]["sample_rate"] = int(tts.get("sample_rate", result["tts"]["sample_rate"]))
     result["meeting_tts"] = deepcopy(result["tts"])
     result["local_tts"] = deepcopy(result["tts"])
+    result["meeting_tts"]["voice_name"] = str(result["meeting_tts"].get("voice_name") or "zh-TW-HsiaoChenNeural")
+    result["local_tts"]["voice_name"] = str(result["local_tts"].get("voice_name") or "en-US-JennyNeural")
+    if str(result["local_tts"]["voice_name"]).strip().lower().startswith("zh-"):
+        result["local_tts"]["voice_name"] = "en-US-JennyNeural"
     result["tts_channels"]["local"] = deepcopy(result["meeting_tts"])
     result["tts_channels"]["remote"] = deepcopy(result["local_tts"])
 
     runtime = raw.get("runtime") or {}
     result["runtime"]["sample_rate"] = int(runtime.get("sample_rate", raw.get("sample_rate", 48000)))
     result["runtime"]["chunk_ms"] = int(runtime.get("chunk_ms", raw.get("chunk_ms", 100)))
-    result["runtime"]["asr_queue_maxsize"] = int(runtime.get("asr_queue_maxsize", result["runtime"]["asr_queue_maxsize"]))
-    result["runtime"]["llm_queue_maxsize"] = int(runtime.get("llm_queue_maxsize", result["runtime"]["llm_queue_maxsize"]))
-    result["runtime"]["tts_queue_maxsize"] = int(runtime.get("tts_queue_maxsize", result["runtime"]["tts_queue_maxsize"]))
+    asr_shared = int(runtime.get("asr_queue_maxsize", result["runtime"]["asr_queue_maxsize"]))
+    llm_shared = int(runtime.get("llm_queue_maxsize", result["runtime"]["llm_queue_maxsize"]))
+    tts_shared = int(runtime.get("tts_queue_maxsize", result["runtime"]["tts_queue_maxsize"]))
+    result["runtime"]["asr_queue_maxsize_local"] = int(runtime.get("asr_queue_maxsize_local", asr_shared))
+    result["runtime"]["asr_queue_maxsize_remote"] = int(runtime.get("asr_queue_maxsize_remote", asr_shared))
+    result["runtime"]["llm_queue_maxsize_local"] = int(runtime.get("llm_queue_maxsize_local", llm_shared))
+    result["runtime"]["llm_queue_maxsize_remote"] = int(runtime.get("llm_queue_maxsize_remote", llm_shared))
+    result["runtime"]["tts_queue_maxsize_local"] = int(runtime.get("tts_queue_maxsize_local", tts_shared))
+    result["runtime"]["tts_queue_maxsize_remote"] = int(runtime.get("tts_queue_maxsize_remote", tts_shared))
+    result["runtime"]["asr_queue_maxsize"] = result["runtime"]["asr_queue_maxsize_local"]
+    result["runtime"]["llm_queue_maxsize"] = result["runtime"]["llm_queue_maxsize_local"]
+    result["runtime"]["tts_queue_maxsize"] = result["runtime"]["tts_queue_maxsize_local"]
     result["runtime"]["translation_exact_cache_size"] = int(
         runtime.get("translation_exact_cache_size", result["runtime"]["translation_exact_cache_size"])
     )
@@ -339,9 +618,14 @@ def migrate_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
     result["runtime"]["tts_cancel_pending_on_new_final"] = bool(
         runtime.get("tts_cancel_pending_on_new_final", result["runtime"]["tts_cancel_pending_on_new_final"])
     )
+    result["runtime"]["tts_cancel_policy"] = str(runtime.get("tts_cancel_policy", result["runtime"]["tts_cancel_policy"]))
+    result["runtime"]["tts_max_wait_ms"] = int(runtime.get("tts_max_wait_ms", result["runtime"]["tts_max_wait_ms"]))
+    result["runtime"]["tts_max_chars"] = int(runtime.get("tts_max_chars", result["runtime"]["tts_max_chars"]))
     result["runtime"]["tts_drop_backlog_threshold"] = int(
         runtime.get("tts_drop_backlog_threshold", result["runtime"]["tts_drop_backlog_threshold"])
     )
+    result["runtime"]["llm_streaming_tokens"] = int(runtime.get("llm_streaming_tokens", result["runtime"]["llm_streaming_tokens"]))
+    result["runtime"]["max_pipeline_latency_ms"] = int(runtime.get("max_pipeline_latency_ms", result["runtime"]["max_pipeline_latency_ms"]))
     result["runtime"]["local_echo_guard_enabled"] = bool(
         runtime.get("local_echo_guard_enabled", result["runtime"]["local_echo_guard_enabled"])
     )
@@ -351,7 +635,7 @@ def migrate_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
     result["runtime"]["remote_echo_guard_resume_delay_ms"] = int(
         runtime.get("remote_echo_guard_resume_delay_ms", result["runtime"]["remote_echo_guard_resume_delay_ms"])
     )
-    result["runtime"]["config_schema_version"] = 2
+    result["runtime"]["config_schema_version"] = 3
     result["runtime"]["last_migration_note"] = "migrated_from_legacy"
     result["runtime"]["warmup_on_start"] = bool(runtime.get("warmup_on_start", result["runtime"]["warmup_on_start"]))
 

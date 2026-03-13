@@ -68,8 +68,6 @@ class MainWindow(QMainWindow):
         self._session_action_running = False
         self._session_action_queue: Queue[tuple[str, bool, object]] = Queue()
         self._pending_live_apply = False
-        self._volume_sync_queue: Queue[dict[str, float | None]] = Queue(maxsize=1)
-        self._volume_sync_running = False
 
         self.setWindowTitle("SyncTranslate - Local AI Runtime")
         self._set_window_icon()
@@ -77,6 +75,9 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tabs.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         self.tabs.tabBar().setExpanding(True)
+        self.tabs.setStyleSheet(
+            "QTabBar::tab { min-width: 170px; min-height: 40px; font-size: 12pt; padding: 6px 12px; }"
+        )
         self.audio_routing_page = AudioRoutingPage(
             on_route_changed=self._on_audio_routing_changed,
         )
@@ -137,10 +138,6 @@ class MainWindow(QMainWindow):
         self.caption_timer.setInterval(300)
         self.caption_timer.timeout.connect(self.refresh_live_caption)
         self.caption_timer.start()
-        self.volume_sync_timer = QTimer(self)
-        self.volume_sync_timer.setInterval(1500)
-        self.volume_sync_timer.timeout.connect(self._sync_system_volume_sliders)
-        self.volume_sync_timer.start()
         self.health_timer = QTimer(self)
         self.health_timer.setInterval(120)
         self.health_timer.timeout.connect(self._drain_health_check_results)
@@ -151,8 +148,6 @@ class MainWindow(QMainWindow):
         self.session_timer.start()
         self.refresh_from_system()
         self._live_apply_ready = True
-        if self.config.runtime.warmup_on_start:
-            QTimer.singleShot(100, lambda: self.run_health_check(True))
 
     def refresh_from_system(self) -> None:
         input_devices = self.device_manager.list_input_devices()
@@ -174,52 +169,6 @@ class MainWindow(QMainWindow):
             f"Config: {self.config_path} | input={len(input_devices)} output={len(output_devices)}"
         )
         self.validate_current_routes()
-
-    def _sync_system_volume_sliders(self) -> None:
-        self._drain_volume_sync_results()
-        if self._volume_sync_running:
-            return
-        if self.session_controller and self.session_controller.is_running():
-            return
-        routes = self.audio_routing_page.selected_audio_routes()
-        self._volume_sync_running = True
-
-        def _worker() -> None:
-            result: dict[str, float | None]
-            try:
-                from app.windows_volume import get_input_volume, get_output_volume
-
-                result = {
-                    "meeting_in": None if self.audio_routing_page._should_skip_system_sync(routes.meeting_in) else get_input_volume(routes.meeting_in),
-                    "microphone_in": None if self.audio_routing_page._should_skip_system_sync(routes.microphone_in) else get_input_volume(routes.microphone_in),
-                    "speaker_out": None if self.audio_routing_page._should_skip_system_sync(routes.speaker_out) else get_output_volume(routes.speaker_out),
-                    "meeting_out": None if self.audio_routing_page._should_skip_system_sync(routes.meeting_out) else get_output_volume(routes.meeting_out),
-                }
-            except Exception as exc:
-                self._report_error(f"volume_sync failed: {exc}")
-                result = {
-                    "meeting_in": None,
-                    "microphone_in": None,
-                    "speaker_out": None,
-                    "meeting_out": None,
-                }
-            try:
-                while not self._volume_sync_queue.empty():
-                    self._volume_sync_queue.get_nowait()
-            except Empty:
-                pass
-            self._volume_sync_queue.put(result)
-
-        Thread(target=_worker, daemon=True).start()
-
-    def _drain_volume_sync_results(self) -> None:
-        try:
-            result = self._volume_sync_queue.get_nowait()
-        except Empty:
-            return
-        self._volume_sync_running = False
-        if self.audio_routing_page.sync_system_volume_sliders(result):
-            self._apply_audio_route_levels_from_ui()
 
     def persist_config(self) -> None:
         try:
@@ -244,6 +193,7 @@ class MainWindow(QMainWindow):
         is_running = self.session_controller.is_running() if self.session_controller else False
         self.live_caption_page.set_start_enabled(True)
         self.live_caption_page.set_start_label("停止" if is_running else "開始")
+        self.live_caption_page.set_direction_controls_enabled(not is_running and not self._session_action_running)
     def _on_audio_routing_changed(self) -> None:
         self.validate_current_routes()
         self._apply_audio_route_levels_from_ui()
@@ -318,6 +268,7 @@ class MainWindow(QMainWindow):
             self._sync_ui_to_config()
             self._runtime_facade.mark_dirty()
             self._ensure_pipelines_ready()
+            self.clear_live_caption()
             self._run_session_action(
                 "start",
                 mode=mode,
@@ -330,6 +281,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "啟動失敗", str(exc))
 
     def clear_live_caption(self) -> None:
+        self.live_caption_page.clear()
         self.transcript_buffer.clear()
         self._remote_line_cache = []
         self._remote_translated_line_cache = []

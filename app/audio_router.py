@@ -137,6 +137,12 @@ class AudioRouter:
 
     def _on_asr_event(self, event: ASREventWithSource) -> None:
         try:
+            max_latency_ms = max(500, int(getattr(self._asr_manager._config.runtime, "max_pipeline_latency_ms", 3000)))
+            if int(event.latency_ms) > max_latency_ms:
+                self._emit_diagnostic_event(
+                    f"drop_over_latency source={event.source} utterance_id={event.utterance_id} latency_ms={event.latency_ms}"
+                )
+                return
             self._emit_asr_event(event)
             original_channel = self._translator_manager.original_channel_of(event.source)
             self._transcript_buffer.upsert_event(
