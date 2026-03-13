@@ -25,6 +25,7 @@ diagnostics_*.txt
 *.out
 *.err
 *.pid
+ReleaseNotes.md
 
 # Local runtime assets
 models/
