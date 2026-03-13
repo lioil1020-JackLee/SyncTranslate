@@ -76,7 +76,27 @@ class MainWindow(QMainWindow):
         self.tabs.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         self.tabs.tabBar().setExpanding(True)
         self.tabs.setStyleSheet(
-            "QTabBar::tab { min-width: 170px; min-height: 40px; font-size: 12pt; padding: 6px 12px; }"
+            """
+            QTabBar::tab {
+                min-width: 170px;
+                min-height: 40px;
+                font-size: 12pt;
+                padding: 6px 12px;
+                color: #222;
+                background: transparent;
+                border: 1px solid transparent;
+                border-radius: 6px;
+                margin: 4px 6px;
+            }
+            QTabBar::tab:hover {
+                background: rgba(0,0,0,0.04);
+            }
+            QTabBar::tab:selected {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #2b78d6, stop:1 #1a5fb0);
+                color: white;
+                border: 1px solid rgba(0,0,0,0.12);
+            }
+            """
         )
         self.audio_routing_page = AudioRoutingPage(
             on_route_changed=self._on_audio_routing_changed,
