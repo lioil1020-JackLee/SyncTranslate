@@ -97,11 +97,13 @@ class FasterWhisperEngine:
         mono = mono.reshape(-1).astype(np.float32, copy=False)
         if mono.size > 0:
             # Remove DC offset and normalize low-volume input to improve ASR recall.
+            # Higher target_rms (0.12) and gain cap (8x) ensures quiet trailing
+            # words get sufficient amplitude for Whisper to recognise them.
             mono = mono - float(np.mean(mono))
             rms = float(np.sqrt(np.mean(np.square(mono)))) if mono.size else 0.0
             if rms > 1e-6:
-                target_rms = 0.08
-                gain = min(4.0, target_rms / rms)
+                target_rms = 0.12
+                gain = min(8.0, target_rms / rms)
                 mono = np.clip(mono * gain, -1.0, 1.0)
         target_sample_rate = 16000
         if sample_rate <= 0 or sample_rate == target_sample_rate or mono.size <= 1:

@@ -28,12 +28,14 @@ class VadSegmenter:
         self._config = config
         self._speech_ms = 0.0
         self._silence_ms = 0.0
+        self._speech_holdoff_ms = 0.0  # elapsed ms since last real speech, within pad window
         self._speech_active = False
         self._last_rms = 0.0
 
     def reset(self) -> None:
         self._speech_ms = 0.0
         self._silence_ms = 0.0
+        self._speech_holdoff_ms = 0.0
         self._speech_active = False
         self._last_rms = 0.0
 
@@ -61,18 +63,24 @@ class VadSegmenter:
                 self._speech_active = True
                 self._speech_ms += chunk_ms
                 self._silence_ms = 0.0
+                self._speech_holdoff_ms = 0.0
                 split_seconds = min(float(self._config.max_speech_duration_s), 4.0)
                 if self._speech_ms >= split_seconds * 1000.0:
                     finalize = True
                     force_split = True
             elif self._speech_active:
-                self._silence_ms += chunk_ms
-                if self._silence_ms >= float(self._config.min_silence_duration_ms):
-                    finalize = True
+                pad_ms = float(self._config.speech_pad_ms)
+                if self._speech_holdoff_ms < pad_ms:
+                    self._speech_holdoff_ms += chunk_ms
+                else:
+                    self._silence_ms += chunk_ms
+                    if self._silence_ms >= float(self._config.min_silence_duration_ms):
+                        finalize = True
 
             if finalize:
                 self._speech_ms = 0.0
                 self._silence_ms = 0.0
+                self._speech_holdoff_ms = 0.0
                 self._speech_active = False
 
             return VadDecision(
@@ -90,6 +98,7 @@ class VadSegmenter:
         force_split = False
 
         if has_speech:
+            self._speech_holdoff_ms = 0.0  # reset holdoff whenever real speech is detected
             self._speech_ms += chunk_ms
             self._silence_ms = 0.0
             if self._speech_ms >= float(self._config.min_speech_duration_ms):
@@ -98,13 +107,21 @@ class VadSegmenter:
                 finalize = True
                 force_split = True
         else:
-            self._silence_ms += chunk_ms
-            if self._speech_active and self._silence_ms >= float(self._config.min_silence_duration_ms):
-                finalize = True
+            if self._speech_active:
+                pad_ms = float(self._config.speech_pad_ms)
+                if self._speech_holdoff_ms < pad_ms:
+                    # Within the speech-pad window: treat as speech continuation so
+                    # trailing words are not dropped before silence counting begins.
+                    self._speech_holdoff_ms += chunk_ms
+                else:
+                    self._silence_ms += chunk_ms
+                    if self._silence_ms >= float(self._config.min_silence_duration_ms):
+                        finalize = True
 
         if finalize:
             self._speech_ms = 0.0
             self._silence_ms = 0.0
+            self._speech_holdoff_ms = 0.0
             self._speech_active = False
 
         return VadDecision(
