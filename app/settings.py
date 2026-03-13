@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
+import sys
 from typing import Any
 
 import yaml
@@ -9,14 +10,226 @@ import yaml
 from app.schemas import AppConfig
 
 
+EMBEDDED_DEFAULT_CONFIG_YAML = """audio:
+    meeting_in: Windows WASAPI::CABLE Output (VB-Audio Virtual Cable)
+    microphone_in: Windows WASAPI::Voicemeeter Out B1 (VB-Audio Voicemeeter VAIO)
+    speaker_out: Windows WASAPI::Voicemeeter Input (VB-Audio Voicemeeter VAIO)
+    meeting_out: Windows WASAPI::CABLE Input (VB-Audio Virtual Cable)
+    meeting_in_gain: 1.0
+    microphone_in_gain: 1.0
+    speaker_out_volume: 1.0
+    meeting_out_volume: 1.0
+direction:
+    mode: bidirectional
+language:
+    meeting_source: en
+    meeting_target: zh-TW
+    local_source: zh-TW
+    local_target: en
+asr:
+    engine: faster_whisper
+    model: distil-large-v3
+    device: cuda
+    compute_type: float16
+    beam_size: 1
+    condition_on_previous_text: true
+    vad:
+        enabled: true
+        min_speech_duration_ms: 160
+        min_silence_duration_ms: 450
+        max_speech_duration_s: 10.0
+        speech_pad_ms: 300
+        rms_threshold: 0.03
+    streaming:
+        partial_interval_ms: 250
+        partial_history_seconds: 2
+        final_history_seconds: 4
+llm:
+    backend: lm_studio
+    base_url: http://127.0.0.1:1234
+    model: hy-mt1.5-7b
+    temperature: 0.1
+    top_p: 0.8
+    request_timeout_sec: 15
+    sliding_window:
+        enabled: true
+        trigger_tokens: 18
+        max_context_items: 6
+    profiles:
+        live_caption_fast:
+            name: live_caption_fast
+            prompt_style: literal
+            context_items: 4
+            partial_trigger_tokens: 18
+            max_tokens: 256
+            preserve_terms: true
+            naturalize_tone: false
+            allow_subject_completion: false
+        live_caption_stable:
+            name: live_caption_fast
+            prompt_style: literal
+            context_items: 4
+            partial_trigger_tokens: 18
+            max_tokens: 256
+            preserve_terms: true
+            naturalize_tone: false
+            allow_subject_completion: false
+        speech_output_natural:
+            name: live_caption_fast
+            prompt_style: literal
+            context_items: 4
+            partial_trigger_tokens: 18
+            max_tokens: 256
+            preserve_terms: true
+            naturalize_tone: false
+            allow_subject_completion: false
+        technical_meeting:
+            name: live_caption_fast
+            prompt_style: literal
+            context_items: 4
+            partial_trigger_tokens: 18
+            max_tokens: 256
+            preserve_terms: true
+            naturalize_tone: false
+            allow_subject_completion: false
+    caption_profile: live_caption_fast
+    speech_profile: speech_output_natural
+tts:
+    engine: edge_tts
+    executable_path: ''
+    model_path: ''
+    config_path: ''
+    voice_name: zh-TW-HsiaoChenNeural
+    speaker_id: 0
+    length_scale: 1.0
+    noise_scale: 0.667
+    noise_w: 0.6
+    sample_rate: 24000
+meeting_tts:
+    engine: edge_tts
+    executable_path: ''
+    model_path: ''
+    config_path: ''
+    voice_name: en-US-JennyNeural
+    speaker_id: 0
+    length_scale: 0.9
+    noise_scale: 0.667
+    noise_w: 0.6
+    sample_rate: 24000
+local_tts:
+    engine: edge_tts
+    executable_path: ''
+    model_path: ''
+    config_path: ''
+    voice_name: zh-TW-HsiaoChenNeural
+    speaker_id: 0
+    length_scale: 0.9
+    noise_scale: 0.667
+    noise_w: 0.6
+    sample_rate: 24000
+tts_channels:
+    local:
+        engine: edge_tts
+        executable_path: null
+        model_path: null
+        config_path: null
+        voice_name: en-US-JennyNeural
+        speaker_id: null
+        length_scale: null
+        noise_scale: null
+        noise_w: 0.6
+        sample_rate: 24000
+    remote:
+        engine: edge_tts
+        executable_path: null
+        model_path: null
+        config_path: null
+        voice_name: zh-TW-HsiaoChenNeural
+        speaker_id: null
+        length_scale: null
+        noise_scale: null
+        noise_w: 0.6
+        sample_rate: 24000
+runtime:
+    sample_rate: 24000
+    chunk_ms: 40
+    asr_queue_maxsize: 24
+    llm_queue_maxsize: 8
+    tts_queue_maxsize: 8
+    translation_exact_cache_size: 256
+    translation_prefix_min_delta_chars: 6
+    tts_cancel_pending_on_new_final: true
+    tts_drop_backlog_threshold: 6
+    local_echo_guard_enabled: true
+    local_echo_guard_resume_delay_ms: 300
+    remote_echo_guard_resume_delay_ms: 300
+    config_schema_version: 2
+    last_migration_note: ''
+    warmup_on_start: true
+health_last_success:
+    asr: ''
+    llm: ''
+    tts: ''
+"""
+
+
+def _runtime_base_dirs() -> list[Path]:
+    dirs: list[Path] = [Path.cwd()]
+
+    if getattr(sys, "frozen", False):
+        dirs.append(Path(sys.executable).resolve().parent)
+
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        dirs.append(Path(meipass))
+
+    unique_dirs: list[Path] = []
+    seen: set[str] = set()
+    for item in dirs:
+        key = str(item.resolve()) if item.exists() else str(item)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_dirs.append(item)
+    return unique_dirs
+
+
+def _resolve_existing_path(path_like: str | Path) -> Path:
+    path = Path(path_like)
+    if path.is_absolute():
+        return path
+    for base in _runtime_base_dirs():
+        candidate = base / path
+        if candidate.exists():
+            return candidate
+    return path
+
+
+def _resolve_write_path(path_like: str | Path) -> Path:
+    path = Path(path_like)
+    if path.is_absolute():
+        return path
+    existing = _resolve_existing_path(path)
+    if existing.exists():
+        return existing
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent / path
+    return Path.cwd() / path
+
+
+def _ensure_config_file(config_path: str | Path = "config.yaml") -> Path:
+    target = _resolve_write_path(config_path)
+    if target.exists():
+        return target
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(EMBEDDED_DEFAULT_CONFIG_YAML, encoding="utf-8")
+    return target
+
+
 def load_config(config_path: str | Path = "config.yaml", fallback_path: str | Path = "config.example.yaml") -> AppConfig:
-    path = Path(config_path)
-    from_fallback = False
+    path = _resolve_existing_path(config_path)
     if not path.exists():
-        path = Path(fallback_path)
-        from_fallback = True
-    if not path.exists():
-        raise FileNotFoundError(f"Config file not found: {path}")
+        path = _ensure_config_file(config_path)
 
     with path.open("r", encoding="utf-8") as fp:
         raw: dict[str, Any] = yaml.safe_load(fp) or {}
@@ -27,7 +240,8 @@ def load_config(config_path: str | Path = "config.yaml", fallback_path: str | Pa
 
 
 def save_config(config: AppConfig, config_path: str | Path = "config.yaml") -> Path:
-    path = Path(config_path)
+    path = _resolve_write_path(config_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as fp:
         yaml.safe_dump(config.to_dict(), fp, sort_keys=False, allow_unicode=True)
     return path

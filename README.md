@@ -60,10 +60,10 @@ It captures local/meeting audio, performs streaming ASR with faster-whisper, tra
 uv sync --extra local --group dev
 ```
 
-2. Prepare config:
+2. Prepare config (optional):
 
 ```powershell
-Copy-Item .\config.example.yaml .\config.yaml
+# If missing, app will auto-create config.yaml from embedded defaults on first run.
 ```
 
 3. Run GUI:
@@ -80,7 +80,7 @@ uv run python .\main.py --check
 
 ## Configuration
 
-Primary config is `config.yaml`. If missing, app falls back to `config.example.yaml`.
+Primary config is `config.yaml`. If missing, app auto-creates it from embedded defaults.
 
 Main sections:
 

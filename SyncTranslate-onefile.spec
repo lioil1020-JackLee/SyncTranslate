@@ -5,11 +5,6 @@ import os
 datas = []
 icon = None
 
-if os.path.exists("config.example.yaml"):
-    datas.append(("config.example.yaml", "."))
-if os.path.exists("config.yaml"):
-    datas.append(("config.yaml", "."))
-
 if os.name == "nt" and os.path.exists("lioil.ico"):
     datas.append(("lioil.ico", "."))
     icon = "lioil.ico"
