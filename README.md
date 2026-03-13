@@ -1,159 +1,529 @@
 # SyncTranslate
 
-SyncTranslate 是 Windows 即時口譯桌面工具。
+Windows 桌面即時口譯工具，專注於 **會議雙向翻譯** 與 **低延遲字幕 / 語音回放**。
 
-系統會擷取本地與遠端音訊，做串流 ASR，透過 LM Studio 翻譯，再用 Edge TTS 播放翻譯語音。UI 以 PySide6 建置，提供音訊路由、即時字幕、參數設定與診斷工具。
+SyncTranslate 將會議音訊與本地麥克風音訊分成兩條獨立管線，透過 **串流 ASR → LLM 翻譯 → TTS 播放** 的方式，把遠端語音翻成本地字幕 / 語音，也能把本地語音翻譯後送回遠端。整體以 **PySide6 GUI** 管理音訊路由、模型設定、即時字幕、健康檢查與診斷資訊。
 
-## 核心能力
+---
 
-- 三種方向模式：遠端到本地、本地到遠端、雙向
-- faster-whisper 串流 ASR（含 VAD）
-- LM Studio 本地翻譯
-- Edge TTS 本地與遠端雙輸出通道
-- partial/final 字幕與同句 revision 更新
-- session 啟停狀態機與診斷報告輸出
+## 功能亮點
 
-## 參數頁新架構
+- **三種工作模式**
+  - `meeting_to_local`：遠端會議語音 → 本地字幕 / 本地播放
+  - `local_to_meeting`：本地麥克風語音 → 遠端字幕 / 遠端播放
+  - `bidirectional`：雙向同時執行
+- **本地串流 ASR**
+  - 以 `faster-whisper` 為核心
+  - 可調整模型、裝置、精度、VAD、beam、partial / final 行為
+  - 支援中文 / 英文分流設定
+- **本地翻譯 LLM**
+  - 目前以 **LM Studio** 為主要本地推理後端
+  - 支援中翻英、英翻中分開指定模型與參數
+  - 內建 sliding window / partial stitch / exact cache，降低切句造成的語意斷裂
+- **TTS 播放**
+  - 目前以 `edge-tts` 為主
+  - 中文 / 英文可分開設定聲線、取樣率與佇列策略
+  - 內建 backlog 控制、取消策略與防回授保護
+- **音訊路由與診斷**
+  - 支援本地輸入 / 輸出裝置選擇
+  - 支援虛擬音訊裝置（例如 VB-CABLE）進行遠端路由
+  - 可檢視 runtime stats、最近錯誤與健康檢查結果
 
-- 左上：語音辨識 ASR
-  - 兩個模型欄位：中文、英文
-  - 共用：引擎、裝置（僅 cuda/cpu）、精度、語言模式（Auto/鎖定）
-  - 獨立：ASR 佇列、Beam、延續前文、中文 fallback / 英文 fallback、中文 No Speech / 英文 No Speech、VAD、串流間隔、歷史長度、RMS 門檻等其他參數
-- 右上：翻譯模型 LLM
-  - 兩個模型欄位：中翻英、英翻中
-  - 共用：後端、服務位址、重新載入模型
-  - 獨立：LLM 佇列、逾時、溫度、Top P、最大輸出 Token、Repeat Penalty、Stop Tokens、是否啟用上下文拼接、觸發 Token、上下文項數
-  - 建議預設：中翻英 max tokens=96，英翻中 max tokens=160
-  - 建議預設：中翻英 stop=`</target>,Translation:`，英翻中 stop=`</target>,翻譯:`
-- 左下：系統執行
-  - 新句取消舊語音
-  - 取消策略（取消所有未播 / 只取消舊句）
-  - TTS 最大等待(ms)
-  - TTS 最大字數
-  - Streaming tokens
-  - 最大 pipeline 延遲(ms)
-- 右側 LLM 下方：TTS 模型設定，再下方輸出通道覆寫（中文/英文共用欄位）
-  - 中文欄位只顯示 zh- Edge 聲線，英文欄位只顯示 en- Edge 聲線
-  - 獨立：TTS 佇列、引擎、聲線、取樣率、Noise W
+---
 
-## 語言方向到模型的自動映射
+## 系統架構
 
-系統不再把本地/遠端硬綁到固定 ASR/LLM 設定，而是依語言與方向自動映射：
+### 端到端流程
 
-- ASR 映射
-  - 來源語言是中文/非英文：使用中文 ASR 模型
-  - 來源語言是英文：使用英文 ASR 模型
-- LLM 映射
-  - 中文到英文：使用中翻英 LLM 模型
-  - 英文到中文：使用英翻中 LLM 模型
-
-這表示本地或遠端都可以依當前語言方向，動態選到正確的 ASR 與 LLM profile。
-
-## 設定檔儲存結構
-
-主要設定檔是 config.yaml。
-
-新版除保留相容欄位 asr 與 llm 之外，新增以下正式分流欄位：
-
-- asr_channels
-  - chinese：中文 ASR profile
-  - english：英文 ASR profile
-- llm_channels
-  - zh_to_en：中翻英 LLM profile
-  - en_to_zh：英翻中 LLM profile
-
-runtime.config_schema_version 已升級到 3。
-
-說明：
-
-- asr_channels.chinese / asr_channels.english 對應中文/英文 ASR 設定
-- llm_channels.zh_to_en / llm_channels.en_to_zh 對應中翻英/英翻中 LLM 設定
-- tts_channels.chinese / tts_channels.english 對應中文/英文輸出通道覆寫
-- chinese_tts / english_tts 為兩個通道的 fallback 設定（分別預設中文 / 英文）
-- runtime.asr_queue_maxsize_chinese / runtime.asr_queue_maxsize_english 對應中文/英文 ASR 佇列
-- runtime.llm_queue_maxsize_zh_to_en / runtime.llm_queue_maxsize_en_to_zh 對應中翻英/英翻中 LLM 佇列
-- runtime.tts_queue_maxsize_chinese / runtime.tts_queue_maxsize_english 對應中文/英文 TTS 佇列
-- runtime.tts_cancel_pending_on_new_final 控制新 final 句子是否取消舊語音
-- runtime.tts_cancel_policy 控制取消策略（全部未播 / 僅舊句）
-- runtime.tts_max_wait_ms 控制 TTS 佇列任務最長等待時間，超時會丟棄
-- runtime.tts_max_chars 控制 TTS 最大句長，超過會自動切句
-- runtime.llm_streaming_tokens 控制翻譯提早觸發的 token 門檻（降低延遲）
-- runtime.max_pipeline_latency_ms 控制最大可接受延遲，超過會丟棄 backlog
-- asr_channels.*.temperature_fallback 控制 Whisper temperature fallback
-- asr_channels.*.no_speech_threshold 控制 Whisper no-speech 判定門檻
-- llm_channels.*.max_output_tokens / repeat_penalty / stop_tokens 控制翻譯輸出長度與重複/停止詞
-
-若舊版設定沒有 asr_channels 或 llm_channels，啟動時會自動遷移並補齊。
-
-## 專案結構
-
-- 啟動與主視窗
-  - main.py
-  - app/ui_main.py
-- 組裝與執行期
-  - app/app_bootstrap.py
-  - app/runtime_facade.py
-  - app/config_apply_service.py
-  - app/diagnostics_service.py
-- 即時管線
-  - app/audio_router.py
-  - app/audio_input_manager.py
-  - app/asr_manager.py
-  - app/translator_manager.py
-  - app/tts_manager.py
-  - app/state_manager.py
-  - app/transcript_buffer.py
-- 本地 AI 實作
-  - app/local_ai/faster_whisper_engine.py
-  - app/local_ai/streaming_asr.py
-  - app/local_ai/translation_stitcher.py
-  - app/local_ai/lm_studio_client.py
-  - app/local_ai/healthcheck.py
-
-## 需求
-
-- Windows 10/11
-- Python 3.11+
-- 建議使用 uv
-- 可用音訊裝置（sounddevice）
-- LM Studio 啟動且已載入模型
-
-## 開發啟動
-
-安裝依賴：
-
-```powershell
-uv sync --extra local --group dev
+```text
+遠端會議音訊 / 本地麥克風
+        ↓
+   AudioCapture / AudioInputManager
+        ↓
+      ASRManager
+        ↓
+ Streaming ASR + VAD + utterance/revision
+        ↓
+  TranslatorManager / TranslationStitcher
+        ↓
+    TranscriptBuffer / 即時字幕
+        ↓
+       TTSManager
+        ↓
+ 本地播放 / 遠端虛擬輸出裝置
 ```
 
-啟動 GUI：
+### 主要模組
+
+- `main.py`：程式入口、參數解析、runtime crash logging、GUI 啟動
+- `app/ui_main.py`：主視窗與頁面整合
+- `app/audio_router.py`：整條音訊 / ASR / 翻譯 / TTS 管線協調
+- `app/asr_manager.py`：來源導向 ASR stream 管理、utterance / revision 管理
+- `app/translator_manager.py`：翻譯方向映射、caption / speech profile 管理
+- `app/local_ai/translation_stitcher.py`：partial 節流、exact cache、上下文拼接
+- `app/transcript_buffer.py`：字幕 upsert、partial / final 更新
+- `app/tts_manager.py`：TTS 佇列、取消策略、播放控制
+- `app/state_manager.py`：session state 與 echo guard 狀態管理
+- `app/settings.py` / `app/schemas.py`：設定檔載入、schema、legacy migration
+
+---
+
+## 目標使用情境
+
+SyncTranslate 適合這幾類場景：
+
+- 中英雙向會議口譯
+- 本地麥克風語音即時翻譯後送入會議軟體
+- 將會議系統音訊翻成字幕與耳機播放
+- 需要本地模型、不依賴雲端翻譯 API 的工作流
+
+---
+
+## 系統需求
+
+### 作業系統
+
+- Windows 10 / 11
+
+### Python
+
+- Python 3.11+
+
+### 建議硬體
+
+- **GPU 建議**：NVIDIA 顯示卡（執行 `faster-whisper` 與本地 LLM 時可顯著降低延遲）
+- **CPU 可用**：可執行，但延遲通常較高，不建議雙向即時模式
+- **音訊裝置**：需能被 PortAudio / WASAPI 正常列出
+- **虛擬音訊裝置**：建議安裝 **VB-CABLE** 或相容方案，供遠端路由使用
+
+### Python 依賴
+
+專案的核心相依套件包含：
+
+- `pyside6`
+- `sounddevice`
+- `soundcard`
+- `edge-tts`
+- `numpy`
+- `pyyaml`
+- `comtypes`
+- `pycaw`
+- `miniaudio`
+- `faster-whisper`（optional extra: `local`）
+
+---
+
+## 安裝方式
+
+### 1. 取得專案
+
+```bash
+git clone https://github.com/lioil1020-JackLee/SyncTranslate.git
+cd SyncTranslate
+```
+
+### 2. 安裝依賴
+
+建議使用 `uv`：
+
+```bash
+uv sync --extra local
+```
+
+如果不用 `uv`，可改用：
+
+```bash
+pip install -r requirements.txt
+pip install faster-whisper
+```
+
+### 3. 建立設定檔
 
 ```powershell
+Copy-Item .\config.example.yaml .\config.yaml
+```
+
+### 4. 啟動程式
+
+```bash
 uv run python .\main.py
 ```
 
-快速自檢：
+### 5. 只做快速檢查
 
-```powershell
+```bash
 uv run python .\main.py --check
 ```
 
-## 診斷與記錄
+---
 
-- 執行事件：logs/runtime_events.log
-- 崩潰記錄：logs/runtime_crash.log
-- Session 報告：logs/session_reports
+## 快速開始
 
-## 打包
+1. 打開 **音訊路由與診斷** 頁面。
+2. 確認：
+   - 本地輸入裝置（麥克風）
+   - 本地輸出裝置（耳機 / 喇叭）
+   - 遠端輸入 / 輸出裝置（通常為 VB-CABLE）
+3. 進入 **參數設定**：
+   - 設定中文 / 英文 ASR 模型與 VAD
+   - 設定中翻英 / 英翻中 LLM 模型
+   - 設定中文 / 英文 TTS 聲線
+4. 先執行健康檢查，確認 ASR / LLM / TTS 都可用。
+5. 進入 **即時字幕** 頁面：
+   - 選擇模式
+   - 選擇語言方向
+   - 需要時先測試本地輸出 TTS
+6. 按下「開始」，啟動 session。
 
-```powershell
-uv run pyinstaller .\SyncTranslate-onedir.spec --noconfirm --clean
-uv run pyinstaller .\SyncTranslate-onefile.spec --noconfirm --clean
+---
+
+## 設定檔說明
+
+主設定檔為 `config.yaml`。若不存在，程式會以 `config.example.yaml` 作為 fallback。
+
+### `audio`
+
+控制本地與遠端音訊裝置與音量倍率。
+
+```yaml
+audio:
+  meeting_in: Windows WASAPI::CABLE Output (VB-Audio Virtual Cable)
+  microphone_in: Windows WASAPI::耳機 (WH-1000XM5)
+  speaker_out: Windows WASAPI::耳機 (WH-1000XM5)
+  meeting_out: Windows WASAPI::CABLE Input (VB-Audio Virtual Cable)
+  meeting_in_gain: 1.0
+  microphone_in_gain: 1.0
+  speaker_out_volume: 1.0
+  meeting_out_volume: 1.0
 ```
 
-## 常見問題
+### `direction`
 
-- 字幕不更新：先確認音訊路由與輸入電平
-- 有字幕沒聲音：檢查 speaker_out 與 meeting_out
-- 翻譯延遲高：降低上下文項數或更換較小 LLM 模型
-- ASR 負載高：改用較小模型，或確認使用 CUDA
+```yaml
+direction:
+  mode: bidirectional
+```
+
+可用值：
+
+- `meeting_to_local`
+- `local_to_meeting`
+- `bidirectional`
+
+### `language`
+
+控制雙向來源語言與目標語言。
+
+```yaml
+language:
+  meeting_source: en
+  meeting_target: zh-TW
+  local_source: zh-TW
+  local_target: en
+```
+
+### `asr` 與 `asr_channels`
+
+- `asr`：共用預設值
+- `asr_channels.chinese` / `asr_channels.english`：中文與英文獨立覆寫
+
+常用參數：
+
+```yaml
+asr:
+  engine: faster_whisper
+  model: large-v3
+  device: cuda
+  compute_type: float16
+  beam_size: 1
+  condition_on_previous_text: true
+  temperature_fallback: 0.0,0.2
+  no_speech_threshold: 0.65
+  vad:
+    enabled: true
+    min_speech_duration_ms: 160
+    min_silence_duration_ms: 450
+    max_speech_duration_s: 10.0
+    speech_pad_ms: 300
+    rms_threshold: 0.03
+  streaming:
+    partial_interval_ms: 250
+    partial_history_seconds: 2
+    final_history_seconds: 4
+```
+
+#### 建議做法
+
+- 中文 ASR：偏穩定，可用 `large-v3`
+- 英文 ASR：偏低延遲，可用 `distil-large-v3`
+- 中文 / 英文的 `beam_size`、`temperature_fallback`、VAD 參數可分開調整
+
+### `llm` 與 `llm_channels`
+
+- `llm`：共用預設值
+- `llm_channels.zh_to_en` / `llm_channels.en_to_zh`：翻譯方向獨立覆寫
+
+```yaml
+llm:
+  backend: lm_studio
+  base_url: http://127.0.0.1:1234
+  model: hy-mt1.5-7b
+  temperature: 0.05
+  top_p: 0.9
+  max_output_tokens: 128
+  repeat_penalty: 1.05
+  stop_tokens: '</target>,Translation:'
+  request_timeout_sec: 12
+  sliding_window:
+    enabled: true
+    trigger_tokens: 20
+    max_context_items: 4
+```
+
+#### Profiles
+
+支援不同翻譯風格：
+
+- `live_caption_fast`
+- `live_caption_stable`
+- `speech_output_natural`
+- `technical_meeting`
+
+#### 建議做法
+
+- 中翻英：`hy-mt1.5-7b`
+- 英翻中：`hy-mt1.5-7b`
+- 如果要更自然的口語輸出，可再為 speech profile 準備另一個模型
+
+### `tts` 與 `tts_channels`
+
+- `tts`：主設定
+- `tts_channels.chinese` / `tts_channels.english`：中文 / 英文獨立設定
+
+```yaml
+tts:
+  engine: edge_tts
+  voice_name: zh-TW-HsiaoChenNeural
+  length_scale: 0.95
+  noise_scale: 0.667
+  noise_w: 0.6
+  sample_rate: 24000
+```
+
+#### 建議做法
+
+- 中文：`zh-TW-HsiaoChenNeural`
+- 英文：`en-US-JennyNeural`
+- 即時模式建議縮小 TTS 佇列，避免語音 backlog
+
+### `runtime`
+
+控制整體 pipeline 行為。
+
+```yaml
+runtime:
+  sample_rate: 24000
+  chunk_ms: 40
+  asr_queue_maxsize_chinese: 16
+  asr_queue_maxsize_english: 12
+  llm_queue_maxsize_zh_to_en: 4
+  llm_queue_maxsize_en_to_zh: 4
+  tts_queue_maxsize_chinese: 6
+  tts_queue_maxsize_english: 6
+  translation_exact_cache_size: 256
+  translation_prefix_min_delta_chars: 6
+  llm_streaming_tokens: 16
+  max_pipeline_latency_ms: 2000
+  tts_cancel_pending_on_new_final: true
+  tts_cancel_policy: all_pending
+  tts_max_wait_ms: 2500
+  tts_max_chars: 140
+  tts_drop_backlog_threshold: 4
+  local_echo_guard_enabled: true
+  local_echo_guard_resume_delay_ms: 300
+  remote_echo_guard_resume_delay_ms: 300
+  warmup_on_start: true
+```
+
+---
+
+## UI 頁面說明
+
+### 1. 音訊路由與診斷
+
+用來：
+
+- 選擇本地輸入 / 輸出裝置
+- 驗證會議路由是否正確
+- 檢查目前 session stats
+- 檢視最近錯誤與健康檢查結果
+
+### 2. 即時字幕
+
+用來：
+
+- 切換 session 模式
+- 選擇語言方向
+- 觀看四個字幕區塊
+  - 遠端原文
+  - 遠端翻譯
+  - 本地原文
+  - 本地翻譯
+- 啟動 / 停止 session
+- 測試本地 TTS
+
+### 3. 參數設定
+
+用來：
+
+- 分別調整中文 / 英文 ASR
+- 分別調整中翻英 / 英翻中 LLM
+- 分別調整中文 / 英文 TTS
+- 調整 queue、latency、streaming tokens、防回授等 runtime 參數
+
+---
+
+## 建議的模型與參數
+
+### ASR
+
+- 中文：`large-v3`
+- 英文：`distil-large-v3`
+
+### LLM
+
+- 中翻英：`hy-mt1.5-7b`
+- 英翻中：`hy-mt1.5-7b`
+
+### TTS
+
+- 中文：`zh-TW-HsiaoChenNeural`
+- 英文：`en-US-JennyNeural`
+
+### 低延遲平衡建議
+
+- `chunk_ms: 40~50`
+- 中文 `beam_size: 2`
+- 英文 `beam_size: 1`
+- `llm_streaming_tokens: 12~16`
+- `max_pipeline_latency_ms: 2000~2500`
+- `tts_drop_backlog_threshold: 3~4`
+
+---
+
+## 專案結構
+
+```text
+SyncTranslate/
+├─ app/
+│  ├─ local_ai/
+│  ├─ asr_manager.py
+│  ├─ audio_capture.py
+│  ├─ audio_input_manager.py
+│  ├─ audio_router.py
+│  ├─ pages_audio_routing.py
+│  ├─ pages_diagnostics.py
+│  ├─ pages_live_caption.py
+│  ├─ pages_local_ai.py
+│  ├─ schemas.py
+│  ├─ session_controller.py
+│  ├─ settings.py
+│  ├─ state_manager.py
+│  ├─ transcript_buffer.py
+│  ├─ translator_manager.py
+│  ├─ tts_manager.py
+│  └─ ui_main.py
+├─ config.example.yaml
+├─ main.py
+├─ pyproject.toml
+└─ README.md
+```
+
+---
+
+## 故障排除
+
+### 1. 第一個字常被吃掉
+
+通常不是翻譯問題，而是 **VAD / streaming 切段** 問題。可優先調整：
+
+- `min_speech_duration_ms`
+- `min_silence_duration_ms`
+- `speech_pad_ms`
+- `chunk_ms`
+
+### 2. 字幕延遲越來越大
+
+通常是 queue 過大或 TTS backlog。可優先調整：
+
+- `asr_queue_maxsize_*`
+- `llm_queue_maxsize_*`
+- `tts_queue_maxsize_*`
+- `tts_drop_backlog_threshold`
+- `max_pipeline_latency_ms`
+
+### 3. 翻譯結果出現 prompt tag / XML tag
+
+可檢查：
+
+- `stop_tokens`
+- prompt template
+- 模型是否為翻譯專用模型
+
+### 4. TTS 落後播放
+
+可優先調整：
+
+- `tts_cancel_pending_on_new_final`
+- `tts_cancel_policy`
+- `tts_max_wait_ms`
+- `tts_max_chars`
+
+### 5. 健康檢查失敗
+
+請確認：
+
+- LM Studio 已啟動且 API 位址正確
+- TTS 可正常生成
+- 音訊裝置名稱與 `config.yaml` 一致
+- `faster-whisper` 模型已可在本機載入
+
+---
+
+## 開發與除錯
+
+### 啟動檢查模式
+
+```bash
+uv run python .\main.py --check
+```
+
+### runtime crash log
+
+程式啟動時會建立 `logs/runtime_crash.log`，用於記錄未處理例外與 thread exception。
+
+---
+
+## Roadmap
+
+- 更完整的 prompt / profile 管理
+- 更多語言支援
+- 更細的 per-channel / per-language runtime 策略
+- 更完整的 benchmark / replay / diagnostics 匯出
+- 自動模式切換（低延遲 / 平衡 / 高準確）
+
+---
+
+## 授權
+
+若尚未指定授權，請在專案中補上 LICENSE 後再更新本節。
+
+---
+
+## 致謝
+
+- [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
+- [edge-tts](https://github.com/rany2/edge-tts)
+- [PySide6](https://doc.qt.io/qtforpython/)
+- VB-CABLE / 虛擬音訊路由工具
+
