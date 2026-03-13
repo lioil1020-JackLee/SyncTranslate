@@ -31,21 +31,21 @@ asr:
     model: large-v3
     device: cuda
     compute_type: float16
-    beam_size: 2
+    beam_size: 3
     condition_on_previous_text: true
-    temperature_fallback: 0.0,0.2
-    no_speech_threshold: 0.65
+    temperature_fallback: 0.0,0.2,0.4
+    no_speech_threshold: 0.55
     vad:
         enabled: true
-        min_speech_duration_ms: 170
-        min_silence_duration_ms: 480
-        max_speech_duration_s: 8.0
-        speech_pad_ms: 340
-        rms_threshold: 0.03
+        min_speech_duration_ms: 150
+        min_silence_duration_ms: 520
+        max_speech_duration_s: 10.0
+        speech_pad_ms: 450
+        rms_threshold: 0.02
     streaming:
-        partial_interval_ms: 220
-        partial_history_seconds: 2
-        final_history_seconds: 4
+        partial_interval_ms: 800
+        partial_history_seconds: 3
+        final_history_seconds: 6
 asr_channels:
     chinese:
         engine: faster_whisper
@@ -72,21 +72,21 @@ asr_channels:
         model: distil-large-v3
         device: cuda
         compute_type: float16
-        beam_size: 1
+        beam_size: 2
         condition_on_previous_text: true
         temperature_fallback: 0.0,0.2,0.4
-        no_speech_threshold: 0.55
+        no_speech_threshold: 0.50
         vad:
             enabled: true
-            min_speech_duration_ms: 150
-            min_silence_duration_ms: 400
-            max_speech_duration_s: 8.0
-            speech_pad_ms: 300
-            rms_threshold: 0.03
+            min_speech_duration_ms: 130
+            min_silence_duration_ms: 480
+            max_speech_duration_s: 10.0
+            speech_pad_ms: 380
+            rms_threshold: 0.02
         streaming:
-            partial_interval_ms: 200
-            partial_history_seconds: 2
-            final_history_seconds: 4
+            partial_interval_ms: 800
+            partial_history_seconds: 3
+            final_history_seconds: 5
 llm:
     backend: lm_studio
     base_url: http://127.0.0.1:1234
@@ -102,46 +102,46 @@ llm:
         trigger_tokens: 20
         max_context_items: 4
     profiles:
-        chinese:
-            engine: faster_whisper
-            model: large-v3
-            device: cuda
-            compute_type: float16
-            beam_size: 3
-            condition_on_previous_text: true
-            temperature_fallback: 0.0,0.2,0.4
-            no_speech_threshold: 0.55
-            vad:
-                enabled: true
-                min_speech_duration_ms: 150
-                min_silence_duration_ms: 520
-                max_speech_duration_s: 10.0
-                speech_pad_ms: 450
-                rms_threshold: 0.02
-            streaming:
-                partial_interval_ms: 800
-                partial_history_seconds: 3
-                final_history_seconds: 6
-        english:
-            engine: faster_whisper
-            model: distil-large-v3
-            device: cuda
-            compute_type: float16
-            beam_size: 2
-            condition_on_previous_text: true
-            temperature_fallback: 0.0,0.2,0.4
-            no_speech_threshold: 0.50
-            vad:
-                enabled: true
-                min_speech_duration_ms: 130
-                min_silence_duration_ms: 480
-                max_speech_duration_s: 10.0
-                speech_pad_ms: 380
-                rms_threshold: 0.02
-            streaming:
-                partial_interval_ms: 800
-                partial_history_seconds: 3
-                final_history_seconds: 5
+        live_caption_fast:
+            name: live_caption_fast
+            prompt_style: literal
+            context_items: 4
+            partial_trigger_tokens: 18
+            max_tokens: 256
+            preserve_terms: true
+            naturalize_tone: false
+            allow_subject_completion: false
+        live_caption_stable:
+            name: live_caption_fast
+            prompt_style: literal
+            context_items: 4
+            partial_trigger_tokens: 18
+            max_tokens: 256
+            preserve_terms: true
+            naturalize_tone: false
+            allow_subject_completion: false
+        speech_output_natural:
+            name: live_caption_fast
+            prompt_style: literal
+            context_items: 4
+            partial_trigger_tokens: 18
+            max_tokens: 256
+            preserve_terms: true
+            naturalize_tone: false
+            allow_subject_completion: false
+        technical_meeting:
+            name: live_caption_fast
+            prompt_style: literal
+            context_items: 4
+            partial_trigger_tokens: 18
+            max_tokens: 256
+            preserve_terms: true
+            naturalize_tone: false
+            allow_subject_completion: false
+    caption_profile: live_caption_fast
+    speech_profile: speech_output_natural
+llm_channels:
+    zh_to_en:
         backend: lm_studio
         base_url: http://127.0.0.1:1234
         model: hy-mt1.5-7b
