@@ -11,8 +11,8 @@ from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 from app.device_manager import DeviceManager
+from app.main_window import MainWindow
 from app.settings import load_config
-from app.ui_main import MainWindow
 
 
 _FAULT_LOG_HANDLE = None

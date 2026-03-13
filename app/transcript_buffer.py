@@ -9,10 +9,13 @@ from threading import Lock
 @dataclass(slots=True)
 class TranscriptItem:
     source: str
+    channel: str
+    kind: str
     utterance_id: str | None
     revision: int
     text: str
     is_final: bool
+    latency_ms: int | None
     created_at: datetime
 
 
@@ -20,6 +23,37 @@ class TranscriptBuffer:
     def __init__(self, max_items: int = 200) -> None:
         self._items: deque[TranscriptItem] = deque(maxlen=max_items)
         self._lock = Lock()
+
+    def upsert_event(
+        self,
+        source: str,
+        channel: str,
+        kind: str,
+        text: str,
+        is_final: bool,
+        *,
+        utterance_id: str | None = None,
+        revision: int = 0,
+        latency_ms: int | None = None,
+        created_at: datetime | None = None,
+    ) -> None:
+        item = TranscriptItem(
+            source=source,
+            channel=channel,
+            kind=kind,
+            utterance_id=utterance_id,
+            revision=max(0, int(revision)),
+            text=text,
+            is_final=is_final,
+            latency_ms=None if latency_ms is None else int(latency_ms),
+            created_at=created_at or datetime.now(),
+        )
+        with self._lock:
+            if item.utterance_id:
+                if self._upsert_by_utterance_locked(item):
+                    return
+            self._remove_latest_partial_locked(source)
+            self._items.append(item)
 
     def append(
         self,
@@ -31,20 +65,17 @@ class TranscriptBuffer:
         revision: int = 0,
         created_at: datetime | None = None,
     ) -> None:
-        item = TranscriptItem(
+        # Backward-compatible helper for existing call sites.
+        self.upsert_event(
             source=source,
-            utterance_id=utterance_id,
-            revision=max(0, int(revision)),
+            channel=source,
+            kind="caption",
             text=text,
             is_final=is_final,
-            created_at=created_at or datetime.now(),
+            utterance_id=utterance_id,
+            revision=revision,
+            created_at=created_at,
         )
-        with self._lock:
-            if item.utterance_id:
-                if self._upsert_by_utterance_locked(item):
-                    return
-            self._remove_latest_partial_locked(source)
-            self._items.append(item)
 
     def _upsert_by_utterance_locked(self, item: TranscriptItem) -> bool:
         items = list(self._items)

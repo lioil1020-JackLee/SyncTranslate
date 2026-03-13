@@ -37,6 +37,10 @@ class AudioRouter:
         tts_manager: TTSManager,
         state_manager: StateManager,
         on_error: Callable[[str | ErrorEvent], None] | None = None,
+        on_asr_event: Callable[[ASREventWithSource], None] | None = None,
+        on_translation_event: Callable[[object], None] | None = None,
+        on_tts_request: Callable[[str, str], None] | None = None,
+        on_diagnostic_event: Callable[[str], None] | None = None,
     ) -> None:
         self._transcript_buffer = transcript_buffer
         self._input_manager = input_manager
@@ -45,6 +49,10 @@ class AudioRouter:
         self._tts_manager = tts_manager
         self._state = state_manager
         self._on_error = on_error
+        self._on_asr_stage_event = on_asr_event
+        self._on_translation_event = on_translation_event
+        self._on_tts_request = on_tts_request
+        self._on_diagnostic_event = on_diagnostic_event
         self._active_sources: set[str] = set()
 
     @property
@@ -129,26 +137,39 @@ class AudioRouter:
 
     def _on_asr_event(self, event: ASREventWithSource) -> None:
         try:
-            self._transcript_buffer.append(
-                source=self._translator_manager.original_channel_of(event.source),
+            self._emit_asr_event(event)
+            original_channel = self._translator_manager.original_channel_of(event.source)
+            self._transcript_buffer.upsert_event(
+                source=original_channel,
+                channel=original_channel,
+                kind="original",
                 text=event.text,
                 is_final=event.is_final,
                 utterance_id=event.utterance_id,
                 revision=event.revision,
+                latency_ms=event.latency_ms,
                 created_at=datetime.fromtimestamp(event.created_at),
             )
             translated = self._translator_manager.process(event)
             if not translated:
+                self._emit_diagnostic_event(
+                    f"translation_skipped source={event.source} utterance_id={event.utterance_id} revision={event.revision}"
+                )
                 return
-            self._transcript_buffer.append(
+            self._emit_translation_event(translated)
+            self._transcript_buffer.upsert_event(
                 source=translated.translated_channel,
+                channel=translated.translated_channel,
+                kind="translated",
                 text=translated.text,
                 is_final=translated.is_final,
                 utterance_id=translated.utterance_id,
                 revision=translated.revision,
+                latency_ms=event.latency_ms,
                 created_at=datetime.fromtimestamp(translated.created_at),
             )
             if translated.should_speak:
+                self._emit_tts_request(translated.tts_channel, translated.speak_text)
                 self._tts_manager.enqueue(
                     translated.tts_channel,
                     translated.speak_text,
@@ -168,6 +189,22 @@ class AudioRouter:
                         detail=str(exc),
                     )
                 )
+
+    def _emit_asr_event(self, event: ASREventWithSource) -> None:
+        if self._on_asr_stage_event:
+            self._on_asr_stage_event(event)
+
+    def _emit_translation_event(self, event: object) -> None:
+        if self._on_translation_event:
+            self._on_translation_event(event)
+
+    def _emit_tts_request(self, channel: str, text: str) -> None:
+        if self._on_tts_request:
+            self._on_tts_request(channel, text)
+
+    def _emit_diagnostic_event(self, message: str) -> None:
+        if self._on_diagnostic_event:
+            self._on_diagnostic_event(message)
 
     def handle_tts_play_start(self, channel: str) -> None:
         self._state.on_tts_start(channel)

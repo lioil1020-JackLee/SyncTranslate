@@ -19,27 +19,29 @@ from PySide6.QtWidgets import QMainWindow, QMessageBox, QScrollArea, QSizePolicy
 import numpy as np
 
 from app.audio_capture import AudioCapture
-from app.audio_input_manager import AudioInputManager
 from app.audio_playback import AudioPlayback
+from app.app_bootstrap import build_pipeline_bundle
 from app.audio_router import AudioRouter
-from app.asr_manager import ASRManager
+from app.config_apply_service import ConfigApplyService
 from app.debug_panel import DebugPanel
+from app.diagnostics_service import export_runtime_diagnostics, export_session_report
 from app.device_manager import DeviceManager
 from app.events import ErrorEvent
+from app.local_ai.faster_whisper_engine import FasterWhisperEngine
 from app.local_ai.healthcheck import LocalHealthReport
+from app.local_ai.healthcheck import run_local_healthcheck
+from app.local_ai.llm_provider import create_translation_provider
 from app.local_ai.tts_factory import create_tts_engine
 from app.pages_audio_routing import AudioRoutingPage
 from app.pages_diagnostics import DiagnosticsPage
 from app.pages_io_control import IoControlPage
 from app.pages_live_caption import LiveCaptionPage
 from app.pages_local_ai import LocalAiPage
+from app.runtime_facade import RuntimeFacade
 from app.schemas import AppConfig, TtsConfig
 from app.session_controller import SessionController
 from app.settings import load_config, save_config
-from app.state_manager import StateManager
 from app.transcript_buffer import TranscriptBuffer
-from app.translator_manager import TranslatorManager
-from app.tts_manager import TTSManager
 
 
 class MainWindow(QMainWindow):
@@ -66,7 +68,6 @@ class MainWindow(QMainWindow):
         self._session_action_running = False
         self._session_action_queue: Queue[tuple[str, bool, object]] = Queue()
         self._pending_live_apply = False
-        self._pipelines_dirty = False
         self._volume_sync_queue: Queue[dict[str, float | None]] = Queue(maxsize=1)
         self._volume_sync_running = False
 
@@ -102,6 +103,16 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._wrap_in_scroll_area(self.io_control_page), "音訊路由與診斷")
         self.tabs.addTab(self._wrap_in_scroll_area(self.live_caption_page), "即時字幕")
         self.tabs.addTab(self.local_ai_page, "參數設定")
+        self._config_apply_service = ConfigApplyService(
+            meeting_capture=self.meeting_capture,
+            local_capture=self.local_capture,
+            speaker_playback=self.speaker_playback,
+            meeting_playback=self.meeting_playback,
+            audio_routing_page=self.audio_routing_page,
+            live_caption_page=self.live_caption_page,
+            local_ai_page=self.local_ai_page,
+        )
+        self._runtime_facade = RuntimeFacade(self._create_pipeline_bundle)
         self.setCentralWidget(self.tabs)
         self._apply_content_minimum_height()
         # Now that pages are constructed and minimum heights calculated,
@@ -223,7 +234,7 @@ class MainWindow(QMainWindow):
         if self.session_controller:
             self.session_controller.stop()
         self.config = load_config(self.config_path)
-        self._pipelines_dirty = True
+        self._runtime_facade.mark_dirty()
         self._ensure_pipelines_ready()
         self.refresh_from_system()
         self.statusBar().showMessage(f"已重載設定: {self.config_path}")
@@ -276,7 +287,7 @@ class MainWindow(QMainWindow):
         try:
             self._pending_live_apply = False
             self._sync_ui_to_config()
-            self._pipelines_dirty = True
+            self._runtime_facade.mark_dirty()
             # Live apply should not write config.yaml automatically.
             # Keep config changes in memory; only explicit save persists to disk.
             path = Path(self.config_path)
@@ -305,7 +316,7 @@ class MainWindow(QMainWindow):
         mode = self.live_caption_page.selected_mode()
         try:
             self._sync_ui_to_config()
-            self._pipelines_dirty = True
+            self._runtime_facade.mark_dirty()
             self._ensure_pipelines_ready()
             self._run_session_action(
                 "start",
@@ -527,85 +538,42 @@ class MainWindow(QMainWindow):
             pass
 
     def export_diagnostics(self) -> None:
-        now = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_path = Path(f"diagnostics_{now}.txt")
         routes = self.audio_routing_page.selected_audio_routes()
-        content = "\n".join(
-            [
-                "SyncTranslate Diagnostics",
-                f"timestamp: {datetime.now().isoformat()}",
-                f"config_path: {self.config_path}",
-                f"mode: {self.config.direction.mode}",
-                f"meeting_language: {self.config.language.meeting_source} -> {self.config.language.meeting_target}",
-                f"local_language: {self.config.language.local_source} -> {self.config.language.local_target}",
-                f"meeting_in: {routes.meeting_in}",
-                f"microphone_in: {routes.microphone_in}",
-                f"speaker_out: {routes.speaker_out}",
-                f"meeting_out: {routes.meeting_out}",
-                f"asr_model: {self.config.asr.model}",
-                f"asr_device: {self.config.asr.device}",
-                f"asr_compute_type: {self.config.asr.compute_type}",
-                f"llm_backend: {self.config.llm.backend}",
-                f"llm_url: {self.config.llm.base_url}",
-                f"llm_model: {self.config.llm.model}",
-                f"meeting_tts_engine: {self.config.meeting_tts.engine}",
-                f"meeting_tts_model: {self.config.meeting_tts.model_path}",
-                f"meeting_tts_voice: {self.config.meeting_tts.voice_name}",
-                f"local_tts_engine: {self.config.local_tts.engine}",
-                f"local_tts_model: {self.config.local_tts.model_path}",
-                f"local_tts_voice: {self.config.local_tts.voice_name}",
-                f"sample_rate: {self.config.runtime.sample_rate}",
-                "runtime_stats:",
-                self._build_runtime_stats_text(),
-                "recent_errors:",
-                *self._get_recent_errors()[-30:],
-            ]
+        output_path = export_runtime_diagnostics(
+            config_path=self.config_path,
+            config=self.config,
+            routes=routes,
+            runtime_stats_text=self._build_runtime_stats_text(),
+            recent_errors=self._get_recent_errors(),
         )
-        output_path.write_text(content, encoding="utf-8")
         self.statusBar().showMessage(f"已匯出診斷資訊: {output_path}")
+
+    def _create_pipeline_bundle(self, config: AppConfig, pipeline_revision: int):
+        return build_pipeline_bundle(
+            config=config,
+            pipeline_revision=pipeline_revision,
+            transcript_buffer=self.transcript_buffer,
+            local_capture=self.local_capture,
+            meeting_capture=self.meeting_capture,
+            speaker_playback=self.speaker_playback,
+            meeting_playback=self.meeting_playback,
+            get_local_output_device=self._get_speaker_output_device,
+            get_remote_output_device=self._get_meeting_output_device,
+            on_error=self._report_error,
+            on_diagnostic_event=lambda message: self._report_error(f"[router] {message}"),
+        )
 
     def _build_pipelines_from_config(self) -> None:
         if self.session_controller and self.session_controller.is_running():
             self.session_controller.stop()
-        input_manager = AudioInputManager(local_capture=self.local_capture, remote_capture=self.meeting_capture)
-        asr_manager = ASRManager(self.config, on_error=self._report_error)
-        translator_manager = TranslatorManager(self.config, on_error=self._report_error)
-        state_manager = StateManager(
-            local_echo_guard_enabled=self.config.runtime.local_echo_guard_enabled,
-            local_resume_delay_ms=self.config.runtime.local_echo_guard_resume_delay_ms,
-            remote_resume_delay_ms=self.config.runtime.remote_echo_guard_resume_delay_ms,
-        )
-        tts_manager = TTSManager(
-            config=self.config,
-            local_playback=self.speaker_playback,
-            remote_playback=self.meeting_playback,
-            get_local_output_device=self._get_speaker_output_device,
-            get_remote_output_device=self._get_meeting_output_device,
-            on_error=self._report_error,
-        )
-        self.audio_router = AudioRouter(
-            transcript_buffer=self.transcript_buffer,
-            input_manager=input_manager,
-            asr_manager=asr_manager,
-            translator_manager=translator_manager,
-            tts_manager=tts_manager,
-            state_manager=state_manager,
-            on_error=self._report_error,
-        )
-        tts_manager.set_callbacks(
-            on_play_start=self.audio_router.handle_tts_play_start,
-            on_play_end=self.audio_router.handle_tts_play_end,
-        )
-        self.session_controller = SessionController(self.audio_router)
-        self._pipelines_dirty = False
+        bundle = self._runtime_facade.rebuild(self.config)
+        self.audio_router = bundle.audio_router
+        self.session_controller = bundle.session_controller
 
     def _ensure_pipelines_ready(self) -> None:
-        if (
-            self.session_controller is None
-            or self.audio_router is None
-            or self._pipelines_dirty
-        ):
-            self._build_pipelines_from_config()
+        bundle = self._runtime_facade.ensure_ready(self.config)
+        self.audio_router = bundle.audio_router
+        self.session_controller = bundle.session_controller
 
     def run_health_check(self, warmup: bool) -> None:
         if self._health_check_running:
@@ -621,28 +589,44 @@ class MainWindow(QMainWindow):
 
         def _worker() -> None:
             try:
-                completed = subprocess.run(
-                    [
-                        sys.executable,
-                        "-m",
-                        "app.local_ai.healthcheck_worker",
-                        config_path,
-                        "true" if warmup else "false",
-                    ],
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    cwd=str(Path(__file__).resolve().parent.parent),
-                )
-                if completed.returncode != 0:
-                    stderr = (completed.stderr or "").strip()
-                    stdout = (completed.stdout or "").strip()
-                    detail = stderr or stdout or f"health check subprocess exited with code {completed.returncode}"
-                    raise RuntimeError(detail)
-                payload = (completed.stdout or "").strip()
-                if not payload:
-                    raise RuntimeError("health check subprocess returned no result")
-                report = LocalHealthReport(**json.loads(payload))
+                if getattr(sys, "frozen", False):
+                    config = load_config(config_path)
+                    report = run_local_healthcheck(
+                        asr_engine=FasterWhisperEngine(
+                            model=config.asr.model,
+                            device=config.asr.device,
+                            compute_type=config.asr.compute_type,
+                            beam_size=config.asr.beam_size,
+                            condition_on_previous_text=config.asr.condition_on_previous_text,
+                            language=config.language.local_source,
+                        ),
+                        llm_client=create_translation_provider(config.llm),
+                        tts_engine=create_tts_engine(config.meeting_tts),
+                        warmup=warmup,
+                    )
+                else:
+                    completed = subprocess.run(
+                        [
+                            sys.executable,
+                            "-m",
+                            "app.local_ai.healthcheck_worker",
+                            config_path,
+                            "true" if warmup else "false",
+                        ],
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        cwd=str(Path(__file__).resolve().parent.parent),
+                    )
+                    if completed.returncode != 0:
+                        stderr = (completed.stderr or "").strip()
+                        stdout = (completed.stdout or "").strip()
+                        detail = stderr or stdout or f"health check subprocess exited with code {completed.returncode}"
+                        raise RuntimeError(detail)
+                    payload = (completed.stdout or "").strip()
+                    if not payload:
+                        raise RuntimeError("health check subprocess returned no result")
+                    report = LocalHealthReport(**json.loads(payload))
                 self._health_check_queue.put((True, report))
             except Exception as exc:
                 self._health_check_queue.put((False, exc))
@@ -779,48 +763,14 @@ class MainWindow(QMainWindow):
 
     def _export_session_report(self, payload: dict[str, object]) -> None:
         try:
-            report_dir = Path("logs") / "session_reports"
-            report_dir.mkdir(parents=True, exist_ok=True)
-            now = datetime.now()
             routes = self.audio_routing_page.selected_audio_routes()
-            report = {
-                "timestamp": now.isoformat(),
-                "config_path": self.config_path,
-                "mode": self.config.direction.mode,
-                "selected_devices": {
-                    "meeting_in": routes.meeting_in,
-                    "microphone_in": routes.microphone_in,
-                    "speaker_out": routes.speaker_out,
-                    "meeting_out": routes.meeting_out,
-                },
-                "backend": {
-                    "llm_backend": self.config.llm.backend,
-                    "llm_model": self.config.llm.model,
-                    "llm_url": self.config.llm.base_url,
-                    "asr_model": self.config.asr.model,
-                    "asr_device": self.config.asr.device,
-                    "meeting_tts": {
-                        "engine": self.config.meeting_tts.engine,
-                        "voice": self.config.meeting_tts.voice_name,
-                    },
-                    "local_tts": {
-                        "engine": self.config.local_tts.engine,
-                        "voice": self.config.local_tts.voice_name,
-                    },
-                },
-                "runtime": {
-                    "sample_rate": self.config.runtime.sample_rate,
-                    "chunk_ms": self.config.runtime.chunk_ms,
-                    "asr_queue_maxsize": self.config.runtime.asr_queue_maxsize,
-                    "llm_queue_maxsize": self.config.runtime.llm_queue_maxsize,
-                    "tts_queue_maxsize": self.config.runtime.tts_queue_maxsize,
-                },
-                "stats": payload.get("stats_before_stop", {}),
-                "recent_errors": self._get_recent_errors()[-50:],
-                "config_snapshot": self.config.to_dict(),
-            }
-            output_path = report_dir / f"session_report_{now.strftime('%Y%m%d_%H%M%S')}.json"
-            output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+            export_session_report(
+                config_path=self.config_path,
+                config=self.config,
+                routes=routes,
+                payload=payload,
+                recent_errors=self._get_recent_errors(),
+            )
         except Exception as exc:
             self._report_error(f"export_session_report failed: {exc}")
 
@@ -880,24 +830,13 @@ class MainWindow(QMainWindow):
         return "\n".join(lines)
 
     def _sync_ui_to_config(self) -> None:
-        self.config.audio = self.audio_routing_page.selected_audio_routes()
-        self._apply_audio_route_levels()
-        self.config.direction.mode = self.live_caption_page.selected_mode()
-        self.live_caption_page.update_config(self.config)
-        self.local_ai_page.update_config(self.config)
+        self._config_apply_service.sync_ui_to_config(self.config)
 
     def _apply_audio_route_levels(self) -> None:
-        self.meeting_capture.set_gain(self.config.audio.meeting_in_gain)
-        self.local_capture.set_gain(self.config.audio.microphone_in_gain)
-        self.speaker_playback.set_volume(self.config.audio.speaker_out_volume)
-        self.meeting_playback.set_volume(self.config.audio.meeting_out_volume)
+        self._config_apply_service.apply_audio_route_levels(self.config.audio)
 
     def _apply_audio_route_levels_from_ui(self) -> None:
-        audio = self.audio_routing_page.selected_audio_routes()
-        self.meeting_capture.set_gain(audio.meeting_in_gain)
-        self.local_capture.set_gain(audio.microphone_in_gain)
-        self.speaker_playback.set_volume(audio.speaker_out_volume)
-        self.meeting_playback.set_volume(audio.meeting_out_volume)
+        self._config_apply_service.apply_audio_route_levels_from_ui()
 
     def _save_config_to_disk(self) -> Path:
         return save_config(self.config, self.config_path)
