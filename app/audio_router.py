@@ -107,6 +107,7 @@ class AudioRouter:
                 "remote_asr_enabled": state.remote_asr_enabled,
                 "local_tts_busy": state.local_tts_busy,
                 "remote_tts_busy": state.remote_tts_busy,
+                "local_resume_in_ms": state.local_resume_in_ms,
                 "remote_resume_in_ms": state.remote_resume_in_ms,
             },
             capture=capture,
@@ -172,4 +173,4 @@ class AudioRouter:
         self._state.on_tts_start(channel)
 
     def handle_tts_play_end(self, channel: str) -> None:
-        self._state.on_tts_end(channel, resume_delay_ms=300)
+        self._state.on_tts_end(channel)

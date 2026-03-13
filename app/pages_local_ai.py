@@ -15,7 +15,6 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
-    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -120,6 +119,7 @@ class LocalAiPage(QWidget):
         self._suspend_notify = False
         self._model_load_queue: Queue[tuple[bool, list[str] | str]] = Queue()
         self._model_loading = False
+        self._preferred_llm_model = ""
 
         self.asr_group, asr_form = self._build_asr_group()
         self.llm_group, llm_form = self._build_llm_group()
@@ -132,23 +132,33 @@ class LocalAiPage(QWidget):
         self.runtime_status_label.setWordWrap(True)
         self.runtime_status_label.setStyleSheet("color: #b7bdc6;")
 
-        top_grid = QGridLayout()
-        top_grid.setContentsMargins(0, 0, 0, 0)
-        top_grid.setHorizontalSpacing(8)
-        top_grid.setVerticalSpacing(8)
-        top_grid.setColumnStretch(0, 1)
-        top_grid.setColumnStretch(1, 1)
-        top_grid.addWidget(self.asr_group, 0, 0, 2, 1)
-        top_grid.addWidget(self.llm_group, 0, 1)
-        top_grid.addWidget(self.runtime_group, 1, 1)
-        top_grid.addWidget(self.base_tts.group, 2, 0, 1, 2)
-        top_grid.addWidget(self.local_tts_override.group, 3, 0)
-        top_grid.addWidget(self.remote_tts_override.group, 3, 1)
+        # Keep two independent columns so one side's height won't squeeze/expand the other.
+        left_column = QVBoxLayout()
+        left_column.setContentsMargins(0, 0, 0, 0)
+        left_column.setSpacing(8)
+        left_column.addWidget(self.asr_group)
+        left_column.addWidget(self.llm_group)
+        left_column.addStretch(1)
+
+        right_column = QVBoxLayout()
+        right_column.setContentsMargins(0, 0, 0, 0)
+        right_column.setSpacing(8)
+        right_column.addWidget(self.runtime_group)
+        right_column.addWidget(self.base_tts.group)
+        right_column.addWidget(self.local_tts_override.group)
+        right_column.addWidget(self.remote_tts_override.group)
+        right_column.addStretch(1)
+
+        top_columns = QHBoxLayout()
+        top_columns.setContentsMargins(0, 0, 0, 0)
+        top_columns.setSpacing(8)
+        top_columns.addLayout(left_column, 1)
+        top_columns.addLayout(right_column, 1)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(6, 6, 6, 6)
         root.setSpacing(8)
-        root.addLayout(top_grid)
+        root.addLayout(top_columns)
         root.addStretch(1)
 
         self._normalize_form_label_widths(
@@ -159,14 +169,7 @@ class LocalAiPage(QWidget):
             self.remote_tts_override.form,
             runtime_form,
         )
-        self._apply_group_heights(
-            asr_form=asr_form,
-            llm_form=llm_form,
-            runtime_form=runtime_form,
-            base_tts_form=self.base_tts.form,
-            local_tts_override_form=self.local_tts_override.form,
-            remote_tts_override_form=self.remote_tts_override.form,
-        )
+        # Let layout use natural heights to avoid visual compression and large empty blocks.
 
         self._wire_events()
 
@@ -198,6 +201,7 @@ class LocalAiPage(QWidget):
 
             self._select_combo_data(self.llm_backend_combo, config.llm.backend)
             self._apply_backend_url(config.llm.backend)
+            self._preferred_llm_model = config.llm.model.strip()
             self._set_combo_text(self.llm_model_combo, config.llm.model)
             self.llm_timeout_spin.setValue(config.llm.request_timeout_sec)
             self.llm_temperature_spin.setValue(config.llm.temperature)
@@ -215,6 +219,10 @@ class LocalAiPage(QWidget):
             self.runtime_asr_q_spin.setValue(config.runtime.asr_queue_maxsize)
             self.runtime_llm_q_spin.setValue(config.runtime.llm_queue_maxsize)
             self.runtime_tts_q_spin.setValue(config.runtime.tts_queue_maxsize)
+            self.runtime_warmup_on_start_check.setChecked(config.runtime.warmup_on_start)
+            self.runtime_local_echo_guard_enabled_check.setChecked(config.runtime.local_echo_guard_enabled)
+            self.runtime_local_echo_guard_resume_delay_spin.setValue(config.runtime.local_echo_guard_resume_delay_ms)
+            self.runtime_remote_echo_guard_resume_delay_spin.setValue(config.runtime.remote_echo_guard_resume_delay_ms)
         finally:
             self._suspend_notify = False
         self._reload_llm_models()
@@ -239,7 +247,13 @@ class LocalAiPage(QWidget):
         backend = str(self.llm_backend_combo.currentData() or "lm_studio")
         config.llm.backend = backend
         config.llm.base_url = self._backend_url(backend)
-        config.llm.model = self.llm_model_combo.currentText().strip() or "qwen/qwen3.5-9b"
+        chosen_model = self.llm_model_combo.currentText().strip()
+        if not chosen_model:
+            chosen_model = (self._preferred_llm_model or "").strip()
+        if not chosen_model:
+            chosen_model = (config.llm.model or "").strip()
+        config.llm.model = chosen_model or "qwen/qwen3.5-9b"
+        self._preferred_llm_model = config.llm.model
         config.llm.request_timeout_sec = self.llm_timeout_spin.value()
         config.llm.temperature = float(self.llm_temperature_spin.value())
         config.llm.top_p = float(self.llm_top_p_spin.value())
@@ -258,10 +272,13 @@ class LocalAiPage(QWidget):
         except Exception:
             config.runtime.sample_rate = int(str(self.runtime_sample_rate_spin.currentText()).strip() or config.runtime.sample_rate)
         config.runtime.chunk_ms = self.runtime_chunk_spin.value()
-        config.runtime.warmup_on_start = True
+        config.runtime.warmup_on_start = self.runtime_warmup_on_start_check.isChecked()
         config.runtime.asr_queue_maxsize = self.runtime_asr_q_spin.value()
         config.runtime.llm_queue_maxsize = self.runtime_llm_q_spin.value()
         config.runtime.tts_queue_maxsize = self.runtime_tts_q_spin.value()
+        config.runtime.local_echo_guard_enabled = self.runtime_local_echo_guard_enabled_check.isChecked()
+        config.runtime.local_echo_guard_resume_delay_ms = self.runtime_local_echo_guard_resume_delay_spin.value()
+        config.runtime.remote_echo_guard_resume_delay_ms = self.runtime_remote_echo_guard_resume_delay_spin.value()
 
     def set_runtime_status(self, text: str) -> None:
         self.runtime_status_label.setText(text)
@@ -307,16 +324,17 @@ class LocalAiPage(QWidget):
         self.asr_rms_threshold_spin.setRange(0.001, 0.2)
         self.asr_rms_threshold_spin.setSingleStep(0.001)
         self.asr_rms_threshold_spin.setDecimals(3)
-        asr_toggle_row = self._build_inline_row(self.asr_condition_prev_check, self.asr_vad_enabled)
+        # we'll render precision (compute type) and the two toggles on the same row
+        compute_and_toggles_row = self._build_inline_row(self.asr_compute_label, self.asr_condition_prev_check, self.asr_vad_enabled)
 
         form = QFormLayout()
         self._configure_form_layout(form)
         form.addRow("引擎", self.asr_engine_combo)
         form.addRow("模型", self.asr_model_combo)
         form.addRow("裝置", self.asr_device_combo)
-        form.addRow("精度", self.asr_compute_label)
+        # place Beam above precision, and show precision with inline toggles on same line
         form.addRow("Beam 寬度", self.asr_beam_spin)
-        form.addRow("", asr_toggle_row)
+        form.addRow("精度", compute_and_toggles_row)
         form.addRow("局部更新間隔(ms)", self.asr_partial_interval_spin)
         form.addRow("Partial 保留(s)", self.asr_partial_history_spin)
         form.addRow("Final 保留(s)", self.asr_final_history_spin)
@@ -384,6 +402,12 @@ class LocalAiPage(QWidget):
         self.runtime_llm_q_spin.setRange(8, 512)
         self.runtime_tts_q_spin = QSpinBox()
         self.runtime_tts_q_spin.setRange(8, 512)
+        self.runtime_warmup_on_start_check = QCheckBox("啟動後自動預熱")
+        self.runtime_local_echo_guard_enabled_check = QCheckBox("啟用本地防回授")
+        self.runtime_local_echo_guard_resume_delay_spin = QSpinBox()
+        self.runtime_local_echo_guard_resume_delay_spin.setRange(0, 5000)
+        self.runtime_remote_echo_guard_resume_delay_spin = QSpinBox()
+        self.runtime_remote_echo_guard_resume_delay_spin.setRange(0, 5000)
 
         form = QFormLayout()
         self._configure_form_layout(form)
@@ -392,6 +416,11 @@ class LocalAiPage(QWidget):
         form.addRow("ASR 佇列", self.runtime_asr_q_spin)
         form.addRow("LLM 佇列", self.runtime_llm_q_spin)
         form.addRow("TTS 佇列", self.runtime_tts_q_spin)
+        form.addRow("本地防回授恢復(ms)", self.runtime_local_echo_guard_resume_delay_spin)
+        form.addRow("遠端防回授恢復(ms)", self.runtime_remote_echo_guard_resume_delay_spin)
+        # put warmup and local-echo-guard checkbox on the same inline row
+        warmup_and_localguard = self._build_inline_row(self.runtime_warmup_on_start_check, self.runtime_local_echo_guard_enabled_check)
+        form.addRow("", warmup_and_localguard)
 
         group = QGroupBox("執行階段")
         group.setLayout(form)
@@ -536,6 +565,10 @@ class LocalAiPage(QWidget):
             self.runtime_asr_q_spin,
             self.runtime_llm_q_spin,
             self.runtime_tts_q_spin,
+            self.runtime_warmup_on_start_check,
+            self.runtime_local_echo_guard_enabled_check,
+            self.runtime_local_echo_guard_resume_delay_spin,
+            self.runtime_remote_echo_guard_resume_delay_spin,
         ):
             self._set_uniform_field_style(compact, minimum_width=220)
 
@@ -578,6 +611,10 @@ class LocalAiPage(QWidget):
             self.runtime_asr_q_spin,
             self.runtime_llm_q_spin,
             self.runtime_tts_q_spin,
+            self.runtime_warmup_on_start_check,
+            self.runtime_local_echo_guard_enabled_check,
+            self.runtime_local_echo_guard_resume_delay_spin,
+            self.runtime_remote_echo_guard_resume_delay_spin,
         ):
             self._connect_change_signal(widget)
 
@@ -752,7 +789,7 @@ class LocalAiPage(QWidget):
             self.runtime_status_label.setText(f"LLM 模型載入失敗：{payload}")
             return
 
-        current = self.llm_model_combo.currentText().strip()
+        current = (self._preferred_llm_model or self.llm_model_combo.currentText().strip()).strip()
         models = payload if isinstance(payload, list) else []
         if not models:
             self.runtime_status_label.setText("找不到可用的 LLM 模型")
@@ -771,6 +808,7 @@ class LocalAiPage(QWidget):
             self._set_combo_text(self.llm_model_combo, current)
         else:
             self._set_combo_text(self.llm_model_combo, models[0])
+        self._preferred_llm_model = self.llm_model_combo.currentText().strip()
 
     def _on_backend_changed(self) -> None:
         backend = str(self.llm_backend_combo.currentData() or "lm_studio")

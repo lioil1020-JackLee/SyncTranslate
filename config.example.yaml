@@ -148,6 +148,11 @@ runtime:
   translation_prefix_min_delta_chars: 6
   tts_cancel_pending_on_new_final: true
   tts_drop_backlog_threshold: 6
+  local_echo_guard_enabled: false
+  local_echo_guard_resume_delay_ms: 300
+  remote_echo_guard_resume_delay_ms: 300
+  config_schema_version: 2
+  last_migration_note: ''
   warmup_on_start: true
 health_last_success:
   asr: ''

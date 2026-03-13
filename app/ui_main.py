@@ -211,8 +211,13 @@ class MainWindow(QMainWindow):
             self._apply_audio_route_levels_from_ui()
 
     def persist_config(self) -> None:
-        self._apply_live_config_now()
-        self.statusBar().showMessage(f"設定已儲存: {self.config_path}")
+        try:
+            self._apply_live_config_now()
+            saved_path = self._save_config_to_disk()
+            self.statusBar().showMessage(f"設定已儲存: {saved_path}")
+        except Exception as exc:
+            self._report_error(f"persist_config failed: {exc}")
+            self.statusBar().showMessage(f"設定儲存失敗: {exc}")
 
     def reload_config(self) -> None:
         if self.session_controller:
@@ -565,7 +570,11 @@ class MainWindow(QMainWindow):
         input_manager = AudioInputManager(local_capture=self.local_capture, remote_capture=self.meeting_capture)
         asr_manager = ASRManager(self.config, on_error=self._report_error)
         translator_manager = TranslatorManager(self.config, on_error=self._report_error)
-        state_manager = StateManager()
+        state_manager = StateManager(
+            local_echo_guard_enabled=self.config.runtime.local_echo_guard_enabled,
+            local_resume_delay_ms=self.config.runtime.local_echo_guard_resume_delay_ms,
+            remote_resume_delay_ms=self.config.runtime.remote_echo_guard_resume_delay_ms,
+        )
         tts_manager = TTSManager(
             config=self.config,
             local_playback=self.speaker_playback,
@@ -841,6 +850,7 @@ class MainWindow(QMainWindow):
             "state: "
             f"local_asr={state['local_asr_enabled']} remote_asr={state['remote_asr_enabled']} "
             f"local_tts_busy={state['local_tts_busy']} remote_tts_busy={state['remote_tts_busy']} "
+            f"local_resume_in_ms={state['local_resume_in_ms']} "
             f"remote_resume_in_ms={state['remote_resume_in_ms']}"
         )
         for label, source in (("meeting", "remote"), ("local", "local")):

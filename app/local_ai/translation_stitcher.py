@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import hashlib
 from collections import deque
 from dataclasses import dataclass
 from collections import OrderedDict
@@ -89,7 +90,7 @@ class TranslationStitcher:
                     return StitchResult(text=self._last_partial_translation, is_final=False, should_speak=False)
 
         context = list(self._context) if self._enabled else []
-        cache_key = self._cache_key(text)
+        cache_key = self._cache_key(text, context)
         translated = self._read_exact_cache(cache_key)
         if not translated:
             translated = self._translator.translate(
@@ -120,8 +121,19 @@ class TranslationStitcher:
             self._last_spoken = translated
         return StitchResult(text=translated, is_final=event.is_final, should_speak=should_speak)
 
-    def _cache_key(self, text: str) -> str:
-        return f"{self._source_lang}>{self._target_lang}|{text}"
+    def _cache_key(self, text: str, context: list[str] | None = None) -> str:
+        profile_name = (self._profile.name.strip() if self._profile else "default") or "default"
+        context_hash = self._context_fingerprint(context or [])
+        return f"{self._source_lang}>{self._target_lang}|profile={profile_name}|ctx={context_hash}|{text}"
+
+    @staticmethod
+    def _context_fingerprint(context: list[str]) -> str:
+        if not context:
+            return "-"
+        normalized = "\n".join(item.strip() for item in context if item.strip())
+        if not normalized:
+            return "-"
+        return hashlib.blake2s(normalized.encode("utf-8"), digest_size=8).hexdigest()
 
     def _read_exact_cache(self, key: str) -> str:
         hit = self._exact_cache.get(key, "")

@@ -188,6 +188,11 @@ class RuntimeConfig:
     translation_prefix_min_delta_chars: int = 6
     tts_cancel_pending_on_new_final: bool = True
     tts_drop_backlog_threshold: int = 6
+    local_echo_guard_enabled: bool = False
+    local_echo_guard_resume_delay_ms: int = 300
+    remote_echo_guard_resume_delay_ms: int = 300
+    config_schema_version: int = 2
+    last_migration_note: str = ""
     warmup_on_start: bool = True
 
 

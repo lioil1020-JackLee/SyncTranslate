@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import time
 from collections import deque
 from threading import Condition, Event, Thread
-from typing import Callable
+from typing import Any, Callable
 
 from app.audio_playback import AudioPlayback
 from app.events import ErrorEvent
@@ -52,6 +52,7 @@ class TTSManager:
         self._pending: deque[_TtsTask] = deque()
         self._queue_changed = Condition()
         self._drop_count = {"local": 0, "remote": 0}
+        self._engine_cache: dict[str, tuple[tuple[Any, ...], Any]] = {}
         self._stop_event = Event()
         self._worker: Thread | None = None
 
@@ -84,6 +85,7 @@ class TTSManager:
         with self._queue_changed:
             self._pending.clear()
             self._queue_changed.notify_all()
+        self._engine_cache.clear()
         return stopped
 
     def enqueue(
@@ -149,7 +151,7 @@ class TTSManager:
             try:
                 if self._on_play_start:
                     self._on_play_start(channel)
-                engine = create_tts_engine(tts_cfg)
+                engine = self._resolve_engine(channel, tts_cfg)
                 audio = engine.synthesize(task.text, sample_rate=tts_cfg.sample_rate)
                 if self._stop_event.is_set():
                     break
@@ -230,3 +232,23 @@ class TTSManager:
             fallback = self._config.meeting_tts
             override = self._config.tts_channels.local
         return merge_tts_configs(self._config.tts, fallback, override)
+
+    def _resolve_engine(self, channel: str, tts_cfg: TtsConfig) -> Any:
+        config_key: tuple[Any, ...] = (
+            tts_cfg.engine,
+            tts_cfg.executable_path,
+            tts_cfg.model_path,
+            tts_cfg.config_path,
+            tts_cfg.voice_name,
+            tts_cfg.speaker_id,
+            tts_cfg.length_scale,
+            tts_cfg.noise_scale,
+            tts_cfg.noise_w,
+            tts_cfg.sample_rate,
+        )
+        cached = self._engine_cache.get(channel)
+        if cached and cached[0] == config_key:
+            return cached[1]
+        engine = create_tts_engine(tts_cfg)
+        self._engine_cache[channel] = (config_key, engine)
+        return engine

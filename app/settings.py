@@ -128,6 +128,17 @@ def migrate_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
     result["runtime"]["tts_drop_backlog_threshold"] = int(
         runtime.get("tts_drop_backlog_threshold", result["runtime"]["tts_drop_backlog_threshold"])
     )
+    result["runtime"]["local_echo_guard_enabled"] = bool(
+        runtime.get("local_echo_guard_enabled", result["runtime"]["local_echo_guard_enabled"])
+    )
+    result["runtime"]["local_echo_guard_resume_delay_ms"] = int(
+        runtime.get("local_echo_guard_resume_delay_ms", result["runtime"]["local_echo_guard_resume_delay_ms"])
+    )
+    result["runtime"]["remote_echo_guard_resume_delay_ms"] = int(
+        runtime.get("remote_echo_guard_resume_delay_ms", result["runtime"]["remote_echo_guard_resume_delay_ms"])
+    )
+    result["runtime"]["config_schema_version"] = 2
+    result["runtime"]["last_migration_note"] = "migrated_from_legacy"
     result["runtime"]["warmup_on_start"] = bool(runtime.get("warmup_on_start", result["runtime"]["warmup_on_start"]))
 
     legacy_test = raw.get("provider_test_last_success") or {}

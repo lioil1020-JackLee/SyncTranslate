@@ -182,6 +182,11 @@ uv run python .\main.py --check
 - `translation_prefix_min_delta_chars`
 - `tts_cancel_pending_on_new_final`
 - `tts_drop_backlog_threshold`
+- `local_echo_guard_enabled`
+- `local_echo_guard_resume_delay_ms`
+- `remote_echo_guard_resume_delay_ms`
+- `config_schema_version`
+- `last_migration_note`
 - `warmup_on_start`
 
 ### `health_last_success`
@@ -242,7 +247,7 @@ SyncTranslate/
 3. `TranslatorManager` 根據來源方向呼叫對應的 `TranslationStitcher`。
 4. `TranscriptBuffer` 同時保存 original / translated 字幕。
 5. `TTSManager` 依通道將翻譯文字送到本地或遠端輸出。
-6. `StateManager` 在遠端 TTS 播放期間暫停遠端 ASR，降低回授與自我收音。
+6. `StateManager` 在遠端 TTS 播放期間暫停遠端 ASR，並可選擇對本地通道啟用 local echo guard。
 
 ## 健康檢查與診斷
 
