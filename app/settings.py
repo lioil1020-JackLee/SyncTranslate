@@ -12,8 +12,8 @@ from app.schemas import AppConfig
 
 EMBEDDED_DEFAULT_CONFIG_YAML = """audio:
     meeting_in: Windows WASAPI::CABLE Output (VB-Audio Virtual Cable)
-    microphone_in: Windows WASAPI::Voicemeeter Out B1 (VB-Audio Voicemeeter VAIO)
-    speaker_out: Windows WASAPI::Voicemeeter Input (VB-Audio Voicemeeter VAIO)
+    microphone_in: Windows WASAPI::耳機 (WH-1000XM5)
+    speaker_out: Windows WASAPI::耳機 (WH-1000XM5)
     meeting_out: Windows WASAPI::CABLE Input (VB-Audio Virtual Cable)
     meeting_in_gain: 1.0
     microphone_in_gain: 1.0
@@ -31,10 +31,10 @@ asr:
     model: large-v3
     device: cuda
     compute_type: float16
-    beam_size: 1
+    beam_size: 2
     condition_on_previous_text: true
-    temperature_fallback: 0.0,0.2,0.4
-    no_speech_threshold: 0.6
+    temperature_fallback: 0.0,0.2
+    no_speech_threshold: 0.65
     vad:
         enabled: true
         min_speech_duration_ms: 160
@@ -43,7 +43,7 @@ asr:
         speech_pad_ms: 300
         rms_threshold: 0.03
     streaming:
-        partial_interval_ms: 250
+        partial_interval_ms: 200
         partial_history_seconds: 2
         final_history_seconds: 4
 asr_channels:
@@ -52,7 +52,7 @@ asr_channels:
         model: large-v3
         device: cuda
         compute_type: float16
-        beam_size: 1
+        beam_size: 2
         condition_on_previous_text: true
         temperature_fallback: 0.0,0.2
         no_speech_threshold: 0.65
@@ -64,7 +64,7 @@ asr_channels:
             speech_pad_ms: 300
             rms_threshold: 0.03
         streaming:
-            partial_interval_ms: 250
+            partial_interval_ms: 200
             partial_history_seconds: 2
             final_history_seconds: 4
     english:
@@ -84,18 +84,18 @@ asr_channels:
             speech_pad_ms: 300
             rms_threshold: 0.03
         streaming:
-            partial_interval_ms: 250
+            partial_interval_ms: 200
             partial_history_seconds: 2
             final_history_seconds: 4
 llm:
     backend: lm_studio
     base_url: http://127.0.0.1:1234
     model: hy-mt1.5-7b
-    temperature: 0.1
-    top_p: 0.8
-    max_output_tokens: 128
+    temperature: 0.05
+    top_p: 0.9
+    max_output_tokens: 96
     repeat_penalty: 1.05
-    stop_tokens: "</target>,Translation:"
+    stop_tokens: '</target>,Translation:'
     request_timeout_sec: 15
     sliding_window:
         enabled: true
@@ -145,11 +145,11 @@ llm_channels:
         backend: lm_studio
         base_url: http://127.0.0.1:1234
         model: hy-mt1.5-7b
-        temperature: 0.1
-        top_p: 0.8
+        temperature: 0.05
+        top_p: 0.9
         max_output_tokens: 96
         repeat_penalty: 1.05
-        stop_tokens: "</target>,Translation:"
+        stop_tokens: '</target>,Translation:'
         request_timeout_sec: 15
         sliding_window:
             enabled: true
@@ -198,11 +198,11 @@ llm_channels:
         backend: lm_studio
         base_url: http://127.0.0.1:1234
         model: hy-mt1.5-7b
-        temperature: 0.1
-        top_p: 0.8
+        temperature: 0.05
+        top_p: 0.9
         max_output_tokens: 160
         repeat_penalty: 1.05
-        stop_tokens: "</target>,翻譯:"
+        stop_tokens: '</target>,翻譯:'
         request_timeout_sec: 15
         sliding_window:
             enabled: true
@@ -254,29 +254,7 @@ tts:
     config_path: ''
     voice_name: zh-TW-HsiaoChenNeural
     speaker_id: 0
-    length_scale: 1.0
-    noise_scale: 0.667
-    noise_w: 0.6
-    sample_rate: 24000
-chinese_tts:
-    engine: edge_tts
-    executable_path: ''
-    model_path: ''
-    config_path: ''
-    voice_name: zh-TW-HsiaoChenNeural
-    speaker_id: 0
-    length_scale: 0.9
-    noise_scale: 0.667
-    noise_w: 0.6
-    sample_rate: 24000
-english_tts:
-    engine: edge_tts
-    executable_path: ''
-    model_path: ''
-    config_path: ''
-    voice_name: en-US-JennyNeural
-    speaker_id: 0
-    length_scale: 0.9
+    length_scale: 0.95
     noise_scale: 0.667
     noise_w: 0.6
     sample_rate: 24000
@@ -288,7 +266,7 @@ tts_channels:
         config_path: null
         voice_name: zh-TW-HsiaoChenNeural
         speaker_id: null
-        length_scale: null
+        length_scale: 0.95
         noise_scale: null
         noise_w: 0.6
         sample_rate: 24000
@@ -299,41 +277,63 @@ tts_channels:
         config_path: null
         voice_name: en-US-JennyNeural
         speaker_id: null
-        length_scale: null
+        length_scale: 0.95
         noise_scale: null
         noise_w: 0.6
         sample_rate: 24000
 runtime:
     sample_rate: 24000
     chunk_ms: 40
-    asr_queue_maxsize_chinese: 24
-    asr_queue_maxsize_english: 24
-    llm_queue_maxsize_zh_to_en: 8
-    llm_queue_maxsize_en_to_zh: 8
-    tts_queue_maxsize_chinese: 8
-    tts_queue_maxsize_english: 8
-    asr_queue_maxsize: 24
-    llm_queue_maxsize: 8
-    tts_queue_maxsize: 8
+    asr_queue_maxsize: 16
+    llm_queue_maxsize: 6
+    tts_queue_maxsize: 6
     translation_exact_cache_size: 256
     translation_prefix_min_delta_chars: 6
     tts_cancel_pending_on_new_final: true
     tts_cancel_policy: all_pending
     tts_max_wait_ms: 4000
     tts_max_chars: 200
-    tts_drop_backlog_threshold: 6
+    tts_drop_backlog_threshold: 4
     llm_streaming_tokens: 16
-    max_pipeline_latency_ms: 3000
+    max_pipeline_latency_ms: 2500
     local_echo_guard_enabled: true
     local_echo_guard_resume_delay_ms: 300
     remote_echo_guard_resume_delay_ms: 300
     config_schema_version: 3
     last_migration_note: ''
     warmup_on_start: true
+    asr_queue_maxsize_chinese: 16
+    asr_queue_maxsize_english: 16
+    llm_queue_maxsize_zh_to_en: 6
+    llm_queue_maxsize_en_to_zh: 6
+    tts_queue_maxsize_chinese: 6
+    tts_queue_maxsize_english: 6
 health_last_success:
     asr: ''
     llm: ''
     tts: ''
+chinese_tts:
+    engine: edge_tts
+    executable_path: ''
+    model_path: ''
+    config_path: ''
+    voice_name: zh-TW-HsiaoChenNeural
+    speaker_id: 0
+    length_scale: 0.95
+    noise_scale: 0.667
+    noise_w: 0.6
+    sample_rate: 24000
+english_tts:
+    engine: edge_tts
+    executable_path: ''
+    model_path: ''
+    config_path: ''
+    voice_name: en-US-JennyNeural
+    speaker_id: 0
+    length_scale: 0.95
+    noise_scale: 0.667
+    noise_w: 0.6
+    sample_rate: 24000
 """
 
 
