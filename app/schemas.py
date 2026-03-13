@@ -67,9 +67,9 @@ class SlidingWindowConfig:
 
 @dataclass(slots=True)
 class LlmConfig:
-    backend: str = "ollama"
-    base_url: str = "http://127.0.0.1:11434"
-    model: str = "llama3.1:8b"
+    backend: str = "lm_studio"
+    base_url: str = "http://127.0.0.1:1234"
+    model: str = "qwen/qwen3.5-9b"
     temperature: float = 0.2
     top_p: float = 0.9
     request_timeout_sec: int = 20
@@ -173,9 +173,9 @@ class AppConfig:
 
         llm_raw = raw.get("llm") or {}
         llm = LlmConfig(
-            backend=str(llm_raw.get("backend", "ollama")),
-            base_url=str(llm_raw.get("base_url", "http://127.0.0.1:11434")),
-            model=str(llm_raw.get("model", "llama3.1:8b")),
+            backend=str(llm_raw.get("backend", "lm_studio")),
+            base_url=str(llm_raw.get("base_url", "http://127.0.0.1:1234")),
+            model=str(llm_raw.get("model", "qwen/qwen3.5-9b")),
             temperature=float(llm_raw.get("temperature", 0.2)),
             top_p=float(llm_raw.get("top_p", 0.9)),
             request_timeout_sec=int(llm_raw.get("request_timeout_sec", 20)),
@@ -199,8 +199,10 @@ class AppConfig:
 
         if direction.mode not in {"meeting_to_local", "local_to_meeting", "bidirectional"}:
             direction.mode = "meeting_to_local"
-        if llm.backend not in {"ollama", "lm_studio"}:
-            llm.backend = "ollama"
+        if llm.backend != "lm_studio":
+            llm.backend = "lm_studio"
+        if (not llm.base_url.strip()) or ("11434" in llm.base_url):
+            llm.base_url = "http://127.0.0.1:1234"
 
         return cls(
             audio=audio,

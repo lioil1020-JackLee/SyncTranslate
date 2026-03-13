@@ -14,7 +14,7 @@ SyncTranslate 是一個 Windows 桌面即時口譯工具，聚焦在會議雙向
 	- 使用 `faster-whisper`
 	- 支援模型、裝置、VAD 與 streaming 參數調整
 - 本地 LLM 翻譯
-	- 支援 `Ollama` 與 `LM Studio`
+	- 只支援 `LM Studio`
 	- Sliding window 翻譯拼接，降低片段切分造成的語意斷裂
 - TTS
 	- 現行只保留 `edge-tts`
@@ -123,7 +123,7 @@ uv run python .\main.py --check
 
 ### `llm`
 
-- `backend`: `ollama` 或 `lm_studio`
+- `backend`: 固定 `lm_studio`
 - `base_url`: 後端 API 位址
 - `model`: 模型名稱
 - `temperature`
@@ -216,7 +216,7 @@ SyncTranslate/
 			streaming_asr.py
 			vad_segmenter.py
 			translation_stitcher.py
-			ollama_client.py
+			lm_studio_client.py
 			tts_factory.py
 			healthcheck.py
 			healthcheck_worker.py

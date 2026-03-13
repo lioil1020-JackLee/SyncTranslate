@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from app.asr_manager import ASREventWithSource
-from app.local_ai.ollama_client import OllamaClient
+from app.local_ai.lm_studio_client import LmStudioClient
 from app.local_ai.translation_stitcher import TranslationStitcher
 from app.schemas import AppConfig
 
@@ -25,8 +25,7 @@ class TranslatorManager:
         self._config = config
         self._on_error = on_error
         llm_cfg = config.llm
-        self._llm = OllamaClient(
-            backend=llm_cfg.backend,
+        self._llm = LmStudioClient(
             base_url=llm_cfg.base_url,
             model=llm_cfg.model,
             temperature=llm_cfg.temperature,

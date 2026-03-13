@@ -7,7 +7,7 @@ from dataclasses import asdict
 
 from app.local_ai.faster_whisper_engine import FasterWhisperEngine
 from app.local_ai.healthcheck import run_local_healthcheck
-from app.local_ai.ollama_client import OllamaClient
+from app.local_ai.lm_studio_client import LmStudioClient
 from app.local_ai.tts_factory import create_tts_engine
 from app.settings import load_config
 
@@ -26,8 +26,7 @@ def main(argv: list[str] | None = None) -> int:
         condition_on_previous_text=config.asr.condition_on_previous_text,
         language=config.language.meeting_source,
     )
-    llm = OllamaClient(
-        backend=config.llm.backend,
+    llm = LmStudioClient(
         base_url=config.llm.base_url,
         model=config.llm.model,
         temperature=config.llm.temperature,

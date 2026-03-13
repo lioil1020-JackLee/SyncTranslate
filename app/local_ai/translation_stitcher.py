@@ -5,7 +5,7 @@ from collections import deque
 from dataclasses import dataclass
 
 
-from app.local_ai.ollama_client import OllamaClient
+from app.local_ai.lm_studio_client import LmStudioClient
 from app.local_ai.streaming_asr import AsrEvent
 
 
@@ -20,7 +20,7 @@ class TranslationStitcher:
     def __init__(
         self,
         *,
-        translator: OllamaClient,
+        translator: LmStudioClient,
         source_lang: str,
         target_lang: str,
         enabled: bool = True,
