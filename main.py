@@ -40,6 +40,8 @@ def _configure_runtime_logging() -> None:
     faulthandler.enable(_FAULT_LOG_HANDLE, all_threads=True)
 
     def _log_exception(prefix: str, exc_type, exc_value, exc_tb) -> None:
+        if _FAULT_LOG_HANDLE is None:
+            return
         _FAULT_LOG_HANDLE.write(prefix + "\n")
         traceback.print_exception(exc_type, exc_value, exc_tb, file=_FAULT_LOG_HANDLE)
         _FAULT_LOG_HANDLE.flush()
@@ -65,7 +67,19 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config.yaml")
     parser.add_argument("--check", action="store_true", help="Run config + device checks without opening the UI")
+    parser.add_argument("--healthcheck-worker", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--healthcheck-config", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--healthcheck-warmup", default="false", help=argparse.SUPPRESS)
     args = parser.parse_args()
+
+    if args.healthcheck_worker:
+        worker_args: list[str] = []
+        if args.healthcheck_config:
+            worker_args.append(args.healthcheck_config)
+        worker_args.append(args.healthcheck_warmup)
+        from app.local_ai.healthcheck_worker import main as healthcheck_worker_main
+
+        return int(healthcheck_worker_main(worker_args))
 
     config = load_config(args.config)
     devices = DeviceManager().list_all()

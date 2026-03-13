@@ -590,19 +590,18 @@ class MainWindow(QMainWindow):
         def _worker() -> None:
             try:
                 if getattr(sys, "frozen", False):
-                    config = load_config(config_path)
-                    report = run_local_healthcheck(
-                        asr_engine=FasterWhisperEngine(
-                            model=config.asr.model,
-                            device=config.asr.device,
-                            compute_type=config.asr.compute_type,
-                            beam_size=config.asr.beam_size,
-                            condition_on_previous_text=config.asr.condition_on_previous_text,
-                            language=config.language.local_source,
-                        ),
-                        llm_client=create_translation_provider(config.llm),
-                        tts_engine=create_tts_engine(config.meeting_tts),
-                        warmup=warmup,
+                    completed = subprocess.run(
+                        [
+                            sys.executable,
+                            "--healthcheck-worker",
+                            "--healthcheck-config",
+                            config_path,
+                            "--healthcheck-warmup",
+                            "true" if warmup else "false",
+                        ],
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
                     )
                 else:
                     completed = subprocess.run(
@@ -618,15 +617,15 @@ class MainWindow(QMainWindow):
                         encoding="utf-8",
                         cwd=str(Path(__file__).resolve().parent.parent),
                     )
-                    if completed.returncode != 0:
-                        stderr = (completed.stderr or "").strip()
-                        stdout = (completed.stdout or "").strip()
-                        detail = stderr or stdout or f"health check subprocess exited with code {completed.returncode}"
-                        raise RuntimeError(detail)
-                    payload = (completed.stdout or "").strip()
-                    if not payload:
-                        raise RuntimeError("health check subprocess returned no result")
-                    report = LocalHealthReport(**json.loads(payload))
+                if completed.returncode != 0:
+                    stderr = (completed.stderr or "").strip()
+                    stdout = (completed.stdout or "").strip()
+                    detail = stderr or stdout or f"health check subprocess exited with code {completed.returncode}"
+                    raise RuntimeError(detail)
+                payload = (completed.stdout or "").strip()
+                if not payload:
+                    raise RuntimeError("health check subprocess returned no result")
+                report = LocalHealthReport(**json.loads(payload))
                 self._health_check_queue.put((True, report))
             except Exception as exc:
                 self._health_check_queue.put((False, exc))

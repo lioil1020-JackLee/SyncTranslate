@@ -1,0 +1,332 @@
+{
+  "timestamp": "2026-03-13T21:20:51.010949",
+  "config_path": "config.yaml",
+  "mode": "bidirectional",
+  "selected_devices": {
+    "meeting_in": "Windows WASAPI::CABLE Output (VB-Audio Virtual Cable)",
+    "microphone_in": "Windows WASAPI::耳機 (WH-1000XM5)",
+    "speaker_out": "Windows WASAPI::耳機 (WH-1000XM5)",
+    "meeting_out": "Windows WASAPI::CABLE Input (VB-Audio Virtual Cable)"
+  },
+  "backend": {
+    "llm_backend": "lm_studio",
+    "llm_model": "hy-mt1.5-7b",
+    "llm_url": "http://127.0.0.1:1234",
+    "asr_model": "distil-large-v3",
+    "asr_device": "cuda",
+    "meeting_tts": {
+      "engine": "edge_tts",
+      "voice": "en-US-JennyNeural"
+    },
+    "local_tts": {
+      "engine": "edge_tts",
+      "voice": "zh-TW-HsiaoChenNeural"
+    }
+  },
+  "runtime": {
+    "sample_rate": 24000,
+    "chunk_ms": 40,
+    "asr_queue_maxsize": 24,
+    "llm_queue_maxsize": 8,
+    "tts_queue_maxsize": 8
+  },
+  "stats": {
+    "running": true,
+    "active_sources": [
+      "local",
+      "remote"
+    ],
+    "state": {
+      "local_asr_enabled": true,
+      "remote_asr_enabled": true,
+      "local_tts_busy": false,
+      "remote_tts_busy": false,
+      "local_resume_in_ms": 0,
+      "remote_resume_in_ms": 0
+    },
+    "capture": {
+      "local": {
+        "running": true,
+        "sample_rate": 16000.0,
+        "frame_count": 1824640,
+        "level": 0.0003746063739527017,
+        "last_error": ""
+      },
+      "remote": {
+        "running": true,
+        "sample_rate": 48000.0,
+        "frame_count": 5512320,
+        "level": 0.05186222866177559,
+        "last_error": ""
+      }
+    },
+    "asr": {
+      "local": {
+        "queue_size": 0,
+        "dropped_chunks": 16,
+        "partial_count": 8,
+        "final_count": 4,
+        "last_debug": "asr final latency=206ms text=I'm going to work.",
+        "vad_rms": 0.0003746063739527017,
+        "vad_threshold": 0.03
+      },
+      "remote": {
+        "queue_size": 3,
+        "dropped_chunks": 24,
+        "partial_count": 39,
+        "final_count": 16,
+        "last_debug": "asr final latency=122ms text=enough",
+        "vad_rms": 0.06685926020145416,
+        "vad_threshold": 0.03
+      }
+    },
+    "tts": {
+      "queue_depth": 0,
+      "queue_depth_local": 0,
+      "queue_depth_remote": 0,
+      "drop_count_local": 0,
+      "drop_count_remote": 0,
+      "oldest_age_ms": 0.0
+    }
+  },
+  "session_meta": {
+    "started_at": 1773407935.5197885,
+    "ended_at": 1773408050.9491057,
+    "duration_sec": 115.42931723594666
+  },
+  "recent_errors": [
+    "2026-03-13 21:20:20 asr final latency=121ms text=is so",
+    "2026-03-13 21:20:20 [error] tts_manager:local playback_failed - TTS playback failed | No audio was received from edge-tts for voice 'en-US-JennyNeural'. This usually means the voice locale is incompatible with the input text.",
+    "2026-03-13 21:20:22 [router] translation_skipped source=remote utterance_id=83f1d569e8154b86a5c9ae08690d24ed revision=1",
+    "2026-03-13 21:20:22 asr partial latency=247ms text=who worked.",
+    "2026-03-13 21:20:22 [router] translation_skipped source=remote utterance_id=83f1d569e8154b86a5c9ae08690d24ed revision=2",
+    "2026-03-13 21:20:22 asr partial latency=152ms text=to watch tomorrow.",
+    "2026-03-13 21:20:22 [router] translation_skipped source=remote utterance_id=83f1d569e8154b86a5c9ae08690d24ed revision=3",
+    "2026-03-13 21:20:22 asr partial latency=136ms text=and to watch tomorrow.",
+    "2026-03-13 21:20:22 [router] translation_skipped source=remote utterance_id=83f1d569e8154b86a5c9ae08690d24ed revision=4",
+    "2026-03-13 21:20:22 asr partial latency=123ms text=and to work tomorrow.",
+    "2026-03-13 21:20:23 asr final latency=128ms text=and to work tomorrow.",
+    "2026-03-13 21:20:23 [error] tts_manager:local playback_failed - TTS playback failed | No audio was received from edge-tts for voice 'en-US-JennyNeural'. This usually means the voice locale is incompatible with the input text.",
+    "2026-03-13 21:20:27 asr final latency=291ms text=Thank you.",
+    "2026-03-13 21:20:27 [error] tts_manager:local playback_failed - TTS playback failed | No audio was received from edge-tts for voice 'en-US-JennyNeural'. This usually means the voice locale is incompatible with the input text.",
+    "2026-03-13 21:20:32 [router] translation_skipped source=remote utterance_id=de0dc98fa83a4e9db7d0a2f03e68c8a4 revision=1",
+    "2026-03-13 21:20:32 asr partial latency=299ms text=going to work.",
+    "2026-03-13 21:20:32 [router] translation_skipped source=remote utterance_id=de0dc98fa83a4e9db7d0a2f03e68c8a4 revision=2",
+    "2026-03-13 21:20:32 asr partial latency=130ms text=I'm going to work.",
+    "2026-03-13 21:20:33 [router] translation_skipped source=remote utterance_id=de0dc98fa83a4e9db7d0a2f03e68c8a4 revision=3",
+    "2026-03-13 21:20:33 asr partial latency=125ms text=I'm going to work to",
+    "2026-03-13 21:20:33 [router] translation_skipped source=remote utterance_id=de0dc98fa83a4e9db7d0a2f03e68c8a4 revision=4",
+    "2026-03-13 21:20:33 asr partial latency=125ms text=I'm going to work tomorrow.",
+    "2026-03-13 21:20:33 [router] translation_skipped source=remote utterance_id=de0dc98fa83a4e9db7d0a2f03e68c8a4 revision=5",
+    "2026-03-13 21:20:33 asr partial latency=132ms text=I'm going to work tomorrow.",
+    "2026-03-13 21:20:33 [router] translation_skipped source=remote utterance_id=de0dc98fa83a4e9db7d0a2f03e68c8a4 revision=6",
+    "2026-03-13 21:20:33 asr partial latency=125ms text=going to work tomorrow.",
+    "2026-03-13 21:20:34 asr final latency=131ms text=I'm going to work tomorrow.",
+    "2026-03-13 21:20:34 [error] tts_manager:local playback_failed - TTS playback failed | No audio was received from edge-tts for voice 'en-US-JennyNeural'. This usually means the voice locale is incompatible with the input text.",
+    "2026-03-13 21:20:36 [router] translation_skipped source=remote utterance_id=bf1b443078634e3c86ee5b1bfd7374a5 revision=1",
+    "2026-03-13 21:20:36 asr partial latency=137ms text=bit deep.",
+    "2026-03-13 21:20:36 [router] translation_skipped source=remote utterance_id=bf1b443078634e3c86ee5b1bfd7374a5 revision=2",
+    "2026-03-13 21:20:36 asr partial latency=169ms text=bit late.",
+    "2026-03-13 21:20:36 [router] translation_skipped source=remote utterance_id=bf1b443078634e3c86ee5b1bfd7374a5 revision=3",
+    "2026-03-13 21:20:36 asr partial latency=123ms text=It's a little delay.",
+    "2026-03-13 21:20:37 asr partial latency=128ms text=It's a little delay and it's like.",
+    "2026-03-13 21:20:37 [router] translation_skipped source=remote utterance_id=bf1b443078634e3c86ee5b1bfd7374a5 revision=5",
+    "2026-03-13 21:20:37 asr partial latency=130ms text=It's a little delay and then",
+    "2026-03-13 21:20:37 asr partial latency=129ms text=It's a little delay and then and then",
+    "2026-03-13 21:20:37 [router] translation_skipped source=remote utterance_id=bf1b443078634e3c86ee5b1bfd7374a5 revision=7",
+    "2026-03-13 21:20:37 asr partial latency=130ms text=delay and then and then franzed,",
+    "2026-03-13 21:20:38 asr final latency=136ms text=It's a little delay and then and then franzed,",
+    "2026-03-13 21:20:38 [error] tts_manager:local playback_failed - TTS playback failed | No audio was received from edge-tts for voice 'en-US-JennyNeural'. This usually means the voice locale is incompatible with the input text.",
+    "2026-03-13 21:20:41 [router] translation_skipped source=remote utterance_id=190385590ed04b2e8e676fb52399f5c6 revision=1",
+    "2026-03-13 21:20:41 asr partial latency=283ms text=enough",
+    "2026-03-13 21:20:41 [router] translation_skipped source=remote utterance_id=190385590ed04b2e8e676fb52399f5c6 revision=2",
+    "2026-03-13 21:20:41 asr partial latency=125ms text=enough",
+    "2026-03-13 21:20:42 asr final latency=122ms text=enough",
+    "2026-03-13 21:20:42 [error] tts_manager:local playback_failed - TTS playback failed | No audio was received from edge-tts for voice 'en-US-JennyNeural'. This usually means the voice locale is incompatible with the input text.",
+    "2026-03-13 21:20:50 [router] translation_skipped source=remote utterance_id=cc1bca9586654dab9085028bf570d5d3 revision=1",
+    "2026-03-13 21:20:50 asr partial latency=385ms text=is really, eh."
+  ],
+  "config_snapshot": {
+    "audio": {
+      "meeting_in": "Windows WASAPI::CABLE Output (VB-Audio Virtual Cable)",
+      "microphone_in": "Windows WASAPI::耳機 (WH-1000XM5)",
+      "speaker_out": "Windows WASAPI::耳機 (WH-1000XM5)",
+      "meeting_out": "Windows WASAPI::CABLE Input (VB-Audio Virtual Cable)",
+      "meeting_in_gain": 1.0,
+      "microphone_in_gain": 1.0,
+      "speaker_out_volume": 0.39,
+      "meeting_out_volume": 1.0
+    },
+    "direction": {
+      "mode": "bidirectional"
+    },
+    "language": {
+      "meeting_source": "en",
+      "meeting_target": "zh-TW",
+      "local_source": "zh-TW",
+      "local_target": "en"
+    },
+    "asr": {
+      "engine": "faster_whisper",
+      "model": "distil-large-v3",
+      "device": "cuda",
+      "compute_type": "float16",
+      "beam_size": 1,
+      "condition_on_previous_text": true,
+      "vad": {
+        "enabled": true,
+        "min_speech_duration_ms": 160,
+        "min_silence_duration_ms": 450,
+        "max_speech_duration_s": 10.0,
+        "speech_pad_ms": 300,
+        "rms_threshold": 0.03
+      },
+      "streaming": {
+        "partial_interval_ms": 250,
+        "partial_history_seconds": 2,
+        "final_history_seconds": 4
+      }
+    },
+    "llm": {
+      "backend": "lm_studio",
+      "base_url": "http://127.0.0.1:1234",
+      "model": "hy-mt1.5-7b",
+      "temperature": 0.1,
+      "top_p": 0.8,
+      "request_timeout_sec": 15,
+      "sliding_window": {
+        "enabled": true,
+        "trigger_tokens": 18,
+        "max_context_items": 6
+      },
+      "profiles": {
+        "live_caption_fast": {
+          "name": "live_caption_fast",
+          "prompt_style": "literal",
+          "context_items": 4,
+          "partial_trigger_tokens": 18,
+          "max_tokens": 256,
+          "preserve_terms": true,
+          "naturalize_tone": false,
+          "allow_subject_completion": false
+        },
+        "live_caption_stable": {
+          "name": "live_caption_fast",
+          "prompt_style": "literal",
+          "context_items": 4,
+          "partial_trigger_tokens": 18,
+          "max_tokens": 256,
+          "preserve_terms": true,
+          "naturalize_tone": false,
+          "allow_subject_completion": false
+        },
+        "speech_output_natural": {
+          "name": "live_caption_fast",
+          "prompt_style": "literal",
+          "context_items": 4,
+          "partial_trigger_tokens": 18,
+          "max_tokens": 256,
+          "preserve_terms": true,
+          "naturalize_tone": false,
+          "allow_subject_completion": false
+        },
+        "technical_meeting": {
+          "name": "live_caption_fast",
+          "prompt_style": "literal",
+          "context_items": 4,
+          "partial_trigger_tokens": 18,
+          "max_tokens": 256,
+          "preserve_terms": true,
+          "naturalize_tone": false,
+          "allow_subject_completion": false
+        }
+      },
+      "caption_profile": "live_caption_fast",
+      "speech_profile": "speech_output_natural"
+    },
+    "tts": {
+      "engine": "edge_tts",
+      "executable_path": "",
+      "model_path": "",
+      "config_path": "",
+      "voice_name": "zh-TW-HsiaoChenNeural",
+      "speaker_id": 0,
+      "length_scale": 1.0,
+      "noise_scale": 0.667,
+      "noise_w": 0.6,
+      "sample_rate": 24000
+    },
+    "meeting_tts": {
+      "engine": "edge_tts",
+      "executable_path": "",
+      "model_path": "",
+      "config_path": "",
+      "voice_name": "en-US-JennyNeural",
+      "speaker_id": 0,
+      "length_scale": 0.9,
+      "noise_scale": 0.667,
+      "noise_w": 0.6,
+      "sample_rate": 24000
+    },
+    "local_tts": {
+      "engine": "edge_tts",
+      "executable_path": "",
+      "model_path": "",
+      "config_path": "",
+      "voice_name": "zh-TW-HsiaoChenNeural",
+      "speaker_id": 0,
+      "length_scale": 0.9,
+      "noise_scale": 0.667,
+      "noise_w": 0.6,
+      "sample_rate": 24000
+    },
+    "tts_channels": {
+      "local": {
+        "engine": "edge_tts",
+        "executable_path": null,
+        "model_path": null,
+        "config_path": null,
+        "voice_name": "en-US-JennyNeural",
+        "speaker_id": null,
+        "length_scale": null,
+        "noise_scale": null,
+        "noise_w": 0.6,
+        "sample_rate": 24000
+      },
+      "remote": {
+        "engine": "edge_tts",
+        "executable_path": null,
+        "model_path": null,
+        "config_path": null,
+        "voice_name": "zh-TW-HsiaoChenNeural",
+        "speaker_id": null,
+        "length_scale": null,
+        "noise_scale": null,
+        "noise_w": 0.6,
+        "sample_rate": 24000
+      }
+    },
+    "runtime": {
+      "sample_rate": 24000,
+      "chunk_ms": 40,
+      "asr_queue_maxsize": 24,
+      "llm_queue_maxsize": 8,
+      "tts_queue_maxsize": 8,
+      "translation_exact_cache_size": 256,
+      "translation_prefix_min_delta_chars": 6,
+      "tts_cancel_pending_on_new_final": true,
+      "tts_drop_backlog_threshold": 6,
+      "local_echo_guard_enabled": true,
+      "local_echo_guard_resume_delay_ms": 300,
+      "remote_echo_guard_resume_delay_ms": 300,
+      "config_schema_version": 2,
+      "last_migration_note": "",
+      "warmup_on_start": true
+    },
+    "health_last_success": {
+      "asr": "",
+      "llm": "",
+      "tts": ""
+    }
+  }
+}
