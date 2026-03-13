@@ -50,7 +50,7 @@ class StreamingAsr:
         self._partial_interval_ms = max(200, int(partial_interval_ms))
         self._partial_history_seconds = max(1, int(partial_history_seconds))
         self._final_history_seconds = max(1, int(final_history_seconds))
-        self._queue: Queue[tuple[np.ndarray, float]] = Queue(maxsize=max(16, queue_maxsize))
+        self._queue: Queue[tuple[np.ndarray, float]] = Queue(maxsize=max(4, queue_maxsize))
         self._stop_event = Event()
         self._thread: Thread | None = None
         self._on_event = on_event

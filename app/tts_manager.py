@@ -48,11 +48,11 @@ class TTSManager:
         self._on_play_end = on_play_end
         self._maxsize_by_channel = {
             "local": max(
-                8,
+                4,
                 int(getattr(self._config.runtime, "tts_queue_maxsize_local", self._config.runtime.tts_queue_maxsize)),
             ),
             "remote": max(
-                8,
+                4,
                 int(getattr(self._config.runtime, "tts_queue_maxsize_remote", self._config.runtime.tts_queue_maxsize)),
             ),
         }

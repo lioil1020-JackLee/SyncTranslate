@@ -223,7 +223,7 @@ class ASRManager:
             value = int(getattr(runtime, "asr_queue_maxsize_remote", runtime.asr_queue_maxsize))
         else:
             value = int(getattr(runtime, "asr_queue_maxsize_local", runtime.asr_queue_maxsize))
-        return max(8, value)
+        return max(4, value)
 
     def _resolve_model_for_language(self, model: str, language: str) -> str:
         normalized_model = (model or "").strip()

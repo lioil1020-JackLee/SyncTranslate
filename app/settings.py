@@ -285,17 +285,17 @@ runtime:
     sample_rate: 24000
     chunk_ms: 40
     asr_queue_maxsize: 16
-    llm_queue_maxsize: 8
-    tts_queue_maxsize: 8
+    llm_queue_maxsize: 4
+    tts_queue_maxsize: 6
     translation_exact_cache_size: 256
     translation_prefix_min_delta_chars: 6
     tts_cancel_pending_on_new_final: true
     tts_cancel_policy: all_pending
     tts_max_wait_ms: 2500
     tts_max_chars: 140
-    tts_drop_backlog_threshold: 3
+    tts_drop_backlog_threshold: 4
     llm_streaming_tokens: 16
-    max_pipeline_latency_ms: 2200
+    max_pipeline_latency_ms: 2000
     local_echo_guard_enabled: true
     local_echo_guard_resume_delay_ms: 300
     remote_echo_guard_resume_delay_ms: 300
@@ -304,10 +304,10 @@ runtime:
     warmup_on_start: true
     asr_queue_maxsize_chinese: 16
     asr_queue_maxsize_english: 12
-    llm_queue_maxsize_zh_to_en: 8
-    llm_queue_maxsize_en_to_zh: 8
-    tts_queue_maxsize_chinese: 8
-    tts_queue_maxsize_english: 8
+    llm_queue_maxsize_zh_to_en: 4
+    llm_queue_maxsize_en_to_zh: 4
+    tts_queue_maxsize_chinese: 6
+    tts_queue_maxsize_english: 6
 health_last_success:
     asr: ''
     llm: ''

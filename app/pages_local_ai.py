@@ -499,9 +499,9 @@ class LocalAiPage(QWidget):
         self.asr_temperature_fallback_remote_edit = QLineEdit()
         self.asr_temperature_fallback_remote_edit.setPlaceholderText("0.0,0.2,0.4")
         self.asr_queue_local_spin = QSpinBox()
-        self.asr_queue_local_spin.setRange(8, 512)
+        self.asr_queue_local_spin.setRange(4, 512)
         self.asr_queue_remote_spin = QSpinBox()
-        self.asr_queue_remote_spin.setRange(8, 512)
+        self.asr_queue_remote_spin.setRange(4, 512)
         self._set_dual_field_style(
             self.asr_model_combo,
             self.remote_asr_model_combo,
@@ -630,9 +630,9 @@ class LocalAiPage(QWidget):
         self.remote_llm_context_items_spin = QSpinBox()
         self.remote_llm_context_items_spin.setRange(2, 20)
         self.llm_queue_local_spin = QSpinBox()
-        self.llm_queue_local_spin.setRange(8, 512)
+        self.llm_queue_local_spin.setRange(4, 512)
         self.llm_queue_remote_spin = QSpinBox()
-        self.llm_queue_remote_spin.setRange(8, 512)
+        self.llm_queue_remote_spin.setRange(4, 512)
         self._set_dual_field_style(
             self.llm_model_combo,
             self.remote_llm_model_combo,
@@ -882,9 +882,9 @@ class LocalAiPage(QWidget):
             ),
         )
         self.tts_queue_local_spin = QSpinBox()
-        self.tts_queue_local_spin.setRange(8, 512)
+        self.tts_queue_local_spin.setRange(4, 512)
         self.tts_queue_remote_spin = QSpinBox()
-        self.tts_queue_remote_spin.setRange(8, 512)
+        self.tts_queue_remote_spin.setRange(4, 512)
         self._set_dual_field_style(self.tts_queue_local_spin, self.tts_queue_remote_spin)
         form.addRow("TTS 佇列", self._build_dual_field_row(self.tts_queue_local_spin, self.tts_queue_remote_spin))
         group.setLayout(form)
