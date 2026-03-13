@@ -82,14 +82,18 @@ class MainWindow(QMainWindow):
                 min-height: 40px;
                 font-size: 12pt;
                 padding: 6px 12px;
-                color: #222;
+                color: #ddd;
                 background: transparent;
                 border: 1px solid transparent;
                 border-radius: 6px;
                 margin: 4px 6px;
             }
             QTabBar::tab:hover {
-                background: rgba(0,0,0,0.04);
+                background: rgba(255,255,255,0.03);
+            }
+            QTabBar::tab:!selected {
+                color: #cfcfcf;
+                background: rgba(255,255,255,0.01);
             }
             QTabBar::tab:selected {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #2b78d6, stop:1 #1a5fb0);
