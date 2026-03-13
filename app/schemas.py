@@ -198,6 +198,7 @@ class TtsChannelsConfig:
 class RuntimeConfig:
     sample_rate: int = 48000
     chunk_ms: int = 100
+    asr_pre_roll_ms: int = 500
     asr_queue_maxsize_local: int = 128
     asr_queue_maxsize_remote: int = 128
     llm_queue_maxsize_local: int = 32

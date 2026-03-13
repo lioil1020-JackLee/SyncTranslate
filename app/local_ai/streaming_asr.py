@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from collections import deque
 from queue import Empty, Full, Queue
 from threading import Event, Lock, Thread
 from typing import Callable
@@ -41,15 +42,18 @@ class StreamingAsr:
         partial_interval_ms: int = 400,
         partial_history_seconds: int = 8,
         final_history_seconds: int = 20,
+        pre_roll_ms: int = 500,
         queue_maxsize: int = 128,
         on_event: Callable[[AsrEvent], None] | None = None,
         on_debug: Callable[[str], None] | None = None,
     ) -> None:
         self._engine = engine
         self._vad = vad
-        self._partial_interval_ms = max(200, int(partial_interval_ms))
+        # Keep partial decode conservative to avoid native decoder overload.
+        self._partial_interval_ms = max(700, int(partial_interval_ms))
         self._partial_history_seconds = max(1, int(partial_history_seconds))
         self._final_history_seconds = max(1, int(final_history_seconds))
+        self._pre_roll_ms = max(0, int(pre_roll_ms))
         self._queue: Queue[tuple[np.ndarray, float]] = Queue(maxsize=max(4, queue_maxsize))
         self._stop_event = Event()
         self._thread: Thread | None = None
@@ -66,6 +70,12 @@ class StreamingAsr:
         self._overflow_count = 0
         self._last_overflow_report_ms = 0
         self._drop_partial_until_final = False
+        self._partial_cooldown_until_ms = 0
+        self._partial_disabled_for_session = False
+        self._pre_roll_chunks: deque[np.ndarray] = deque()
+        self._pre_roll_sample_count = 0
+        self._pre_roll_sample_rate = 16000
+        self._in_speech_segment = False
         self._partial_count = 0
         self._final_count = 0
         self._last_debug = ""
@@ -97,6 +107,12 @@ class StreamingAsr:
         self._overflow_count = 0
         self._last_overflow_report_ms = 0
         self._drop_partial_until_final = False
+        self._partial_cooldown_until_ms = 0
+        self._partial_disabled_for_session = False
+        self._pre_roll_chunks.clear()
+        self._pre_roll_sample_count = 0
+        self._pre_roll_sample_rate = 16000
+        self._in_speech_segment = False
         self._partial_count = 0
         self._final_count = 0
         self._last_debug = ""
@@ -136,6 +152,11 @@ class StreamingAsr:
                 self._debug(f"asr queue overflow: dropped oldest chunk x{self._overflow_count}")
                 self._last_overflow_report_ms = now_ms
             self._drop_partial_until_final = True
+            # Cool down partial decoding after overflow to reduce native ASR load spikes.
+            self._partial_cooldown_until_ms = max(self._partial_cooldown_until_ms, now_ms + 8000)
+            if not self._partial_disabled_for_session:
+                self._partial_disabled_for_session = True
+                self._debug("asr safety mode: disable partial decode for this session after overflow")
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
@@ -166,6 +187,8 @@ class StreamingAsr:
         if sample_rate <= 0:
             return
         now_ms = int(time.monotonic() * 1000)
+        if not self._in_speech_segment:
+            self._append_pre_roll_chunk(chunk=chunk, sample_rate=sample_rate)
         decision = self._vad.update(chunk, sample_rate)
         chunk_ms = int(decision.chunk_ms)
         self._segment_sample_rate = int(sample_rate)
@@ -174,7 +197,12 @@ class StreamingAsr:
         self._segment_end_ms = now_ms
 
         if decision.speech_active:
-            self._segment_chunks.append(chunk)
+            just_started = False
+            if not self._in_speech_segment:
+                just_started = self._prime_segment_from_pre_roll(now_ms=now_ms, sample_rate=sample_rate)
+                self._in_speech_segment = True
+            if not just_started:
+                self._segment_chunks.append(chunk)
             segment_audio_ms = self._segment_audio_ms()
             should_force_final = (
                 self._queue.qsize() >= self._force_final_queue_size
@@ -189,7 +217,9 @@ class StreamingAsr:
                 self._reset_segment()
                 return
             should_emit_partial = (
-                (not self._drop_partial_until_final)
+                (not self._partial_disabled_for_session)
+                and (not self._drop_partial_until_final)
+                and now_ms >= self._partial_cooldown_until_ms
                 and self._queue.qsize() == 0
                 and now_ms - self._last_partial_ms >= self._partial_interval_ms
             )
@@ -198,6 +228,10 @@ class StreamingAsr:
                 self._last_partial_ms = now_ms
 
         if decision.finalize:
+            # Include the transition chunk (speech→silence boundary) so the very last
+            # words are not silently dropped before final transcription.
+            if chunk.size > 0:
+                self._segment_chunks.append(chunk)
             self._emit_final(now_ms=now_ms)
             self._reset_segment()
 
@@ -214,10 +248,15 @@ class StreamingAsr:
             text = self._engine.transcribe_partial(audio=audio, sample_rate=self._segment_sample_rate) or ""
         except Exception as exc:
             self._debug(f"partial asr failed: {exc}")
+            self._partial_disabled_for_session = True
+            self._debug("asr safety mode: disable partial decode after partial failure")
             return
         if not text.strip():
             return
         latency_ms = int((time.perf_counter() - start) * 1000)
+        if latency_ms >= 1500:
+            self._partial_disabled_for_session = True
+            self._debug("asr safety mode: disable partial decode after high partial latency")
         self._on_event(
             AsrEvent(
                 text=text.strip(),
@@ -251,6 +290,10 @@ class StreamingAsr:
             )
             return
         latency_ms = int((time.perf_counter() - start) * 1000)
+        if latency_ms >= 1500:
+            now_ms = int(time.monotonic() * 1000)
+            self._partial_cooldown_until_ms = max(self._partial_cooldown_until_ms, now_ms + 6000)
+            self._debug(f"asr partial backoff: latency={latency_ms}ms")
         if not text.strip():
             return
         self._on_event(
@@ -290,3 +333,33 @@ class StreamingAsr:
         self._segment_end_ms = 0
         self._last_partial_ms = 0
         self._drop_partial_until_final = False
+        self._in_speech_segment = False
+
+    def _append_pre_roll_chunk(self, *, chunk: np.ndarray, sample_rate: float) -> None:
+        if self._pre_roll_ms <= 0:
+            return
+        sr = max(1, int(sample_rate))
+        if sr != self._pre_roll_sample_rate:
+            self._pre_roll_chunks.clear()
+            self._pre_roll_sample_count = 0
+            self._pre_roll_sample_rate = sr
+        copied = chunk.copy()
+        self._pre_roll_chunks.append(copied)
+        self._pre_roll_sample_count += int(copied.shape[0])
+        max_samples = int(sr * self._pre_roll_ms / 1000)
+        while self._pre_roll_chunks and self._pre_roll_sample_count > max_samples:
+            dropped = self._pre_roll_chunks.popleft()
+            self._pre_roll_sample_count -= int(dropped.shape[0])
+
+    def _prime_segment_from_pre_roll(self, *, now_ms: int, sample_rate: float) -> bool:
+        if not self._pre_roll_chunks:
+            return False
+        sr = max(1, int(sample_rate))
+        self._segment_chunks = list(self._pre_roll_chunks)
+        sample_count = self._pre_roll_sample_count
+        pre_roll_ms = int(sample_count * 1000 / sr)
+        self._segment_start_ms = max(0, now_ms - pre_roll_ms)
+        self._pre_roll_chunks.clear()
+        self._pre_roll_sample_count = 0
+        self._pre_roll_sample_rate = sr
+        return True

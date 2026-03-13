@@ -29,6 +29,7 @@ diagnostics_*.txt
 # Local runtime assets
 models/
 tools/
+logs/
 
 # IDE / OS
 .DS_Store

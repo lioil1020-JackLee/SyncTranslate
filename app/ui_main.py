@@ -18,6 +18,11 @@ from PySide6.QtGui import QCloseEvent, QGuiApplication, QIcon, QShowEvent
 from PySide6.QtWidgets import QMainWindow, QMessageBox, QScrollArea, QSizePolicy, QTabWidget, QWidget
 import numpy as np
 
+try:
+    from opencc import OpenCC  # type: ignore
+except Exception:
+    OpenCC = None
+
 from app.audio_capture import AudioCapture
 from app.audio_playback import AudioPlayback
 from app.app_bootstrap import build_pipeline_bundle
@@ -44,6 +49,12 @@ from app.settings import load_config, save_config
 from app.transcript_buffer import TranscriptBuffer
 
 
+if OpenCC is not None:
+    _S2T_CONVERTER = OpenCC("s2twp")
+else:
+    _S2T_CONVERTER = None
+
+
 class MainWindow(QMainWindow):
     def __init__(self, config_path: str) -> None:
         super().__init__()
@@ -66,6 +77,7 @@ class MainWindow(QMainWindow):
         self._health_check_started_at = 0.0
         self._health_check_timeout_sec = 45.0
         self._session_action_running = False
+        self._session_action_name = ""
         self._session_action_queue: Queue[tuple[str, bool, object]] = Queue()
         self._pending_live_apply = False
 
@@ -219,6 +231,12 @@ class MainWindow(QMainWindow):
         self.live_caption_page.set_start_enabled(True)
         self.live_caption_page.set_start_label("停止" if is_running else "開始")
         self.live_caption_page.set_direction_controls_enabled(not is_running and not self._session_action_running)
+        self._update_live_panel_statuses(
+            remote_original_active=bool(self._remote_line_cache),
+            remote_translated_active=bool(self._remote_translated_line_cache),
+            local_original_active=bool(self._local_line_cache),
+            local_translated_active=bool(self._local_translated_line_cache),
+        )
     def _on_audio_routing_changed(self) -> None:
         self.validate_current_routes()
         self._apply_audio_route_levels_from_ui()
@@ -312,6 +330,12 @@ class MainWindow(QMainWindow):
         self._remote_translated_line_cache = []
         self._local_line_cache = []
         self._local_translated_line_cache = []
+        self._update_live_panel_statuses(
+            remote_original_active=False,
+            remote_translated_active=False,
+            local_original_active=False,
+            local_translated_active=False,
+        )
         self.statusBar().showMessage("字幕已清空")
 
     def closeEvent(self, event: QCloseEvent) -> None:
@@ -464,6 +488,78 @@ class MainWindow(QMainWindow):
             self.live_caption_page.set_local_translated_lines(local_translated_lines)
             self._local_translated_line_cache = local_translated_lines
 
+        self._update_live_panel_statuses(
+            remote_original_active=bool(remote_original_lines),
+            remote_translated_active=bool(remote_translated_lines),
+            local_original_active=bool(local_original_lines),
+            local_translated_active=bool(local_translated_lines),
+        )
+
+    def _resolve_active_sources(self) -> set[str]:
+        if self._session_action_running and self._session_action_name == "start":
+            mode = self.live_caption_page.selected_mode()
+            if mode == "meeting_to_local":
+                return {"remote"}
+            if mode == "local_to_meeting":
+                return {"local"}
+            if mode == "bidirectional":
+                return {"local", "remote"}
+            return set()
+
+        if not self.session_controller or not self.session_controller.is_running() or not self.audio_router:
+            return set()
+
+        try:
+            stats = self.audio_router.stats()
+            return set(stats.active_sources)
+        except Exception:
+            return set()
+
+    def _resolve_source_ready(self) -> dict[str, bool]:
+        if not self.audio_router:
+            return {"local": False, "remote": False}
+        try:
+            stats = self.audio_router.stats()
+            ready: dict[str, bool] = {"local": False, "remote": False}
+            for source in ("local", "remote"):
+                capture = stats.capture.get(source) or {}
+                running = bool(capture.get("running", False))
+                frame_count = int(capture.get("frame_count", 0) or 0)
+                ready[source] = running and frame_count > 0
+            return ready
+        except Exception:
+            return {"local": False, "remote": False}
+
+    def _update_live_panel_statuses(
+        self,
+        *,
+        remote_original_active: bool,
+        remote_translated_active: bool,
+        local_original_active: bool,
+        local_translated_active: bool,
+    ) -> None:
+        active_sources = self._resolve_active_sources()
+        ready_sources = self._resolve_source_ready()
+        is_preparing = self._session_action_running and self._session_action_name == "start"
+
+        remote_enabled = "remote" in active_sources
+        local_enabled = "local" in active_sources
+
+        def _status(enabled: bool, source_ready: bool) -> str:
+            if not enabled:
+                return "idle"
+            if is_preparing or not source_ready:
+                return "preparing"
+            # Once session is running and source is active, user can start speaking.
+            return "running"
+
+        self.live_caption_page.set_panel_statuses(
+            remote_original=_status(remote_enabled, bool(ready_sources.get("remote", False))),
+            remote_translated=_status(remote_enabled, bool(ready_sources.get("remote", False))),
+            local_original=_status(local_enabled, bool(ready_sources.get("local", False))),
+            local_translated=_status(local_enabled, bool(ready_sources.get("local", False))),
+        )
+
     def _get_speaker_output_device(self) -> str:
         return self.audio_routing_page.selected_audio_routes().speaker_out
 
@@ -493,6 +589,11 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _format_transcript_line(text: str, is_final: bool) -> str:
+        if _S2T_CONVERTER is not None:
+            try:
+                text = _S2T_CONVERTER.convert(text)
+            except Exception:
+                pass
         state = "final" if is_final else "partial"
         return f"[{state}] {text}"
 
@@ -677,6 +778,7 @@ class MainWindow(QMainWindow):
         if not self.session_controller or self._session_action_running:
             return
         self._session_action_running = True
+        self._session_action_name = action
         self.live_caption_page.set_start_enabled(False)
         if action == "stop":
             self.live_caption_page.set_start_label("停止中...")
@@ -684,6 +786,12 @@ class MainWindow(QMainWindow):
         else:
             self.live_caption_page.set_start_label("啟動中...")
             self.statusBar().showMessage("正在啟動 session...")
+            self._update_live_panel_statuses(
+                remote_original_active=False,
+                remote_translated_active=False,
+                local_original_active=False,
+                local_translated_active=False,
+            )
 
         def _worker() -> None:
             try:
@@ -713,6 +821,7 @@ class MainWindow(QMainWindow):
             return
 
         self._session_action_running = False
+        self._session_action_name = ""
         if not ok:
             message = str(payload)
             self._report_error(f"session_{action} failed: {message}")

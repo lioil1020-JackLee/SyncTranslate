@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import io
-import tempfile
 from threading import Lock
 import wave
 from dataclasses import dataclass, field
-from pathlib import Path
 
 import numpy as np
 
@@ -38,7 +36,10 @@ class FasterWhisperEngine:
     def transcribe_final(self, audio: np.ndarray, sample_rate: int) -> str:
         if audio.size == 0:
             return ""
-        text = self._transcribe(audio=audio, sample_rate=sample_rate, vad_filter=True)
+        # Disable Whisper's internal VAD for final transcription: our custom VAD already
+        # segmented the audio.  vad_filter=True re-scans and can clip trailing words that
+        # fall just below the RMS threshold at utterance end.
+        text = self._transcribe(audio=audio, sample_rate=sample_rate, vad_filter=False)
         return text.strip()
 
     def warmup(self) -> None:
@@ -64,7 +65,7 @@ class FasterWhisperEngine:
     def _transcribe(self, *, audio: np.ndarray, sample_rate: int, vad_filter: bool) -> str:
         model = self._get_model()
         wav_audio, wav_sample_rate = self._prepare_audio(audio=audio, sample_rate=sample_rate)
-        wav_path = self._write_temp_wav(audio=wav_audio, sample_rate=wav_sample_rate)
+        audio_bio = self._encode_wav_bytes(audio=wav_audio, sample_rate=wav_sample_rate)
         try:
             kwargs: dict[str, object] = {
                 "beam_size": max(1, int(self.beam_size)),
@@ -76,21 +77,17 @@ class FasterWhisperEngine:
             normalized_language = _normalize_lang(self.language)
             if normalized_language:
                 kwargs["language"] = normalized_language
-            # Native decode/inference stack can crash under concurrent calls.
-            # Serialize transcribe to favor stability over peak throughput.
+            # Pass audio as an in-memory BinaryIO to avoid temp-file I/O while
+            # still using the stable BinaryIO code path in faster_whisper.
+            # Serialize transcribe to prevent concurrent native decoder crashes.
             with _TRANSCRIBE_LOCK:
-                segments, _ = model.transcribe(str(wav_path), **kwargs)
+                segments, _ = model.transcribe(audio_bio, **kwargs)
             return "".join(str(getattr(seg, "text", "")) for seg in segments).strip()
         except RuntimeError as exc:
             if self._should_fallback_to_cpu(exc):
                 self._fallback_to_cpu(str(exc))
                 return self._transcribe(audio=audio, sample_rate=sample_rate, vad_filter=vad_filter)
             raise
-        finally:
-            try:
-                wav_path.unlink(missing_ok=True)
-            except Exception:
-                pass
 
     @staticmethod
     def _prepare_audio(*, audio: np.ndarray, sample_rate: int) -> tuple[np.ndarray, int]:
@@ -98,6 +95,14 @@ class FasterWhisperEngine:
         if mono.ndim == 2 and mono.shape[1] > 1:
             mono = mono[:, :1]
         mono = mono.reshape(-1).astype(np.float32, copy=False)
+        if mono.size > 0:
+            # Remove DC offset and normalize low-volume input to improve ASR recall.
+            mono = mono - float(np.mean(mono))
+            rms = float(np.sqrt(np.mean(np.square(mono)))) if mono.size else 0.0
+            if rms > 1e-6:
+                target_rms = 0.08
+                gain = min(4.0, target_rms / rms)
+                mono = np.clip(mono * gain, -1.0, 1.0)
         target_sample_rate = 16000
         if sample_rate <= 0 or sample_rate == target_sample_rate or mono.size <= 1:
             return mono, int(sample_rate if sample_rate > 0 else target_sample_rate)
@@ -110,24 +115,19 @@ class FasterWhisperEngine:
         return resampled, target_sample_rate
 
     @staticmethod
-    def _write_temp_wav(*, audio: np.ndarray, sample_rate: int) -> Path:
-        mono = audio
-        if mono.ndim == 2 and mono.shape[1] > 1:
-            mono = mono[:, :1]
-        mono = mono.reshape(-1)
+    def _encode_wav_bytes(*, audio: np.ndarray, sample_rate: int) -> io.BytesIO:
+        """Encode float32 mono PCM as WAV in-memory (no temp file)."""
+        mono = audio.reshape(-1)
         int16_data = np.clip(mono, -1.0, 1.0)
         int16_data = (int16_data * 32767.0).astype(np.int16)
-
-        data = io.BytesIO()
-        with wave.open(data, "wb") as wf:
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
             wf.setnchannels(1)
             wf.setsampwidth(2)
             wf.setframerate(sample_rate)
             wf.writeframes(int16_data.tobytes())
-
-        with tempfile.NamedTemporaryFile(prefix="synctranslate_asr_", suffix=".wav", delete=False) as fp:
-            fp.write(data.getvalue())
-            return Path(fp.name)
+        buf.seek(0)
+        return buf
 
     def _get_model(self):
         if self._model is not None:

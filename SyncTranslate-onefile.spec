@@ -1,8 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
 import os
+from PyInstaller.utils.hooks import collect_data_files
 
 
-datas = []
+datas = collect_data_files("opencc")
 icon = None
 
 if os.name == "nt" and os.path.exists("lioil.ico"):
@@ -24,10 +25,9 @@ a = Analysis(
         "edge_tts",
         "faster_whisper",
         "miniaudio",
+        "opencc",
         "soundcard",
         "sounddevice",
-        "pycaw.pycaw",
-        "comtypes",
     ],
     hookspath=[],
     hooksconfig={},

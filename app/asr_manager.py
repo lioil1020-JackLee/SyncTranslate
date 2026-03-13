@@ -173,6 +173,7 @@ class ASRManager:
         stream_cfg = asr_cfg.streaming
         model_name = self._resolve_model_for_language(asr_cfg.model, language)
         queue_maxsize = self._asr_queue_maxsize_for_language(language)
+        pre_roll_ms = int(getattr(runtime_cfg, "asr_pre_roll_ms", 500))
 
         stream = StreamingAsr(
             engine=FasterWhisperEngine(
@@ -198,6 +199,7 @@ class ASRManager:
             partial_interval_ms=stream_cfg.partial_interval_ms,
             partial_history_seconds=stream_cfg.partial_history_seconds,
             final_history_seconds=stream_cfg.final_history_seconds,
+            pre_roll_ms=pre_roll_ms,
             queue_maxsize=queue_maxsize,
             on_debug=self._on_error,
         )
@@ -223,13 +225,28 @@ class ASRManager:
             value = int(getattr(runtime, "asr_queue_maxsize_remote", runtime.asr_queue_maxsize))
         else:
             value = int(getattr(runtime, "asr_queue_maxsize_local", runtime.asr_queue_maxsize))
-        return max(4, value)
+        # Avoid too-small queues that can trigger aggressive overflow churn.
+        return max(24, value)
 
     def _resolve_model_for_language(self, model: str, language: str) -> str:
         normalized_model = (model or "").strip()
         normalized_lang = (language or "").strip().lower()
         if "-" in normalized_lang:
             normalized_lang = normalized_lang.split("-", 1)[0]
+        low_quality_models_for_zh = {
+            "tiny",
+            "tiny.en",
+            "base",
+            "base.en",
+            "small",
+            "small.en",
+        }
+        if normalized_lang in {"zh", "ja"} and normalized_model in low_quality_models_for_zh:
+            if self._on_error:
+                self._on_error(
+                    f"asr model quality fallback: {normalized_model} is weak for {normalized_lang}, use large-v3 instead"
+                )
+            return "large-v3"
         if normalized_model == "distil-large-v3" and normalized_lang in {"zh", "ja"}:
             if self._on_error:
                 self._on_error(
@@ -293,6 +310,7 @@ class ASRManager:
             "runtime": {
                 "asr_queue_maxsize_local": self._config.runtime.asr_queue_maxsize_local,
                 "asr_queue_maxsize_remote": self._config.runtime.asr_queue_maxsize_remote,
+                "asr_pre_roll_ms": int(getattr(self._config.runtime, "asr_pre_roll_ms", 500)),
             },
         }
         raw = json.dumps(payload, sort_keys=True, ensure_ascii=True)

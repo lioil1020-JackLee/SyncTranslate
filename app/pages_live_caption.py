@@ -5,6 +5,18 @@ from typing import Callable
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QComboBox, QGridLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QTextEdit, QVBoxLayout, QWidget
 
+_STATUS_TEXT = {
+    "idle": "未啟動",
+    "preparing": "準備中",
+    "running": "已啟動",
+}
+
+_STATUS_DOT = {
+    "idle": "#6b7280",
+    "preparing": "#f59e0b",
+    "running": "#16a34a",
+}
+
 from app.schemas import AppConfig
 
 _LANG_CHOICES: list[tuple[str, str, str]] = [
@@ -68,6 +80,10 @@ class LiveCaptionPage(QWidget):
         self.remote_translated_label = QLabel("\u9060\u7aef\u7ffb\u8b6f")
         self.local_original_label = QLabel("\u672c\u5730\u539f\u6587")
         self.local_translated_label = QLabel("\u672c\u5730\u7ffb\u8b6f")
+        self.remote_original_status = QLabel()
+        self.remote_translated_status = QLabel()
+        self.local_original_status = QLabel()
+        self.local_translated_status = QLabel()
         for editor in (
             self.remote_original,
             self.remote_translated,
@@ -101,12 +117,12 @@ class LiveCaptionPage(QWidget):
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setHorizontalSpacing(6)
         grid.setVerticalSpacing(4)
-        grid.addWidget(self.remote_original_label, 0, 0)
-        grid.addWidget(self.remote_translated_label, 0, 1)
+        grid.addLayout(self._make_panel_header(self.remote_original_label, self.remote_original_status), 0, 0)
+        grid.addLayout(self._make_panel_header(self.remote_translated_label, self.remote_translated_status), 0, 1)
         grid.addWidget(self.remote_original, 1, 0)
         grid.addWidget(self.remote_translated, 1, 1)
-        grid.addWidget(self.local_original_label, 2, 0)
-        grid.addWidget(self.local_translated_label, 2, 1)
+        grid.addLayout(self._make_panel_header(self.local_original_label, self.local_original_status), 2, 0)
+        grid.addLayout(self._make_panel_header(self.local_translated_label, self.local_translated_status), 2, 1)
         grid.addWidget(self.local_original, 3, 0)
         grid.addWidget(self.local_translated, 3, 1)
         grid.setRowStretch(1, 1)
@@ -117,6 +133,12 @@ class LiveCaptionPage(QWidget):
         layout.setSpacing(4)
         layout.addLayout(top_row)
         layout.addLayout(grid)
+        self.set_panel_statuses(
+            remote_original="idle",
+            remote_translated="idle",
+            local_original="idle",
+            local_translated="idle",
+        )
 
     def apply_config(self, config: AppConfig) -> None:
         self._suspend_notify = True
@@ -150,6 +172,19 @@ class LiveCaptionPage(QWidget):
     def set_direction_controls_enabled(self, enabled: bool) -> None:
         for widget in (self.mode_combo, self.remote_lang_combo, self.local_lang_combo):
             widget.setEnabled(enabled)
+
+    def set_panel_statuses(
+        self,
+        *,
+        remote_original: str,
+        remote_translated: str,
+        local_original: str,
+        local_translated: str,
+    ) -> None:
+        self._apply_status(self.remote_original_status, remote_original)
+        self._apply_status(self.remote_translated_status, remote_translated)
+        self._apply_status(self.local_original_status, local_original)
+        self._apply_status(self.local_translated_status, local_translated)
 
     def _handle_start_clicked(self) -> None:
         if self._on_start_clicked:
@@ -222,6 +257,21 @@ class LiveCaptionPage(QWidget):
         self.remote_translated_label.setText(f"遠端翻譯（{self._language_label(remote_target)} LLM）")
         self.local_original_label.setText(f"本地原文（{self._language_label(local_source)} ASR）")
         self.local_translated_label.setText(f"本地翻譯（{self._language_label(local_target)} LLM）")
+
+    def _make_panel_header(self, title_label: QLabel, status_label: QLabel) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+        row.addWidget(title_label)
+        row.addStretch(1)
+        row.addWidget(status_label)
+        return row
+
+    @staticmethod
+    def _apply_status(label: QLabel, state: str) -> None:
+        normalized = state if state in _STATUS_TEXT else "idle"
+        color = _STATUS_DOT[normalized]
+        label.setText(f"<span style='color:{color}'>●</span> {_STATUS_TEXT[normalized]}")
 
     @staticmethod
     def _language_label(language: str) -> str:

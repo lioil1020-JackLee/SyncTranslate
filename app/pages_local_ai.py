@@ -273,6 +273,7 @@ class LocalAiPage(QWidget):
 
             self._select_combo_data(self.runtime_sample_rate_spin, config.runtime.sample_rate)
             self.runtime_chunk_spin.setValue(config.runtime.chunk_ms)
+            self.runtime_asr_pre_roll_spin.setValue(int(getattr(config.runtime, "asr_pre_roll_ms", 500)))
             self.runtime_tts_cancel_pending_check.setChecked(config.runtime.tts_cancel_pending_on_new_final)
             self._select_combo_data(self.runtime_tts_cancel_policy_combo, str(getattr(config.runtime, "tts_cancel_policy", "all_pending")))
             self.runtime_tts_max_wait_spin.setValue(int(getattr(config.runtime, "tts_max_wait_ms", 4000)))
@@ -390,6 +391,7 @@ class LocalAiPage(QWidget):
         except Exception:
             config.runtime.sample_rate = int(str(self.runtime_sample_rate_spin.currentText()).strip() or config.runtime.sample_rate)
         config.runtime.chunk_ms = self.runtime_chunk_spin.value()
+        config.runtime.asr_pre_roll_ms = self.runtime_asr_pre_roll_spin.value()
         config.runtime.tts_cancel_pending_on_new_final = self.runtime_tts_cancel_pending_check.isChecked()
         config.runtime.tts_cancel_policy = str(self.runtime_tts_cancel_policy_combo.currentData() or "all_pending")
         config.runtime.tts_max_wait_ms = self.runtime_tts_max_wait_spin.value()
@@ -686,6 +688,8 @@ class LocalAiPage(QWidget):
         self._configure_combo_popup(self.runtime_sample_rate_spin)
         self.runtime_chunk_spin = QSpinBox()
         self.runtime_chunk_spin.setRange(20, 1000)
+        self.runtime_asr_pre_roll_spin = QSpinBox()
+        self.runtime_asr_pre_roll_spin.setRange(0, 2000)
         self.runtime_tts_cancel_pending_check = QCheckBox("新句取消舊語音")
         self.runtime_tts_cancel_policy_combo = QComboBox()
         self.runtime_tts_cancel_policy_combo.addItem("取消所有未播", "all_pending")
@@ -715,6 +719,7 @@ class LocalAiPage(QWidget):
         self._configure_form_layout(form)
         form.addRow("執行取樣率", self.runtime_sample_rate_spin)
         form.addRow("音訊切片(ms)", self.runtime_chunk_spin)
+        form.addRow("ASR Pre-roll(ms)", self.runtime_asr_pre_roll_spin)
         form.addRow("翻譯快取大小", self.runtime_translation_cache_spin)
         form.addRow("局部觸發差異字數", self.runtime_prefix_delta_spin)
         form.addRow("Streaming tokens", self.runtime_llm_streaming_tokens_spin)
@@ -982,6 +987,7 @@ class LocalAiPage(QWidget):
             self.remote_llm_context_items_spin,
             self.runtime_sample_rate_spin,
             self.runtime_chunk_spin,
+            self.runtime_asr_pre_roll_spin,
             self.asr_queue_local_spin,
             self.asr_queue_remote_spin,
             self.llm_queue_local_spin,
