@@ -31,16 +31,16 @@ asr:
     model: large-v3
     device: cuda
     compute_type: float16
-    beam_size: 2
+    beam_size: 1
     condition_on_previous_text: true
     temperature_fallback: 0.0,0.2
-    no_speech_threshold: 0.65
+    no_speech_threshold: 0.6
     vad:
         enabled: true
         min_speech_duration_ms: 160
-        min_silence_duration_ms: 450
-        max_speech_duration_s: 10.0
-        speech_pad_ms: 300
+        min_silence_duration_ms: 420
+        max_speech_duration_s: 8.0
+        speech_pad_ms: 320
         rms_threshold: 0.03
     streaming:
         partial_interval_ms: 200
@@ -58,18 +58,18 @@ asr_channels:
         no_speech_threshold: 0.65
         vad:
             enabled: true
-            min_speech_duration_ms: 160
-            min_silence_duration_ms: 450
-            max_speech_duration_s: 10.0
-            speech_pad_ms: 300
+            min_speech_duration_ms: 170
+            min_silence_duration_ms: 480
+            max_speech_duration_s: 8.0
+            speech_pad_ms: 340
             rms_threshold: 0.03
         streaming:
-            partial_interval_ms: 200
+            partial_interval_ms: 220
             partial_history_seconds: 2
             final_history_seconds: 4
     english:
         engine: faster_whisper
-        model: large-v3
+        model: distil-large-v3
         device: cuda
         compute_type: float16
         beam_size: 1
@@ -78,13 +78,13 @@ asr_channels:
         no_speech_threshold: 0.55
         vad:
             enabled: true
-            min_speech_duration_ms: 160
-            min_silence_duration_ms: 450
-            max_speech_duration_s: 10.0
+            min_speech_duration_ms: 150
+            min_silence_duration_ms: 400
+            max_speech_duration_s: 8.0
             speech_pad_ms: 300
             rms_threshold: 0.03
         streaming:
-            partial_interval_ms: 200
+            partial_interval_ms: 180
             partial_history_seconds: 2
             final_history_seconds: 4
 llm:
@@ -93,14 +93,14 @@ llm:
     model: hy-mt1.5-7b
     temperature: 0.05
     top_p: 0.9
-    max_output_tokens: 96
+    max_output_tokens: 128
     repeat_penalty: 1.05
     stop_tokens: '</target>,Translation:'
-    request_timeout_sec: 15
+    request_timeout_sec: 12
     sliding_window:
         enabled: true
-        trigger_tokens: 18
-        max_context_items: 6
+        trigger_tokens: 20
+        max_context_items: 4
     profiles:
         live_caption_fast:
             name: live_caption_fast
@@ -150,11 +150,11 @@ llm_channels:
         max_output_tokens: 96
         repeat_penalty: 1.05
         stop_tokens: '</target>,Translation:'
-        request_timeout_sec: 15
+        request_timeout_sec: 12
         sliding_window:
             enabled: true
-            trigger_tokens: 18
-            max_context_items: 6
+            trigger_tokens: 20
+            max_context_items: 4
         profiles:
             live_caption_fast:
                 name: live_caption_fast
@@ -200,14 +200,14 @@ llm_channels:
         model: hy-mt1.5-7b
         temperature: 0.05
         top_p: 0.9
-        max_output_tokens: 160
+        max_output_tokens: 128
         repeat_penalty: 1.05
         stop_tokens: '</target>,翻譯:'
-        request_timeout_sec: 15
+        request_timeout_sec: 12
         sliding_window:
             enabled: true
-            trigger_tokens: 18
-            max_context_items: 6
+            trigger_tokens: 20
+            max_context_items: 4
         profiles:
             live_caption_fast:
                 name: live_caption_fast
@@ -267,7 +267,7 @@ tts_channels:
         voice_name: zh-TW-HsiaoChenNeural
         speaker_id: null
         length_scale: 0.95
-        noise_scale: null
+        noise_scale: 0.667
         noise_w: 0.6
         sample_rate: 24000
     english:
@@ -278,24 +278,24 @@ tts_channels:
         voice_name: en-US-JennyNeural
         speaker_id: null
         length_scale: 0.95
-        noise_scale: null
+        noise_scale: 0.667
         noise_w: 0.6
         sample_rate: 24000
 runtime:
     sample_rate: 24000
     chunk_ms: 40
     asr_queue_maxsize: 16
-    llm_queue_maxsize: 6
-    tts_queue_maxsize: 6
+    llm_queue_maxsize: 4
+    tts_queue_maxsize: 4
     translation_exact_cache_size: 256
     translation_prefix_min_delta_chars: 6
     tts_cancel_pending_on_new_final: true
     tts_cancel_policy: all_pending
-    tts_max_wait_ms: 4000
-    tts_max_chars: 200
-    tts_drop_backlog_threshold: 4
-    llm_streaming_tokens: 16
-    max_pipeline_latency_ms: 2500
+    tts_max_wait_ms: 2500
+    tts_max_chars: 140
+    tts_drop_backlog_threshold: 3
+    llm_streaming_tokens: 12
+    max_pipeline_latency_ms: 2200
     local_echo_guard_enabled: true
     local_echo_guard_resume_delay_ms: 300
     remote_echo_guard_resume_delay_ms: 300
@@ -303,11 +303,11 @@ runtime:
     last_migration_note: ''
     warmup_on_start: true
     asr_queue_maxsize_chinese: 16
-    asr_queue_maxsize_english: 16
-    llm_queue_maxsize_zh_to_en: 6
-    llm_queue_maxsize_en_to_zh: 6
-    tts_queue_maxsize_chinese: 6
-    tts_queue_maxsize_english: 6
+    asr_queue_maxsize_english: 12
+    llm_queue_maxsize_zh_to_en: 4
+    llm_queue_maxsize_en_to_zh: 4
+    tts_queue_maxsize_chinese: 4
+    tts_queue_maxsize_english: 4
 health_last_success:
     asr: ''
     llm: ''
