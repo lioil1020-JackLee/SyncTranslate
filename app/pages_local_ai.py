@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.local_ai.ollama_client import OllamaClient
+from app.local_ai.lm_studio_client import LmStudioClient
 from app.schemas import AppConfig, TtsChannelOverride, TtsConfig, merge_tts_configs
 
 _OFFICIAL_FASTER_WHISPER_MODELS = [
@@ -45,6 +45,9 @@ _OFFICIAL_FASTER_WHISPER_MODELS = [
     "distil-large-v2",
     "distil-large-v3",
 ]
+
+# 常用取樣率選項（顯示用與資料用）
+_COMMON_SAMPLE_RATES = [8000, 16000, 22050, 24000, 32000, 44100, 48000, 96000, 192000]
 
 _EDGE_VOICE_OPTIONS: list[tuple[str, str]] = [
     ("中文女聲（台灣）- HsiaoChen", "zh-TW-HsiaoChenNeural"),
@@ -92,7 +95,7 @@ class TtsWidgets:
     length_scale_spin: QDoubleSpinBox
     noise_scale_spin: QDoubleSpinBox
     noise_w_spin: QDoubleSpinBox
-    sample_rate_spin: QSpinBox
+    sample_rate_spin: QComboBox
 
 
 @dataclass(slots=True)
@@ -101,7 +104,7 @@ class TtsChannelWidgets:
     form: QFormLayout
     engine_combo: QComboBox
     edge_voice_combo: QComboBox
-    sample_rate_spin: QSpinBox
+    sample_rate_spin: QComboBox
     noise_w_spin: QDoubleSpinBox
 
 
@@ -207,7 +210,7 @@ class LocalAiPage(QWidget):
             self._apply_tts_override(self.local_tts_override, config.tts_channels.local, fallback=config.meeting_tts)
             self._apply_tts_override(self.remote_tts_override, config.tts_channels.remote, fallback=config.local_tts)
 
-            self.runtime_sample_rate_spin.setValue(config.runtime.sample_rate)
+            self._select_combo_data(self.runtime_sample_rate_spin, config.runtime.sample_rate)
             self.runtime_chunk_spin.setValue(config.runtime.chunk_ms)
             self.runtime_asr_q_spin.setValue(config.runtime.asr_queue_maxsize)
             self.runtime_llm_q_spin.setValue(config.runtime.llm_queue_maxsize)
@@ -233,10 +236,10 @@ class LocalAiPage(QWidget):
         config.asr.vad.max_speech_duration_s = float(self.asr_max_speech_spin.value())
         config.asr.vad.rms_threshold = float(self.asr_rms_threshold_spin.value())
 
-        backend = str(self.llm_backend_combo.currentData() or "ollama")
+        backend = str(self.llm_backend_combo.currentData() or "lm_studio")
         config.llm.backend = backend
         config.llm.base_url = self._backend_url(backend)
-        config.llm.model = self.llm_model_combo.currentText().strip() or "qwen3.5:9b"
+        config.llm.model = self.llm_model_combo.currentText().strip() or "qwen/qwen3.5-9b"
         config.llm.request_timeout_sec = self.llm_timeout_spin.value()
         config.llm.temperature = float(self.llm_temperature_spin.value())
         config.llm.top_p = float(self.llm_top_p_spin.value())
@@ -250,7 +253,10 @@ class LocalAiPage(QWidget):
         config.meeting_tts = merge_tts_configs(config.tts, config.meeting_tts, config.tts_channels.local)
         config.local_tts = merge_tts_configs(config.tts, config.local_tts, config.tts_channels.remote)
 
-        config.runtime.sample_rate = self.runtime_sample_rate_spin.value()
+        try:
+            config.runtime.sample_rate = int(self.runtime_sample_rate_spin.currentData() or config.runtime.sample_rate)
+        except Exception:
+            config.runtime.sample_rate = int(str(self.runtime_sample_rate_spin.currentText()).strip() or config.runtime.sample_rate)
         config.runtime.chunk_ms = self.runtime_chunk_spin.value()
         config.runtime.warmup_on_start = True
         config.runtime.asr_queue_maxsize = self.runtime_asr_q_spin.value()
@@ -265,7 +271,8 @@ class LocalAiPage(QWidget):
         self.asr_engine_combo.addItem("faster-whisper", "faster_whisper")
 
         self.asr_model_combo = QComboBox()
-        self.asr_model_combo.setEditable(True)
+        # 與後端模型清單一致，禁止自由輸入
+        self.asr_model_combo.setEditable(False)
         for model in self._discover_asr_models():
             self.asr_model_combo.addItem(model)
         self.asr_model_combo.setToolTip("本機 models/asr 與 faster-whisper 官方模型名稱")
@@ -325,12 +332,12 @@ class LocalAiPage(QWidget):
 
     def _build_llm_group(self) -> tuple[QGroupBox, QFormLayout]:
         self.llm_backend_combo = QComboBox()
-        self.llm_backend_combo.addItem("Ollama", "ollama")
         self.llm_backend_combo.addItem("LM Studio", "lm_studio")
-        self.llm_url_label = QLabel("http://127.0.0.1:11434")
+        self.llm_url_label = QLabel("http://127.0.0.1:1234")
         self.llm_url_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.llm_model_combo = QComboBox()
-        self.llm_model_combo.setEditable(True)
+        # 從後端讀取模型清單，禁止自由輸入
+        self.llm_model_combo.setEditable(False)
         self.llm_reload_models_btn = QPushButton("重新載入模型")
         self.llm_timeout_spin = QSpinBox()
         self.llm_timeout_spin.setRange(5, 120)
@@ -365,8 +372,10 @@ class LocalAiPage(QWidget):
         return group, form
 
     def _build_runtime_group(self) -> tuple[QGroupBox, QFormLayout]:
-        self.runtime_sample_rate_spin = QSpinBox()
-        self.runtime_sample_rate_spin.setRange(8000, 192000)
+        self.runtime_sample_rate_spin = QComboBox()
+        self.runtime_sample_rate_spin.setEditable(False)
+        for r in _COMMON_SAMPLE_RATES:
+            self.runtime_sample_rate_spin.addItem(str(r), r)
         self.runtime_chunk_spin = QSpinBox()
         self.runtime_chunk_spin.setRange(20, 1000)
         self.runtime_asr_q_spin = QSpinBox()
@@ -412,8 +421,10 @@ class LocalAiPage(QWidget):
         noise_w_spin.setRange(0.0, 2.0)
         noise_w_spin.setSingleStep(0.05)
         noise_w_spin.setDecimals(3)
-        sample_rate_spin = QSpinBox()
-        sample_rate_spin.setRange(8000, 48000)
+        sample_rate_spin = QComboBox()
+        sample_rate_spin.setEditable(True)
+        for r in [8000, 16000, 22050, 24000, 32000, 44100, 48000]:
+            sample_rate_spin.addItem(str(r), r)
 
         for editor in (exec_edit, model_edit, config_edit):
             editor.setReadOnly(True)
@@ -465,9 +476,11 @@ class LocalAiPage(QWidget):
         for label, voice_name in _EDGE_VOICE_OPTIONS:
             edge_voice_combo.addItem(label, voice_name)
 
-        sample_rate_spin = QSpinBox()
-        sample_rate_spin.setRange(0, 48000)
-        sample_rate_spin.setSpecialValueText("沿用主設定")
+        sample_rate_spin = QComboBox()
+        sample_rate_spin.setEditable(False)
+        sample_rate_spin.addItem("沿用主設定", 0)
+        for r in [8000, 16000, 22050, 24000, 32000, 44100, 48000]:
+            sample_rate_spin.addItem(str(r), r)
 
         noise_w_spin = QDoubleSpinBox()
         noise_w_spin.setRange(0.0, 2.0)
@@ -605,7 +618,7 @@ class LocalAiPage(QWidget):
         widgets.length_scale_spin.setValue(config.length_scale)
         widgets.noise_scale_spin.setValue(config.noise_scale)
         widgets.noise_w_spin.setValue(config.noise_w)
-        widgets.sample_rate_spin.setValue(config.sample_rate)
+        self._select_combo_data(widgets.sample_rate_spin, config.sample_rate)
         self._reload_tts_speaker_options(widgets, selected_id=config.speaker_id)
 
     @staticmethod
@@ -621,20 +634,30 @@ class LocalAiPage(QWidget):
         config.length_scale = float(widgets.length_scale_spin.value())
         config.noise_scale = float(widgets.noise_scale_spin.value())
         config.noise_w = float(widgets.noise_w_spin.value())
-        config.sample_rate = widgets.sample_rate_spin.value()
+        try:
+            config.sample_rate = int(widgets.sample_rate_spin.currentData() or 0)
+            if config.sample_rate == 0:
+                config.sample_rate = int(str(widgets.sample_rate_spin.currentText()).strip() or 0)
+        except Exception:
+            config.sample_rate = int(str(widgets.sample_rate_spin.currentText()).strip() or 0)
 
     def _apply_tts_override(self, widgets: TtsChannelWidgets, override: TtsChannelOverride, *, fallback: TtsConfig) -> None:
         self._select_combo_data(widgets.engine_combo, override.engine or "")
         voice = override.voice_name if override.voice_name is not None else fallback.voice_name
         self._select_combo_data(widgets.edge_voice_combo, voice or "")
-        widgets.sample_rate_spin.setValue(int(override.sample_rate) if override.sample_rate is not None else 0)
+        self._select_combo_data(widgets.sample_rate_spin, int(override.sample_rate) if override.sample_rate is not None else 0)
         widgets.noise_w_spin.setValue(float(override.noise_w) if override.noise_w is not None else 0.0)
 
     @staticmethod
     def _update_tts_override(widgets: TtsChannelWidgets) -> TtsChannelOverride:
         engine = str(widgets.engine_combo.currentData() or "")
         voice_name = str(widgets.edge_voice_combo.currentData() or "")
-        sample_rate = widgets.sample_rate_spin.value()
+        try:
+            sample_rate = int(widgets.sample_rate_spin.currentData() or 0)
+            if sample_rate == 0:
+                sample_rate = int(str(widgets.sample_rate_spin.currentText()).strip() or 0)
+        except Exception:
+            sample_rate = int(str(widgets.sample_rate_spin.currentText()).strip() or 0)
         noise_w = widgets.noise_w_spin.value()
         return TtsChannelOverride(
             engine=engine or None,
@@ -699,7 +722,7 @@ class LocalAiPage(QWidget):
     def _reload_llm_models(self) -> None:
         if self._model_loading:
             return
-        backend = str(self.llm_backend_combo.currentData() or "ollama")
+        backend = str(self.llm_backend_combo.currentData() or "lm_studio")
         url = self._backend_url(backend)
         self._model_loading = True
         self.llm_reload_models_btn.setEnabled(False)
@@ -707,7 +730,7 @@ class LocalAiPage(QWidget):
 
         def _worker() -> None:
             try:
-                client = OllamaClient(backend=backend, base_url=url, model="", request_timeout_sec=3.0)
+                client = LmStudioClient(base_url=url, model="", request_timeout_sec=3.0)
                 raw_models = [model for model in client.list_models() if model.strip()]
                 self._model_load_queue.put((True, self._filter_llm_models(raw_models)))
             except Exception as exc:
@@ -749,7 +772,7 @@ class LocalAiPage(QWidget):
         self._notify_settings_changed()
 
     def _on_backend_changed(self) -> None:
-        backend = str(self.llm_backend_combo.currentData() or "ollama")
+        backend = str(self.llm_backend_combo.currentData() or "lm_studio")
         self._apply_backend_url(backend)
         self._reload_llm_models()
         self._notify_settings_changed()
@@ -868,7 +891,7 @@ class LocalAiPage(QWidget):
 
     @staticmethod
     def _backend_url(backend: str) -> str:
-        return "http://127.0.0.1:1234" if backend == "lm_studio" else "http://127.0.0.1:11434"
+        return "http://127.0.0.1:1234"
 
     @staticmethod
     def _filter_llm_models(models: list[str]) -> list[str]:
