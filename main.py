@@ -9,6 +9,7 @@ import traceback
 
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
+import os
 
 from app.device_manager import DeviceManager
 from app.ui_main import MainWindow
@@ -102,10 +103,32 @@ def main() -> int:
 
     _apply_windows_app_id()
     app = QApplication(sys.argv)
-    icon_path = Path("lioil.ico")
-    if icon_path.exists():
-        app.setWindowIcon(QIcon(str(icon_path)))
+
+    # Resolve icon path for dev, onedir and onefile (PyInstaller)
+    def _resolve_icon() -> str | None:
+        # If frozen by PyInstaller, resources are unpacked to _MEIPASS
+        if getattr(sys, "frozen", False):
+            base = getattr(sys, "_MEIPASS", os.path.abspath('.'))
+        else:
+            base = os.path.abspath('.')
+        candidate = os.path.join(base, "lioil.ico")
+        if os.path.exists(candidate):
+            return candidate
+        # fallback: try script directory
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        candidate2 = os.path.join(script_dir, "..", "lioil.ico")
+        candidate2 = os.path.normpath(candidate2)
+        if os.path.exists(candidate2):
+            return candidate2
+        return None
+
+    icon_file = _resolve_icon()
+    if icon_file:
+        app.setWindowIcon(QIcon(icon_file))
     window = MainWindow(args.config)
+    # Ensure main window also uses the same icon (some platforms require it)
+    if icon_file:
+        window.setWindowIcon(QIcon(icon_file))
     window.show()
     try:
         return app.exec()

@@ -6,12 +6,17 @@ from PyInstaller.utils.hooks import collect_data_files
 datas = collect_data_files("opencc")
 icon = None
 
-if os.name == "nt" and os.path.exists("lioil.ico"):
-    datas.append(("lioil.ico", "."))
-    icon = "lioil.ico"
-elif os.path.exists("lioil.icns"):
-    datas.append(("lioil.icns", "."))
-    icon = "lioil.icns"
+# Ensure we use absolute paths so PyInstaller embeds the icon reliably
+here = os.path.abspath('.')
+lioil_ico = os.path.join(here, "lioil.ico")
+lioil_icns = os.path.join(here, "lioil.icns")
+
+if os.path.exists(lioil_ico):
+    datas.append((lioil_ico, "."))
+    icon = lioil_ico
+elif os.path.exists(lioil_icns):
+    datas.append((lioil_icns, "."))
+    icon = lioil_icns
 
 a = Analysis(
     ["main.py"],
