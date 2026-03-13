@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 from dataclasses import dataclass
+from typing import Any
 
 from app.audio_router import AudioRouter
 from app.schemas import AudioRouteConfig
@@ -10,6 +12,7 @@ from app.schemas import AudioRouteConfig
 class SessionResult:
     ok: bool
     message: str
+    payload: dict[str, Any] | None = None
 
 
 class SessionController:
@@ -25,8 +28,9 @@ class SessionController:
         except Exception as exc:
             self.stop()
             return SessionResult(ok=False, message=str(exc))
-        return SessionResult(ok=True, message=f"Session started: {mode}")
+        return SessionResult(ok=True, message=f"Session started: {mode}", payload={"mode": mode})
 
     def stop(self) -> SessionResult:
+        stats_before_stop = asdict(self._audio_router.stats())
         self._audio_router.stop()
-        return SessionResult(ok=True, message="Session stopped")
+        return SessionResult(ok=True, message="Session stopped", payload={"stats_before_stop": stats_before_stop})

@@ -3,10 +3,11 @@ from __future__ import annotations
 import time
 from collections import deque
 from dataclasses import dataclass
+from collections import OrderedDict
 
-
-from app.local_ai.lm_studio_client import LmStudioClient
+from app.local_ai.llm_provider import TranslationProvider
 from app.local_ai.streaming_asr import AsrEvent
+from app.schemas import TranslationProfileConfig
 
 
 @dataclass(slots=True)
@@ -20,23 +21,32 @@ class TranslationStitcher:
     def __init__(
         self,
         *,
-        translator: LmStudioClient,
+        translator: TranslationProvider,
         source_lang: str,
         target_lang: str,
+        profile: TranslationProfileConfig | None = None,
         enabled: bool = True,
         trigger_tokens: int = 20,
         max_context_items: int = 6,
         min_partial_interval_ms: int = 600,
+        exact_cache_size: int = 256,
+        prefix_min_delta_chars: int = 6,
     ) -> None:
         self._translator = translator
         self._source_lang = source_lang
         self._target_lang = target_lang
+        self._profile = profile
         self._enabled = bool(enabled)
         self._trigger_tokens = max(8, int(trigger_tokens))
         self._context: deque[str] = deque(maxlen=max(2, int(max_context_items)))
         self._last_partial_call_ms = 0
         self._min_partial_interval_ms = max(300, int(min_partial_interval_ms))
         self._last_spoken = ""
+        self._exact_cache_size = max(32, int(exact_cache_size))
+        self._prefix_min_delta_chars = max(1, int(prefix_min_delta_chars))
+        self._exact_cache: OrderedDict[str, str] = OrderedDict()
+        self._last_partial_source = ""
+        self._last_partial_translation = ""
 
     @staticmethod
     def _estimated_units(text: str) -> int:
@@ -70,13 +80,27 @@ class TranslationStitcher:
         if not event.is_final and not can_translate_partial:
             return None
 
+        if not event.is_final and self._last_partial_source:
+            if text == self._last_partial_source and self._last_partial_translation:
+                return StitchResult(text=self._last_partial_translation, is_final=False, should_speak=False)
+            if text.startswith(self._last_partial_source):
+                delta = len(text) - len(self._last_partial_source)
+                if delta < self._prefix_min_delta_chars and self._last_partial_translation:
+                    return StitchResult(text=self._last_partial_translation, is_final=False, should_speak=False)
+
         context = list(self._context) if self._enabled else []
-        translated = self._translator.translate(
-            text=text,
-            source_lang=self._source_lang,
-            target_lang=self._target_lang,
-            context=context,
-        )
+        cache_key = self._cache_key(text)
+        translated = self._read_exact_cache(cache_key)
+        if not translated:
+            translated = self._translator.translate(
+                text=text,
+                source_lang=self._source_lang,
+                target_lang=self._target_lang,
+                context=context,
+                profile=self._profile,
+            )
+            if translated:
+                self._write_exact_cache(cache_key, translated)
         if not translated:
             return None
         if self._target_lang.lower().startswith("zh") and not _looks_like_displayable_zh_translation(translated):
@@ -85,11 +109,31 @@ class TranslationStitcher:
             self._context.append(text)
         if not event.is_final:
             self._last_partial_call_ms = now_ms
+            self._last_partial_source = text
+            self._last_partial_translation = translated
+        else:
+            self._last_partial_source = ""
+            self._last_partial_translation = ""
 
         should_speak = event.is_final and translated != self._last_spoken
         if should_speak:
             self._last_spoken = translated
         return StitchResult(text=translated, is_final=event.is_final, should_speak=should_speak)
+
+    def _cache_key(self, text: str) -> str:
+        return f"{self._source_lang}>{self._target_lang}|{text}"
+
+    def _read_exact_cache(self, key: str) -> str:
+        hit = self._exact_cache.get(key, "")
+        if hit:
+            self._exact_cache.move_to_end(key)
+        return hit
+
+    def _write_exact_cache(self, key: str, value: str) -> None:
+        self._exact_cache[key] = value
+        self._exact_cache.move_to_end(key)
+        while len(self._exact_cache) > self._exact_cache_size:
+            self._exact_cache.popitem(last=False)
 
 
 def _looks_like_displayable_zh_translation(text: str) -> bool:

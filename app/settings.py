@@ -23,9 +23,6 @@ def load_config(config_path: str | Path = "config.yaml", fallback_path: str | Pa
 
     migrated = migrate_legacy_config(raw)
     config = AppConfig.from_dict(migrated)
-
-    if not from_fallback and migrated != raw:
-        save_config(config=config, config_path=config_path)
     return config
 
 
@@ -90,6 +87,13 @@ def migrate_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
     result["llm"]["request_timeout_sec"] = int(llm.get("request_timeout_sec", result["llm"]["request_timeout_sec"]))
     if isinstance(llm.get("sliding_window"), dict):
         result["llm"]["sliding_window"].update(llm["sliding_window"])
+    if isinstance(llm.get("profiles"), dict):
+        for key in ("live_caption_fast", "live_caption_stable", "speech_output_natural", "technical_meeting"):
+            profile_raw = (llm.get("profiles") or {}).get(key)
+            if isinstance(profile_raw, dict):
+                result["llm"]["profiles"][key].update(profile_raw)
+    result["llm"]["caption_profile"] = str(llm.get("caption_profile", result["llm"]["caption_profile"]))
+    result["llm"]["speech_profile"] = str(llm.get("speech_profile", result["llm"]["speech_profile"]))
 
     tts = raw.get("tts") or {}
     result["tts"]["executable_path"] = str(tts.get("executable_path", result["tts"]["executable_path"]))
@@ -112,6 +116,18 @@ def migrate_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
     result["runtime"]["asr_queue_maxsize"] = int(runtime.get("asr_queue_maxsize", result["runtime"]["asr_queue_maxsize"]))
     result["runtime"]["llm_queue_maxsize"] = int(runtime.get("llm_queue_maxsize", result["runtime"]["llm_queue_maxsize"]))
     result["runtime"]["tts_queue_maxsize"] = int(runtime.get("tts_queue_maxsize", result["runtime"]["tts_queue_maxsize"]))
+    result["runtime"]["translation_exact_cache_size"] = int(
+        runtime.get("translation_exact_cache_size", result["runtime"]["translation_exact_cache_size"])
+    )
+    result["runtime"]["translation_prefix_min_delta_chars"] = int(
+        runtime.get("translation_prefix_min_delta_chars", result["runtime"]["translation_prefix_min_delta_chars"])
+    )
+    result["runtime"]["tts_cancel_pending_on_new_final"] = bool(
+        runtime.get("tts_cancel_pending_on_new_final", result["runtime"]["tts_cancel_pending_on_new_final"])
+    )
+    result["runtime"]["tts_drop_backlog_threshold"] = int(
+        runtime.get("tts_drop_backlog_threshold", result["runtime"]["tts_drop_backlog_threshold"])
+    )
     result["runtime"]["warmup_on_start"] = bool(runtime.get("warmup_on_start", result["runtime"]["warmup_on_start"]))
 
     legacy_test = raw.get("provider_test_last_success") or {}

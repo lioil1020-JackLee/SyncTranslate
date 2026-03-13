@@ -136,6 +136,12 @@ uv run python .\main.py --check
 - `trigger_tokens`
 - `max_context_items`
 
+`llm` profile settings:
+
+- `caption_profile`: `live_caption_fast` / `live_caption_stable` / `technical_meeting`
+- `speech_profile`: `speech_output_natural` 等
+- `profiles`: 各 profile 的 prompt_style、context_items、partial_trigger_tokens、max_tokens 等
+
 ### `tts`
 
 `tts` 是共用主設定，儲存兩個方向共用的語音參數。
@@ -172,6 +178,10 @@ uv run python .\main.py --check
 - `asr_queue_maxsize`
 - `llm_queue_maxsize`
 - `tts_queue_maxsize`
+- `translation_exact_cache_size`
+- `translation_prefix_min_delta_chars`
+- `tts_cancel_pending_on_new_final`
+- `tts_drop_backlog_threshold`
 - `warmup_on_start`
 
 ### `health_last_success`
@@ -247,6 +257,7 @@ SyncTranslate/
 	- 健康檢查
 	- 預熱 + 檢查
 	- 匯出診斷資訊
+- 每次 session 停止時會自動輸出 `logs/session_reports/session_report_*.json`
 
 ## 開發備註
 

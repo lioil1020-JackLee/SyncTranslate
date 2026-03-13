@@ -66,6 +66,70 @@ class SlidingWindowConfig:
 
 
 @dataclass(slots=True)
+class TranslationProfileConfig:
+    name: str = "live_caption_fast"
+    prompt_style: str = "literal"
+    context_items: int = 4
+    partial_trigger_tokens: int = 18
+    max_tokens: int = 256
+    preserve_terms: bool = True
+    naturalize_tone: bool = False
+    allow_subject_completion: bool = False
+
+
+@dataclass(slots=True)
+class TranslationProfilesConfig:
+    live_caption_fast: TranslationProfileConfig = field(
+        default_factory=lambda: TranslationProfileConfig(
+            name="live_caption_fast",
+            prompt_style="literal",
+            context_items=4,
+            partial_trigger_tokens=16,
+            max_tokens=192,
+            preserve_terms=True,
+            naturalize_tone=False,
+            allow_subject_completion=False,
+        )
+    )
+    live_caption_stable: TranslationProfileConfig = field(
+        default_factory=lambda: TranslationProfileConfig(
+            name="live_caption_stable",
+            prompt_style="stable",
+            context_items=8,
+            partial_trigger_tokens=20,
+            max_tokens=256,
+            preserve_terms=True,
+            naturalize_tone=False,
+            allow_subject_completion=False,
+        )
+    )
+    speech_output_natural: TranslationProfileConfig = field(
+        default_factory=lambda: TranslationProfileConfig(
+            name="speech_output_natural",
+            prompt_style="natural",
+            context_items=6,
+            partial_trigger_tokens=24,
+            max_tokens=256,
+            preserve_terms=True,
+            naturalize_tone=True,
+            allow_subject_completion=True,
+        )
+    )
+    technical_meeting: TranslationProfileConfig = field(
+        default_factory=lambda: TranslationProfileConfig(
+            name="technical_meeting",
+            prompt_style="technical",
+            context_items=8,
+            partial_trigger_tokens=22,
+            max_tokens=320,
+            preserve_terms=True,
+            naturalize_tone=False,
+            allow_subject_completion=False,
+        )
+    )
+
+
+@dataclass(slots=True)
 class LlmConfig:
     backend: str = "lm_studio"
     base_url: str = "http://127.0.0.1:1234"
@@ -74,6 +138,9 @@ class LlmConfig:
     top_p: float = 0.9
     request_timeout_sec: int = 20
     sliding_window: SlidingWindowConfig = field(default_factory=SlidingWindowConfig)
+    profiles: TranslationProfilesConfig = field(default_factory=TranslationProfilesConfig)
+    caption_profile: str = "live_caption_fast"
+    speech_profile: str = "speech_output_natural"
 
 
 @dataclass(slots=True)
@@ -117,6 +184,10 @@ class RuntimeConfig:
     asr_queue_maxsize: int = 128
     llm_queue_maxsize: int = 32
     tts_queue_maxsize: int = 32
+    translation_exact_cache_size: int = 256
+    translation_prefix_min_delta_chars: int = 6
+    tts_cancel_pending_on_new_final: bool = True
+    tts_drop_backlog_threshold: int = 6
     warmup_on_start: bool = True
 
 
@@ -180,6 +251,22 @@ class AppConfig:
             top_p=float(llm_raw.get("top_p", 0.9)),
             request_timeout_sec=int(llm_raw.get("request_timeout_sec", 20)),
             sliding_window=SlidingWindowConfig(**(llm_raw.get("sliding_window") or {})),
+            profiles=TranslationProfilesConfig(
+                live_caption_fast=TranslationProfileConfig(
+                    **((llm_raw.get("profiles") or {}).get("live_caption_fast") or {})
+                ),
+                live_caption_stable=TranslationProfileConfig(
+                    **((llm_raw.get("profiles") or {}).get("live_caption_stable") or {})
+                ),
+                speech_output_natural=TranslationProfileConfig(
+                    **((llm_raw.get("profiles") or {}).get("speech_output_natural") or {})
+                ),
+                technical_meeting=TranslationProfileConfig(
+                    **((llm_raw.get("profiles") or {}).get("technical_meeting") or {})
+                ),
+            ),
+            caption_profile=str(llm_raw.get("caption_profile", "live_caption_fast")),
+            speech_profile=str(llm_raw.get("speech_profile", "speech_output_natural")),
         )
 
         tts = TtsConfig(**(raw.get("tts") or {}))
@@ -201,6 +288,11 @@ class AppConfig:
             direction.mode = "meeting_to_local"
         if llm.backend != "lm_studio":
             llm.backend = "lm_studio"
+        valid_profiles = {"live_caption_fast", "live_caption_stable", "speech_output_natural", "technical_meeting"}
+        if llm.caption_profile not in valid_profiles:
+            llm.caption_profile = "live_caption_fast"
+        if llm.speech_profile not in valid_profiles:
+            llm.speech_profile = "speech_output_natural"
         if (not llm.base_url.strip()) or ("11434" in llm.base_url):
             llm.base_url = "http://127.0.0.1:1234"
 

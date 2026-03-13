@@ -4,6 +4,8 @@ import json
 from dataclasses import dataclass
 from urllib import error, request
 
+from app.schemas import TranslationProfileConfig
+
 
 @dataclass(slots=True)
 class LmStudioClient:
@@ -25,12 +27,21 @@ class LmStudioClient:
         data = payload.get("data", [])
         return [str(item.get("id", "")) for item in data if isinstance(item, dict)]
 
-    def translate(self, text: str, *, source_lang: str, target_lang: str, context: list[str] | None = None) -> str:
+    def translate(
+        self,
+        text: str,
+        *,
+        source_lang: str,
+        target_lang: str,
+        context: list[str] | None = None,
+        profile: TranslationProfileConfig | None = None,
+    ) -> str:
         if not text.strip():
             return ""
         context_text = "\n".join((context or [])[-6:])
         source_label = _language_label(source_lang)
         target_label = _language_label(target_lang)
+        style_hint = _profile_hint(profile)
         system_prompt = (
             "You are a real-time interpretation engine.\n"
             f"Translate only from {source_label} to {target_label}.\n"
@@ -39,7 +50,8 @@ class LmStudioClient:
             "Do not explain, analyze, answer, summarize, add notes, add bullet points, use markdown, or show thinking process.\n"
             "Never output Thinking Process, Analysis, Notes, romanization, pinyin, or source-language quotes.\n"
             "If the input is a fragment, translate it as a fragment.\n"
-            "Keep named entities and numbers accurate."
+            "Keep named entities and numbers accurate.\n"
+            f"Style policy: {style_hint}"
         )
         user_prompt = (
             f"Source language: {source_label}\n"
@@ -289,3 +301,17 @@ def _translation_response_format() -> dict[str, object]:
             },
         },
     }
+
+
+def _profile_hint(profile: TranslationProfileConfig | None) -> str:
+    if profile is None:
+        return "literal and concise"
+    rules: list[str] = []
+    if profile.prompt_style:
+        rules.append(f"style={profile.prompt_style}")
+    rules.append("preserve terms" if profile.preserve_terms else "allow term simplification")
+    rules.append("natural tone" if profile.naturalize_tone else "neutral tone")
+    rules.append(
+        "allow light subject completion" if profile.allow_subject_completion else "avoid adding implied subjects"
+    )
+    return ", ".join(rules)

@@ -3,6 +3,7 @@
 from dataclasses import replace
 from datetime import datetime
 import json
+import os
 from pathlib import Path
 from queue import Empty, Queue
 import subprocess
@@ -10,6 +11,7 @@ import sys
 from threading import Lock
 from threading import Thread
 import time
+import tempfile
 
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QCloseEvent, QGuiApplication, QIcon, QShowEvent
@@ -23,6 +25,7 @@ from app.audio_router import AudioRouter
 from app.asr_manager import ASRManager
 from app.debug_panel import DebugPanel
 from app.device_manager import DeviceManager
+from app.events import ErrorEvent
 from app.local_ai.healthcheck import LocalHealthReport
 from app.local_ai.tts_factory import create_tts_engine
 from app.pages_audio_routing import AudioRoutingPage
@@ -299,7 +302,6 @@ class MainWindow(QMainWindow):
             self._sync_ui_to_config()
             self._pipelines_dirty = True
             self._ensure_pipelines_ready()
-            self._save_config_to_disk()
             self._run_session_action(
                 "start",
                 mode=mode,
@@ -322,9 +324,8 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:
         try:
             self._sync_ui_to_config()
-            self._save_config_to_disk()
         except Exception as exc:
-            self._report_error(f"save_on_close failed: {exc}")
+            self._report_error(f"sync_on_close failed: {exc}")
         if self.session_controller:
             self.session_controller.stop()
         self.meeting_capture.stop()
@@ -506,12 +507,13 @@ class MainWindow(QMainWindow):
     def _build_transcript_lines(cls, items) -> list[str]:
         return [cls._format_transcript_line(item.text, item.is_final) for item in items]
 
-    def _report_error(self, message: str) -> None:
+    def _report_error(self, message: str | ErrorEvent) -> None:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         log_path = Path("logs") / "runtime_events.log"
         log_path.parent.mkdir(exist_ok=True)
+        text = message.to_log_line() if isinstance(message, ErrorEvent) else str(message)
         with self._error_lock:
-            line = f"{timestamp} {message}"
+            line = f"{timestamp} {text}"
             self.recent_errors.append(line)
         try:
             with log_path.open("a", encoding="utf-8") as fp:
@@ -601,7 +603,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("health check 進行中")
             return
         self._sync_ui_to_config()
-        config_path = str(self._save_config_to_disk())
+        config_path = self._create_healthcheck_snapshot_config()
         self._health_check_running = True
         self._health_check_started_at = time.monotonic()
         self.local_ai_page.set_runtime_status("健康檢查進行中")
@@ -635,8 +637,27 @@ class MainWindow(QMainWindow):
                 self._health_check_queue.put((True, report))
             except Exception as exc:
                 self._health_check_queue.put((False, exc))
+            finally:
+                try:
+                    os.unlink(config_path)
+                except Exception:
+                    pass
 
         Thread(target=_worker, daemon=True).start()
+
+    def _create_healthcheck_snapshot_config(self) -> str:
+        snapshot_dir = Path("logs") / "tmp"
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".yaml",
+            prefix="healthcheck_",
+            dir=str(snapshot_dir),
+            delete=False,
+            encoding="utf-8",
+        ) as fp:
+            save_config(self.config, fp.name)
+            return fp.name
 
     def _drain_health_check_results(self) -> None:
         if not self._health_check_running:
@@ -741,9 +762,58 @@ class MainWindow(QMainWindow):
             return
 
         self.statusBar().showMessage(result.message)
+        if action == "stop" and result.payload is not None:
+            self._export_session_report(result.payload)
         self.validate_current_routes()
         if action == "stop" and self._pending_live_apply:
             QTimer.singleShot(0, self._apply_live_config_now)
+
+    def _export_session_report(self, payload: dict[str, object]) -> None:
+        try:
+            report_dir = Path("logs") / "session_reports"
+            report_dir.mkdir(parents=True, exist_ok=True)
+            now = datetime.now()
+            routes = self.audio_routing_page.selected_audio_routes()
+            report = {
+                "timestamp": now.isoformat(),
+                "config_path": self.config_path,
+                "mode": self.config.direction.mode,
+                "selected_devices": {
+                    "meeting_in": routes.meeting_in,
+                    "microphone_in": routes.microphone_in,
+                    "speaker_out": routes.speaker_out,
+                    "meeting_out": routes.meeting_out,
+                },
+                "backend": {
+                    "llm_backend": self.config.llm.backend,
+                    "llm_model": self.config.llm.model,
+                    "llm_url": self.config.llm.base_url,
+                    "asr_model": self.config.asr.model,
+                    "asr_device": self.config.asr.device,
+                    "meeting_tts": {
+                        "engine": self.config.meeting_tts.engine,
+                        "voice": self.config.meeting_tts.voice_name,
+                    },
+                    "local_tts": {
+                        "engine": self.config.local_tts.engine,
+                        "voice": self.config.local_tts.voice_name,
+                    },
+                },
+                "runtime": {
+                    "sample_rate": self.config.runtime.sample_rate,
+                    "chunk_ms": self.config.runtime.chunk_ms,
+                    "asr_queue_maxsize": self.config.runtime.asr_queue_maxsize,
+                    "llm_queue_maxsize": self.config.runtime.llm_queue_maxsize,
+                    "tts_queue_maxsize": self.config.runtime.tts_queue_maxsize,
+                },
+                "stats": payload.get("stats_before_stop", {}),
+                "recent_errors": self._get_recent_errors()[-50:],
+                "config_snapshot": self.config.to_dict(),
+            }
+            output_path = report_dir / f"session_report_{now.strftime('%Y%m%d_%H%M%S')}.json"
+            output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as exc:
+            self._report_error(f"export_session_report failed: {exc}")
 
     def _get_recent_errors(self) -> list[str]:
         with self._error_lock:
@@ -790,6 +860,13 @@ class MainWindow(QMainWindow):
                 lines.append(f"{label}: capture_error={capture['last_error']}")
             if asr["last_debug"]:
                 lines.append(f"{label}: asr_last={asr['last_debug']}")
+        tts = router_stats.tts
+        lines.append(
+            "tts: "
+            f"depth={tts['queue_depth']} local_depth={tts['queue_depth_local']} remote_depth={tts['queue_depth_remote']} "
+            f"drop_local={tts['drop_count_local']} drop_remote={tts['drop_count_remote']} "
+            f"oldest_age_ms={tts['oldest_age_ms']:.1f}"
+        )
         return "\n".join(lines)
 
     def _sync_ui_to_config(self) -> None:

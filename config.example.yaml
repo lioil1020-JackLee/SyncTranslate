@@ -39,10 +39,49 @@ llm:
   temperature: 0.1
   top_p: 0.75
   request_timeout_sec: 15
+  caption_profile: live_caption_fast
+  speech_profile: speech_output_natural
   sliding_window:
     enabled: true
     trigger_tokens: 18
     max_context_items: 6
+  profiles:
+    live_caption_fast:
+      name: live_caption_fast
+      prompt_style: literal
+      context_items: 4
+      partial_trigger_tokens: 16
+      max_tokens: 192
+      preserve_terms: true
+      naturalize_tone: false
+      allow_subject_completion: false
+    live_caption_stable:
+      name: live_caption_stable
+      prompt_style: stable
+      context_items: 8
+      partial_trigger_tokens: 20
+      max_tokens: 256
+      preserve_terms: true
+      naturalize_tone: false
+      allow_subject_completion: false
+    speech_output_natural:
+      name: speech_output_natural
+      prompt_style: natural
+      context_items: 6
+      partial_trigger_tokens: 24
+      max_tokens: 256
+      preserve_terms: true
+      naturalize_tone: true
+      allow_subject_completion: true
+    technical_meeting:
+      name: technical_meeting
+      prompt_style: technical
+      context_items: 8
+      partial_trigger_tokens: 22
+      max_tokens: 320
+      preserve_terms: true
+      naturalize_tone: false
+      allow_subject_completion: false
 tts:
   engine: edge_tts
   executable_path: ''
@@ -105,6 +144,10 @@ runtime:
   asr_queue_maxsize: 24
   llm_queue_maxsize: 8
   tts_queue_maxsize: 8
+  translation_exact_cache_size: 256
+  translation_prefix_min_delta_chars: 6
+  tts_cancel_pending_on_new_final: true
+  tts_drop_backlog_threshold: 6
   warmup_on_start: true
 health_last_success:
   asr: ''

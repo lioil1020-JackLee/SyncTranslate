@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.local_ai.faster_whisper_engine import FasterWhisperEngine
-from app.local_ai.lm_studio_client import LmStudioClient
+from app.local_ai.llm_provider import TranslationProvider
 from app.model_providers import EdgeTtsProvider
 
 
@@ -24,7 +24,7 @@ class LocalHealthReport:
 def run_local_healthcheck(
     *,
     asr_engine: FasterWhisperEngine,
-    llm_client: LmStudioClient,
+    llm_client: TranslationProvider,
     tts_engine: object,
     warmup: bool = False,
 ) -> LocalHealthReport:

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Callable
 
 import numpy as np
 
 from app.asr_manager import ASRManager, ASREventWithSource
 from app.audio_input_manager import AudioInputManager
+from app.events import ErrorEvent
 from app.schemas import AudioRouteConfig
 from app.state_manager import StateManager
 from app.transcript_buffer import TranscriptBuffer
@@ -21,6 +23,7 @@ class RouterStats:
     state: dict[str, object]
     capture: dict[str, dict[str, object]]
     asr: dict[str, dict[str, object]]
+    tts: dict[str, object]
 
 
 class AudioRouter:
@@ -33,7 +36,7 @@ class AudioRouter:
         translator_manager: TranslatorManager,
         tts_manager: TTSManager,
         state_manager: StateManager,
-        on_error: Callable[[str], None] | None = None,
+        on_error: Callable[[str | ErrorEvent], None] | None = None,
     ) -> None:
         self._transcript_buffer = transcript_buffer
         self._input_manager = input_manager
@@ -108,6 +111,7 @@ class AudioRouter:
             },
             capture=capture,
             asr=self._asr_manager.stats(),
+            tts=self._tts_manager.stats(),
         )
 
     def _on_local_audio_chunk(self, chunk: np.ndarray, sample_rate: float) -> None:
@@ -128,6 +132,9 @@ class AudioRouter:
                 source=self._translator_manager.original_channel_of(event.source),
                 text=event.text,
                 is_final=event.is_final,
+                utterance_id=event.utterance_id,
+                revision=event.revision,
+                created_at=datetime.fromtimestamp(event.created_at),
             )
             translated = self._translator_manager.process(event)
             if not translated:
@@ -136,12 +143,30 @@ class AudioRouter:
                 source=translated.translated_channel,
                 text=translated.text,
                 is_final=translated.is_final,
+                utterance_id=translated.utterance_id,
+                revision=translated.revision,
+                created_at=datetime.fromtimestamp(translated.created_at),
             )
             if translated.should_speak:
-                self._tts_manager.enqueue(translated.tts_channel, translated.text)
+                self._tts_manager.enqueue(
+                    translated.tts_channel,
+                    translated.speak_text,
+                    utterance_id=translated.utterance_id,
+                    revision=translated.revision,
+                    is_final=translated.is_final,
+                )
         except Exception as exc:
             if self._on_error:
-                self._on_error(f"audio_router_asr_event failed: {exc}")
+                self._on_error(
+                    ErrorEvent(
+                        level="error",
+                        module="audio_router",
+                        source=event.source,
+                        code="asr_event_failed",
+                        message="Failed to process ASR event",
+                        detail=str(exc),
+                    )
+                )
 
     def handle_tts_play_start(self, channel: str) -> None:
         self._state.on_tts_start(channel)

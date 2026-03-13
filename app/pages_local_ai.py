@@ -756,8 +756,10 @@ class LocalAiPage(QWidget):
         models = payload if isinstance(payload, list) else []
         if not models:
             self.runtime_status_label.setText("找不到可用的 LLM 模型")
-            self.llm_model_combo.clear()
             return
+
+        if current and current not in models:
+            models = [current, *models]
 
         self.llm_model_combo.blockSignals(True)
         self.llm_model_combo.clear()
@@ -765,11 +767,10 @@ class LocalAiPage(QWidget):
             self.llm_model_combo.addItem(model)
         self.llm_model_combo.blockSignals(False)
 
-        if current and current in models:
+        if current:
             self._set_combo_text(self.llm_model_combo, current)
         else:
             self._set_combo_text(self.llm_model_combo, models[0])
-        self._notify_settings_changed()
 
     def _on_backend_changed(self) -> None:
         backend = str(self.llm_backend_combo.currentData() or "lm_studio")
