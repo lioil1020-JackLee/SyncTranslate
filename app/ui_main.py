@@ -93,7 +93,8 @@ class MainWindow(QMainWindow):
             }
             QTabBar::tab:!selected {
                 color: #cfcfcf;
-                background: rgba(255,255,255,0.01);
+                background: rgba(255,255,255,0.02);
+                border: 1px solid rgba(255,255,255,0.06);
             }
             QTabBar::tab:selected {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #2b78d6, stop:1 #1a5fb0);
