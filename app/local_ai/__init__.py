@@ -3,7 +3,7 @@ from app.local_ai.healthcheck import LocalHealthReport, run_local_healthcheck
 from app.local_ai.lm_studio_client import LmStudioClient
 from app.local_ai.streaming_asr import AsrEvent, StreamingAsr
 from app.local_ai.translation_stitcher import StitchResult, TranslationStitcher
-from app.local_ai.vad_segmenter import VadConfig, VadSegmenter
+from app.local_ai.vad_segmenter import VadSegmenter
 
 __all__ = [
     "AsrEvent",
@@ -13,7 +13,6 @@ __all__ = [
     "StitchResult",
     "StreamingAsr",
     "TranslationStitcher",
-    "VadConfig",
     "VadSegmenter",
     "run_local_healthcheck",
 ]

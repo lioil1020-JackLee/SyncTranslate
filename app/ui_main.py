@@ -1,6 +1,5 @@
 ﻿from __future__ import annotations
 
-from dataclasses import replace
 from datetime import datetime
 import json
 import os
@@ -46,6 +45,7 @@ from app.runtime_facade import RuntimeFacade
 from app.schemas import AppConfig, TtsConfig
 from app.session_controller import SessionController
 from app.settings import load_config, save_config
+from app.tts_language_resolver import resolve_tts_config_for_target
 from app.transcript_buffer import TranscriptBuffer
 
 
@@ -67,7 +67,7 @@ class MainWindow(QMainWindow):
         self.local_capture = AudioCapture()
         self.speaker_playback = AudioPlayback()
         self.meeting_playback = AudioPlayback()
-        self.transcript_buffer = TranscriptBuffer(max_items=300)
+        self.transcript_buffer = TranscriptBuffer(max_items=2000)
         self.recent_errors: list[str] = []
         self._error_lock = Lock()
         self.audio_router: AudioRouter | None = None
@@ -123,6 +123,8 @@ class MainWindow(QMainWindow):
             on_start_clicked=self.start_session,
             on_test_local_tts_clicked=self.test_local_tts_output,
             on_settings_changed=self._on_live_caption_settings_changed,
+            on_remote_tts_changed=self._on_remote_tts_changed,
+            on_local_tts_changed=self._on_local_tts_changed,
         )
         self.local_ai_page = LocalAiPage(
             on_settings_changed=self._on_local_ai_changed,
@@ -280,6 +282,7 @@ class MainWindow(QMainWindow):
         try:
             self._pending_live_apply = False
             self._sync_ui_to_config()
+            self.live_caption_page.apply_config(self.config)
             self._runtime_facade.mark_dirty()
             # Live apply should not write config.yaml automatically.
             # Keep config changes in memory; only explicit save persists to disk.
@@ -463,10 +466,10 @@ class MainWindow(QMainWindow):
         self._drain_health_check_results()
         self.debug_panel.update_recent_errors(self._get_recent_errors())
         self.debug_panel.update_runtime_stats(self._build_runtime_stats_text())
-        remote_original_items = self.transcript_buffer.latest("meeting_original", limit=20)
-        remote_translated_items = self.transcript_buffer.latest("meeting_translated", limit=20)
-        local_original_items = self.transcript_buffer.latest("local_original", limit=20)
-        local_translated_items = self.transcript_buffer.latest("local_translated", limit=20)
+        remote_original_items = self.transcript_buffer.latest("meeting_original", limit=2000)
+        remote_translated_items = self.transcript_buffer.latest("meeting_translated", limit=2000)
+        local_original_items = self.transcript_buffer.latest("local_original", limit=2000)
+        local_translated_items = self.transcript_buffer.latest("local_translated", limit=2000)
         remote_original_lines = self._build_transcript_lines(remote_original_items)
         remote_translated_lines = self._build_transcript_lines(remote_translated_items)
         local_original_lines = self._build_transcript_lines(local_original_items)
@@ -566,12 +569,23 @@ class MainWindow(QMainWindow):
     def _get_meeting_output_device(self) -> str:
         return self.audio_routing_page.selected_audio_routes().meeting_out
 
+    def _on_remote_tts_changed(self, enabled: bool) -> None:
+        # 右上角「遠端撥放」控制右上遠端翻譯 panel：
+        # 勾選 = 播放右上角 TTS（本地輸出）；取消勾選 = 遠端輸入直通到本地輸出。
+        self._apply_output_switches_to_router()
+
+    def _on_local_tts_changed(self, enabled: bool) -> None:
+        # 右下角「本地撥放」控制右下本地翻譯 panel：
+        # 勾選 = 播放右下角 TTS（遠端輸出）；取消勾選 = 本地輸入直通到遠端輸出。
+        self._apply_output_switches_to_router()
+
     def test_local_tts_output(self) -> None:
         device_name = self._get_speaker_output_device()
         try:
             self._sync_ui_to_config()
+            self.live_caption_page.apply_config(self.config)
             target_lang = self.config.language.local_target
-            test_tts = self._tts_for_language_target(self.config.meeting_tts, target_lang)
+            test_tts = resolve_tts_config_for_target(self.config, target_lang)
             audio, sample_rate, engine_label = self._build_output_test_audio(
                 primary_tts=test_tts,
                 text=self._tts_test_text(target_lang),
@@ -647,11 +661,23 @@ class MainWindow(QMainWindow):
         bundle = self._runtime_facade.rebuild(self.config)
         self.audio_router = bundle.audio_router
         self.session_controller = bundle.session_controller
+        self._apply_output_switches_to_router()
 
     def _ensure_pipelines_ready(self) -> None:
         bundle = self._runtime_facade.ensure_ready(self.config)
         self.audio_router = bundle.audio_router
         self.session_controller = bundle.session_controller
+        self._apply_output_switches_to_router()
+
+    def _apply_output_switches_to_router(self) -> None:
+        if not self.audio_router:
+            return
+        remote_play_enabled = self.live_caption_page.remote_tts_enabled_check.isChecked()
+        local_play_enabled = self.live_caption_page.local_tts_enabled_check.isChecked()
+        # 右上角 panel = remote_translated = 本地輸出(local channel)
+        self.audio_router.set_output_mode("local", "tts" if remote_play_enabled else "passthrough")
+        # 右下角 panel = local_translated = 遠端輸出(remote channel)
+        self.audio_router.set_output_mode("remote", "tts" if local_play_enabled else "passthrough")
 
     def run_health_check(self, warmup: bool) -> None:
         if self._health_check_running:
@@ -956,37 +982,4 @@ class MainWindow(QMainWindow):
             return "これは音声テストです。"
         return "This is a translated speech test."
 
-    @classmethod
-    def _tts_for_language_target(cls, base: TtsConfig, language: str) -> TtsConfig:
-        normalized = (language or "").strip().lower()
-        voice = (base.voice_name or "").strip()
-        if cls._voice_matches_language(voice, normalized):
-            return base
-        fallback_voice = cls._default_voice_for_language(normalized)
-        if not fallback_voice:
-            return base
-        return replace(base, voice_name=fallback_voice)
-
-    @staticmethod
-    def _voice_matches_language(voice_name: str, normalized_language: str) -> bool:
-        lowered = (voice_name or "").strip().lower()
-        if not lowered:
-            return False
-        if normalized_language.startswith("zh"):
-            return lowered.startswith("zh-")
-        if normalized_language.startswith("en"):
-            return lowered.startswith("en-")
-        if normalized_language.startswith("ja"):
-            return lowered.startswith("ja-")
-        return True
-
-    @staticmethod
-    def _default_voice_for_language(normalized_language: str) -> str:
-        if normalized_language.startswith("zh"):
-            return "zh-TW-HsiaoChenNeural"
-        if normalized_language.startswith("en"):
-            return "en-US-JennyNeural"
-        if normalized_language.startswith("ja"):
-            return "ja-JP-NanamiNeural"
-        return ""
 

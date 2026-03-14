@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import hashlib
+import re
 from collections import deque
 from dataclasses import dataclass
 from collections import OrderedDict
@@ -104,6 +105,11 @@ class TranslationStitcher:
                 self._write_exact_cache(cache_key, translated)
         if not translated:
             return None
+        if _looks_like_format_contamination(translated):
+            if event.is_final:
+                self._last_partial_source = ""
+                self._last_partial_translation = ""
+            return None
         if self._target_lang.lower().startswith("zh") and not _looks_like_displayable_zh_translation(translated):
             return None
         if self._enabled:
@@ -163,6 +169,32 @@ def _looks_like_displayable_zh_translation(text: str) -> bool:
     )
     if any(token in lowered for token in banned):
         return False
+    if _looks_like_format_contamination(value):
+        return False
     cjk = sum("\u4e00" <= ch <= "\u9fff" for ch in value)
     ascii_letters = sum(ch.isascii() and ch.isalpha() for ch in value)
     return cjk > 0 and cjk >= max(2, ascii_letters // 2)
+
+
+def _looks_like_format_contamination(text: str) -> bool:
+    value = (text or "").strip()
+    if not value:
+        return True
+    lowered = value.lower()
+    markers = (
+        "<translation",
+        "</translation",
+        "<target",
+        "</target",
+        "<p>",
+        "</p>",
+        "```",
+        "{\"translation\"",
+    )
+    if any(marker in lowered for marker in markers):
+        return True
+    if re.search(r"</?[^>\n]{1,120}>", value):
+        return True
+    if value.count("<") + value.count(">") >= 4:
+        return True
+    return False

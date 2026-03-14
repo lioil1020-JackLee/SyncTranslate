@@ -39,9 +39,10 @@ class StreamingAsr:
         *,
         engine: FasterWhisperEngine,
         vad: VadSegmenter,
-        partial_interval_ms: int = 400,
-        partial_history_seconds: int = 8,
-        final_history_seconds: int = 20,
+        partial_interval_ms: int = 800,
+        partial_history_seconds: int = 3,
+        final_history_seconds: int = 6,
+        soft_final_audio_ms: int = 4200,
         pre_roll_ms: int = 500,
         queue_maxsize: int = 128,
         on_event: Callable[[AsrEvent], None] | None = None,
@@ -67,11 +68,11 @@ class StreamingAsr:
         self._min_partial_audio_ms = 600
         self._force_final_queue_size = max(8, self._queue.maxsize // 4)
         self._force_final_audio_ms = 1800
+        self._soft_final_audio_ms = max(self._force_final_audio_ms, int(soft_final_audio_ms))
         self._overflow_count = 0
         self._last_overflow_report_ms = 0
         self._drop_partial_until_final = False
         self._partial_cooldown_until_ms = 0
-        self._partial_disabled_for_session = False
         self._pre_roll_chunks: deque[np.ndarray] = deque()
         self._pre_roll_sample_count = 0
         self._pre_roll_sample_rate = 16000
@@ -108,7 +109,6 @@ class StreamingAsr:
         self._last_overflow_report_ms = 0
         self._drop_partial_until_final = False
         self._partial_cooldown_until_ms = 0
-        self._partial_disabled_for_session = False
         self._pre_roll_chunks.clear()
         self._pre_roll_sample_count = 0
         self._pre_roll_sample_rate = 16000
@@ -154,9 +154,7 @@ class StreamingAsr:
             self._drop_partial_until_final = True
             # Cool down partial decoding after overflow to reduce native ASR load spikes.
             self._partial_cooldown_until_ms = max(self._partial_cooldown_until_ms, now_ms + 8000)
-            if not self._partial_disabled_for_session:
-                self._partial_disabled_for_session = True
-                self._debug("asr safety mode: disable partial decode for this session after overflow")
+            self._debug("asr safety mode: partial decode cooling down after overflow")
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
@@ -208,6 +206,7 @@ class StreamingAsr:
                 self._queue.qsize() >= self._force_final_queue_size
                 and segment_audio_ms >= self._force_final_audio_ms
             )
+            should_soft_split = self._queue.qsize() == 0 and segment_audio_ms >= self._soft_final_audio_ms
             if should_force_final:
                 self._debug(
                     "asr backlog: force final "
@@ -216,9 +215,13 @@ class StreamingAsr:
                 self._emit_final(now_ms=now_ms)
                 self._reset_segment()
                 return
+            if should_soft_split:
+                self._debug(f"asr long speech: soft final audio_ms={segment_audio_ms}")
+                self._emit_final(now_ms=now_ms)
+                self._reset_segment()
+                return
             should_emit_partial = (
-                (not self._partial_disabled_for_session)
-                and (not self._drop_partial_until_final)
+                (not self._drop_partial_until_final)
                 and now_ms >= self._partial_cooldown_until_ms
                 and self._queue.qsize() == 0
                 and now_ms - self._last_partial_ms >= self._partial_interval_ms
@@ -230,7 +233,7 @@ class StreamingAsr:
         if decision.finalize:
             # Include the transition chunk (speech→silence boundary) so the very last
             # words are not silently dropped before final transcription.
-            if chunk.size > 0:
+            if (not decision.speech_active) and chunk.size > 0:
                 self._segment_chunks.append(chunk)
             self._emit_final(now_ms=now_ms)
             self._reset_segment()
@@ -248,15 +251,17 @@ class StreamingAsr:
             text = self._engine.transcribe_partial(audio=audio, sample_rate=self._segment_sample_rate) or ""
         except Exception as exc:
             self._debug(f"partial asr failed: {exc}")
-            self._partial_disabled_for_session = True
-            self._debug("asr safety mode: disable partial decode after partial failure")
+            now_ms = int(time.monotonic() * 1000)
+            self._partial_cooldown_until_ms = max(self._partial_cooldown_until_ms, now_ms + 12000)
+            self._debug("asr safety mode: partial decode cooling down after partial failure")
             return
         if not text.strip():
             return
         latency_ms = int((time.perf_counter() - start) * 1000)
         if latency_ms >= 1500:
-            self._partial_disabled_for_session = True
-            self._debug("asr safety mode: disable partial decode after high partial latency")
+            now_ms = int(time.monotonic() * 1000)
+            self._partial_cooldown_until_ms = max(self._partial_cooldown_until_ms, now_ms + 15000)
+            self._debug("asr safety mode: partial decode cooling down after high partial latency")
         self._on_event(
             AsrEvent(
                 text=text.strip(),

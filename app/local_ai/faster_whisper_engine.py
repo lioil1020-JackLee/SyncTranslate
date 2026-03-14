@@ -14,12 +14,14 @@ _TRANSCRIBE_LOCK = Lock()
 @dataclass(slots=True)
 class FasterWhisperEngine:
     model: str = "large-v3"
-    device: str = "auto"
-    compute_type: str = "int8_float16"
-    beam_size: int = 1
+    device: str = "cuda"
+    compute_type: str = "float16"
+    beam_size: int = 3
+    final_beam_size: int = 3
     condition_on_previous_text: bool = True
+    final_condition_on_previous_text: bool = False
     temperature_fallback: str = "0.0,0.2,0.4"
-    no_speech_threshold: float = 0.6
+    no_speech_threshold: float = 0.55
     language: str = ""
     _model: object | None = field(default=None, init=False, repr=False)
     _runtime_device: str | None = field(default=None, init=False, repr=False)
@@ -30,7 +32,13 @@ class FasterWhisperEngine:
         if audio.size == 0:
             return ""
         # Partial transcripts should stay cheap; keep this lightweight.
-        text = self._transcribe(audio=audio, sample_rate=sample_rate, vad_filter=False)
+        text = self._transcribe(
+            audio=audio,
+            sample_rate=sample_rate,
+            vad_filter=False,
+            beam_size=max(1, int(self.beam_size)),
+            condition_on_previous_text=bool(self.condition_on_previous_text),
+        )
         return text.strip()
 
     def transcribe_final(self, audio: np.ndarray, sample_rate: int) -> str:
@@ -39,7 +47,13 @@ class FasterWhisperEngine:
         # Disable Whisper's internal VAD for final transcription: our custom VAD already
         # segmented the audio.  vad_filter=True re-scans and can clip trailing words that
         # fall just below the RMS threshold at utterance end.
-        text = self._transcribe(audio=audio, sample_rate=sample_rate, vad_filter=False)
+        text = self._transcribe(
+            audio=audio,
+            sample_rate=sample_rate,
+            vad_filter=False,
+            beam_size=max(1, int(self.final_beam_size)),
+            condition_on_previous_text=bool(self.final_condition_on_previous_text),
+        )
         return text.strip()
 
     def warmup(self) -> None:
@@ -62,14 +76,22 @@ class FasterWhisperEngine:
             return f"{device}{suffix} fallback: {self._fallback_reason}"
         return f"{device}{suffix}"
 
-    def _transcribe(self, *, audio: np.ndarray, sample_rate: int, vad_filter: bool) -> str:
+    def _transcribe(
+        self,
+        *,
+        audio: np.ndarray,
+        sample_rate: int,
+        vad_filter: bool,
+        beam_size: int,
+        condition_on_previous_text: bool,
+    ) -> str:
         model = self._get_model()
         wav_audio, wav_sample_rate = self._prepare_audio(audio=audio, sample_rate=sample_rate)
         audio_bio = self._encode_wav_bytes(audio=wav_audio, sample_rate=wav_sample_rate)
         try:
             kwargs: dict[str, object] = {
-                "beam_size": max(1, int(self.beam_size)),
-                "condition_on_previous_text": bool(self.condition_on_previous_text),
+                "beam_size": max(1, int(beam_size)),
+                "condition_on_previous_text": bool(condition_on_previous_text),
                 "vad_filter": vad_filter,
                 "temperature": _parse_temperature_fallback(self.temperature_fallback),
                 "no_speech_threshold": max(0.0, min(1.0, float(self.no_speech_threshold))),
@@ -86,7 +108,13 @@ class FasterWhisperEngine:
         except RuntimeError as exc:
             if self._should_fallback_to_cpu(exc):
                 self._fallback_to_cpu(str(exc))
-                return self._transcribe(audio=audio, sample_rate=sample_rate, vad_filter=vad_filter)
+                return self._transcribe(
+                    audio=audio,
+                    sample_rate=sample_rate,
+                    vad_filter=vad_filter,
+                    beam_size=beam_size,
+                    condition_on_previous_text=condition_on_previous_text,
+                )
             raise
 
     @staticmethod

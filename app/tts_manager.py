@@ -6,10 +6,13 @@ from collections import deque
 from threading import Condition, Event, Thread
 from typing import Any, Callable
 
+import numpy as np
+
 from app.audio_playback import AudioPlayback
 from app.events import ErrorEvent
 from app.local_ai.tts_factory import create_tts_engine
-from app.schemas import AppConfig, TtsConfig, merge_tts_configs
+from app.schemas import AppConfig, TtsConfig
+from app.tts_language_resolver import resolve_tts_config_for_target
 
 
 @dataclass(slots=True)
@@ -18,6 +21,13 @@ class _TtsTask:
     text: str
     utterance_id: str | None
     revision: int
+    created_at: float
+
+
+@dataclass(slots=True)
+class _PassthroughTask:
+    audio: np.ndarray
+    sample_rate: float
     created_at: float
 
 
@@ -64,6 +74,21 @@ class TTSManager:
         self._pending: deque[_TtsTask] = deque()
         self._queue_changed = Condition()
         self._drop_count = {"local": 0, "remote": 0}
+        self._output_mode: dict[str, str] = {"local": "tts", "remote": "tts"}
+        self._passthrough_pending: dict[str, deque[_PassthroughTask]] = {
+            "local": deque(),
+            "remote": deque(),
+        }
+        # Keep a short jitter buffer to avoid robotic audio caused by frequent tiny chunk drops.
+        self._passthrough_queue_limit = 24
+        self._passthrough_warmup_sec = 0.24
+        self._passthrough_warmup_until: dict[str, float] = {"local": 0.0, "remote": 0.0}
+        self._passthrough_gate_timeout_sec = 0.60
+        self._passthrough_gate_rms = 0.0055
+        self._passthrough_gate_until: dict[str, float] = {"local": 0.0, "remote": 0.0}
+        self._passthrough_drop_count = {"local": 0, "remote": 0}
+        self._passthrough_stop = Event()
+        self._passthrough_workers: dict[str, Thread | None] = {"local": None, "remote": None}
         self._engine_cache: dict[str, tuple[tuple[Any, ...], Any]] = {}
         self._stop_event = Event()
         self._worker: Thread | None = None
@@ -83,19 +108,32 @@ class TTSManager:
         self._stop_event.clear()
         self._worker = Thread(target=self._run, daemon=True)
         self._worker.start()
+        self._passthrough_stop.clear()
+        for channel in ("local", "remote"):
+            worker = Thread(target=self._run_passthrough, args=(channel,), daemon=True)
+            self._passthrough_workers[channel] = worker
+            worker.start()
 
     def stop(self, wait_timeout: float = 5.0) -> bool:
         self._stop_event.set()
+        self._passthrough_stop.set()
         worker = self._worker
         if worker and worker.is_alive():
             worker.join(timeout=max(0.1, float(wait_timeout)))
         stopped = worker is None or not worker.is_alive()
         if stopped:
             self._worker = None
+        for channel in ("local", "remote"):
+            passthrough_worker = self._passthrough_workers.get(channel)
+            if passthrough_worker and passthrough_worker.is_alive():
+                passthrough_worker.join(timeout=max(0.1, float(wait_timeout)))
+            self._passthrough_workers[channel] = None
         for playback in self._playbacks.values():
             playback.stop()
         with self._queue_changed:
             self._pending.clear()
+            self._passthrough_pending["local"].clear()
+            self._passthrough_pending["remote"].clear()
             self._queue_changed.notify_all()
         self._engine_cache.clear()
         return stopped
@@ -110,6 +148,8 @@ class TTSManager:
         is_final: bool = True,
     ) -> None:
         key = channel if channel in ("local", "remote") else "local"
+        if self._output_mode.get(key) != "tts":
+            return
         if not is_final:
             return
         cleaned = text.strip()
@@ -160,6 +200,59 @@ class TTSManager:
         key = channel if channel in ("local", "remote") else "local"
         self._playbacks[key].set_volume(volume)
 
+    def set_muted(self, channel: str, muted: bool) -> None:
+        key = channel if channel in ("local", "remote") else "local"
+        self.set_output_mode(key, "passthrough" if muted else "tts")
+
+    def set_passthrough_enabled(self, channel: str, enabled: bool) -> None:
+        key = channel if channel in ("local", "remote") else "local"
+        self.set_output_mode(key, "passthrough" if enabled else "tts")
+
+    def set_output_mode(self, channel: str, mode: str) -> None:
+        key = channel if channel in ("local", "remote") else "local"
+        normalized = "passthrough" if mode == "passthrough" else "tts"
+        self._output_mode[key] = normalized
+        self._playbacks[key].stop()
+        with self._queue_changed:
+            self._pending = deque(task for task in self._pending if task.channel != key)
+            self._passthrough_pending[key].clear()
+            self._queue_changed.notify_all()
+        if normalized == "passthrough":
+            self._passthrough_warmup_until[key] = time.time() + self._passthrough_warmup_sec
+            self._passthrough_gate_until[key] = time.time() + self._passthrough_gate_timeout_sec
+        else:
+            self._passthrough_warmup_until[key] = 0.0
+            self._passthrough_gate_until[key] = 0.0
+
+    def is_passthrough_enabled(self, channel: str) -> bool:
+        key = channel if channel in ("local", "remote") else "local"
+        return self._output_mode.get(key) == "passthrough"
+
+    def output_mode(self, channel: str) -> str:
+        key = channel if channel in ("local", "remote") else "local"
+        return self._output_mode.get(key, "tts")
+
+    def submit_passthrough(self, channel: str, audio: np.ndarray, sample_rate: float) -> None:
+        key = channel if channel in ("local", "remote") else "local"
+        if self._output_mode.get(key) != "passthrough":
+            return
+        now = time.time()
+        if now < self._passthrough_warmup_until.get(key, 0.0):
+            return
+        if audio.size == 0 or sample_rate <= 0:
+            return
+        payload = audio.astype(np.float32, copy=True)
+        if payload.ndim == 2 and payload.shape[1] > 1:
+            payload = payload[:, :1]
+        task = _PassthroughTask(audio=payload, sample_rate=float(sample_rate), created_at=time.time())
+        with self._queue_changed:
+            queue = self._passthrough_pending[key]
+            queue.append(task)
+            while len(queue) > self._passthrough_queue_limit:
+                queue.popleft()
+                self._passthrough_drop_count[key] += 1
+            self._queue_changed.notify_all()
+
     def _run(self) -> None:
         while not self._stop_event.is_set():
             task = self._next_task()
@@ -170,6 +263,10 @@ class TTSManager:
                 break
 
             channel = task.channel
+            if self._output_mode.get(channel) != "tts":
+                # Skip silently — on_play_start was never called for this task,
+                # so do NOT call on_play_end either (avoids spurious StateManager echo-guard triggers).
+                continue
             tts_cfg = self._channel_tts_config(channel)
             playback = self._playbacks[channel]
             output_device = self._output_getters[channel]()
@@ -207,6 +304,10 @@ class TTSManager:
                 "local": sum(1 for task in self._pending if task.channel == "local"),
                 "remote": sum(1 for task in self._pending if task.channel == "remote"),
             }
+            passthrough_depth = {
+                "local": len(self._passthrough_pending["local"]),
+                "remote": len(self._passthrough_pending["remote"]),
+            }
             oldest_age_ms = 0.0
             if self._pending:
                 oldest_age_ms = max(0.0, (time.time() - self._pending[0].created_at) * 1000.0)
@@ -216,8 +317,102 @@ class TTSManager:
                 "queue_depth_remote": depth_by_channel["remote"],
                 "drop_count_local": self._drop_count["local"],
                 "drop_count_remote": self._drop_count["remote"],
+                "output_mode_local": self._output_mode["local"],
+                "output_mode_remote": self._output_mode["remote"],
+                "passthrough_enabled_local": self._output_mode["local"] == "passthrough",
+                "passthrough_enabled_remote": self._output_mode["remote"] == "passthrough",
+                "passthrough_depth_local": passthrough_depth["local"],
+                "passthrough_depth_remote": passthrough_depth["remote"],
+                "passthrough_drop_count_local": self._passthrough_drop_count["local"],
+                "passthrough_drop_count_remote": self._passthrough_drop_count["remote"],
                 "oldest_age_ms": oldest_age_ms,
             }
+
+    def _run_passthrough(self, channel: str) -> None:
+        while not self._passthrough_stop.is_set():
+            task = self._next_passthrough_task(channel)
+            if task is None:
+                continue
+            if self._passthrough_stop.is_set():
+                break
+            if self._output_mode.get(channel) != "passthrough":
+                continue
+            try:
+                self._playbacks[channel].play(
+                    audio=task.audio,
+                    sample_rate=int(round(task.sample_rate)),
+                    output_device_name=self._output_getters[channel](),
+                )
+            except Exception as exc:
+                if self._on_error:
+                    self._on_error(
+                        ErrorEvent(
+                            level="warning",
+                            module="tts_manager",
+                            source=channel,
+                            code="passthrough_playback_failed",
+                            message="Passthrough playback failed",
+                            detail=str(exc),
+                        )
+                    )
+
+    def _next_passthrough_task(self, channel: str) -> _PassthroughTask | None:
+        with self._queue_changed:
+            while not self._passthrough_stop.is_set() and not self._passthrough_pending[channel]:
+                self._queue_changed.wait(timeout=0.2)
+            if self._passthrough_stop.is_set():
+                return None
+            queue = self._passthrough_pending[channel]
+            if not queue:
+                return None
+            first = queue.popleft()
+
+            # Merge adjacent chunks into one packet (up to ~320ms) so playback has fewer gaps.
+            merged_audio = [first.audio]
+            total_frames = int(first.audio.shape[0])
+            max_frames = max(1, int(float(first.sample_rate) * 0.32))
+            merged_chunks = 1
+            while queue and total_frames < max_frames and merged_chunks < 8:
+                nxt = queue[0]
+                if abs(float(nxt.sample_rate) - float(first.sample_rate)) > 1.0:
+                    break
+                queue.popleft()
+                merged_audio.append(nxt.audio)
+                total_frames += int(nxt.audio.shape[0])
+                merged_chunks += 1
+
+            if len(merged_audio) == 1:
+                return _PassthroughTask(
+                    audio=self._apply_edge_fade(first.audio, first.sample_rate),
+                    sample_rate=first.sample_rate,
+                    created_at=first.created_at,
+                )
+            return _PassthroughTask(
+                audio=self._apply_edge_fade(np.concatenate(merged_audio, axis=0), first.sample_rate),
+                sample_rate=float(first.sample_rate),
+                created_at=first.created_at,
+            )
+
+    @staticmethod
+    def _apply_edge_fade(audio: np.ndarray, sample_rate: float) -> np.ndarray:
+        # Short fade-in/out removes start/end clicks when passthrough packets are played back chunk-by-chunk.
+        if audio.size == 0 or sample_rate <= 0:
+            return audio
+        frames = int(audio.shape[0]) if audio.ndim > 1 else int(audio.shape[0])
+        if frames <= 8:
+            return audio
+        fade_frames = min(max(1, int(sample_rate * 0.008)), frames // 4)
+        if fade_frames <= 0:
+            return audio
+        ramp = np.linspace(0.0, 1.0, fade_frames, dtype=np.float32)
+        out = audio.astype(np.float32, copy=True)
+        if out.ndim == 1:
+            out[:fade_frames] *= ramp
+            out[-fade_frames:] *= ramp[::-1]
+            return out
+        out[:fade_frames, :] *= ramp.reshape(-1, 1)
+        out[-fade_frames:, :] *= ramp[::-1].reshape(-1, 1)
+        return out
 
     def _next_task(self) -> _TtsTask | None:
         with self._queue_changed:
@@ -321,12 +516,10 @@ class TTSManager:
 
     def _channel_tts_config(self, channel: str) -> TtsConfig:
         if channel == "remote":
-            fallback = self._config.local_tts
-            override = self._config.tts_channels.remote
+            target_language = self._config.language.local_target
         else:
-            fallback = self._config.meeting_tts
-            override = self._config.tts_channels.local
-        return merge_tts_configs(self._config.tts, fallback, override)
+            target_language = self._config.language.meeting_target
+        return resolve_tts_config_for_target(self._config, target_language)
 
     def _resolve_engine(self, channel: str, tts_cfg: TtsConfig) -> Any:
         config_key: tuple[Any, ...] = (

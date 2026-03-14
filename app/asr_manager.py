@@ -12,7 +12,7 @@ import numpy as np
 
 from app.local_ai.faster_whisper_engine import FasterWhisperEngine
 from app.local_ai.streaming_asr import AsrEvent, StreamingAsr
-from app.local_ai.vad_segmenter import VadConfig, VadSegmenter
+from app.local_ai.vad_segmenter import VadSegmenter
 from app.events import ErrorEvent
 from app.schemas import AppConfig
 
@@ -181,24 +181,18 @@ class ASRManager:
                 device=asr_cfg.device,
                 compute_type=asr_cfg.compute_type,
                 beam_size=asr_cfg.beam_size,
+                final_beam_size=asr_cfg.final_beam_size,
                 condition_on_previous_text=asr_cfg.condition_on_previous_text,
+                final_condition_on_previous_text=asr_cfg.final_condition_on_previous_text,
                 temperature_fallback=asr_cfg.temperature_fallback,
                 no_speech_threshold=asr_cfg.no_speech_threshold,
                 language=language,
             ),
-            vad=VadSegmenter(
-                VadConfig(
-                    enabled=vad_cfg.enabled,
-                    min_speech_duration_ms=vad_cfg.min_speech_duration_ms,
-                    min_silence_duration_ms=vad_cfg.min_silence_duration_ms,
-                    max_speech_duration_s=vad_cfg.max_speech_duration_s,
-                    speech_pad_ms=vad_cfg.speech_pad_ms,
-                    rms_threshold=vad_cfg.rms_threshold,
-                )
-            ),
+            vad=VadSegmenter(vad_cfg),
             partial_interval_ms=stream_cfg.partial_interval_ms,
             partial_history_seconds=stream_cfg.partial_history_seconds,
             final_history_seconds=stream_cfg.final_history_seconds,
+            soft_final_audio_ms=stream_cfg.soft_final_audio_ms,
             pre_roll_ms=pre_roll_ms,
             queue_maxsize=queue_maxsize,
             on_debug=self._on_error,
@@ -263,7 +257,9 @@ class ASRManager:
                     "device": self._config.asr_channels.local.device,
                     "compute_type": self._config.asr_channels.local.compute_type,
                     "beam_size": self._config.asr_channels.local.beam_size,
+                    "final_beam_size": self._config.asr_channels.local.final_beam_size,
                     "condition_on_previous_text": self._config.asr_channels.local.condition_on_previous_text,
+                    "final_condition_on_previous_text": self._config.asr_channels.local.final_condition_on_previous_text,
                     "temperature_fallback": self._config.asr_channels.local.temperature_fallback,
                     "no_speech_threshold": self._config.asr_channels.local.no_speech_threshold,
                     "vad": {
@@ -278,6 +274,7 @@ class ASRManager:
                         "partial_interval_ms": self._config.asr_channels.local.streaming.partial_interval_ms,
                         "partial_history_seconds": self._config.asr_channels.local.streaming.partial_history_seconds,
                         "final_history_seconds": self._config.asr_channels.local.streaming.final_history_seconds,
+                        "soft_final_audio_ms": self._config.asr_channels.local.streaming.soft_final_audio_ms,
                     },
                 },
                 "remote": {
@@ -285,7 +282,9 @@ class ASRManager:
                     "device": self._config.asr_channels.remote.device,
                     "compute_type": self._config.asr_channels.remote.compute_type,
                     "beam_size": self._config.asr_channels.remote.beam_size,
+                    "final_beam_size": self._config.asr_channels.remote.final_beam_size,
                     "condition_on_previous_text": self._config.asr_channels.remote.condition_on_previous_text,
+                    "final_condition_on_previous_text": self._config.asr_channels.remote.final_condition_on_previous_text,
                     "temperature_fallback": self._config.asr_channels.remote.temperature_fallback,
                     "no_speech_threshold": self._config.asr_channels.remote.no_speech_threshold,
                     "vad": {
@@ -300,6 +299,7 @@ class ASRManager:
                         "partial_interval_ms": self._config.asr_channels.remote.streaming.partial_interval_ms,
                         "partial_history_seconds": self._config.asr_channels.remote.streaming.partial_history_seconds,
                         "final_history_seconds": self._config.asr_channels.remote.streaming.final_history_seconds,
+                        "soft_final_audio_ms": self._config.asr_channels.remote.streaming.soft_final_audio_ms,
                     },
                 },
             },

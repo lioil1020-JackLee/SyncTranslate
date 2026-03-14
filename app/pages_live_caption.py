@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from typing import Callable
 
+from datetime import datetime
+
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import QComboBox, QGridLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QTextEdit, QVBoxLayout, QWidget
+from PySide6.QtGui import QTextCursor
+from PySide6.QtWidgets import QCheckBox, QComboBox, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QTextEdit, QVBoxLayout, QWidget
 
 _STATUS_TEXT = {
     "idle": "未啟動",
@@ -18,6 +21,7 @@ _STATUS_DOT = {
 }
 
 from app.schemas import AppConfig
+from app.tts_language_resolver import resolve_edge_voice_for_target
 
 _LANG_CHOICES: list[tuple[str, str, str]] = [
     ("\u82f1\u7ffb\u4e2d", "en", "zh-TW"),
@@ -43,12 +47,16 @@ class LiveCaptionPage(QWidget):
         on_start_clicked: Callable[[], None] | None = None,
         on_test_local_tts_clicked: Callable[[], None] | None = None,
         on_settings_changed: Callable[[], None] | None = None,
+        on_remote_tts_changed: Callable[[bool], None] | None = None,
+        on_local_tts_changed: Callable[[bool], None] | None = None,
     ) -> None:
         super().__init__()
         self._on_clear_clicked = on_clear_clicked
         self._on_start_clicked = on_start_clicked
         self._on_test_local_tts_clicked = on_test_local_tts_clicked
         self._on_settings_changed = on_settings_changed
+        self._on_remote_tts_changed = on_remote_tts_changed
+        self._on_local_tts_changed = on_local_tts_changed
         self._suspend_notify = False
 
         self.mode_combo = QComboBox()
@@ -76,6 +84,45 @@ class LiveCaptionPage(QWidget):
         self.remote_translated = QTextEdit()
         self.local_original = QTextEdit()
         self.local_translated = QTextEdit()
+
+        # Export buttons — one per panel
+        self.export_remote_original_btn = QPushButton("匯出")
+        self.export_remote_translated_btn = QPushButton("匯出")
+        self.export_local_original_btn = QPushButton("匯出")
+        self.export_local_translated_btn = QPushButton("匯出")
+        for _btn, _editor, _name in (
+            (self.export_remote_original_btn, self.remote_original, "remote_original"),
+            (self.export_remote_translated_btn, self.remote_translated, "remote_translated"),
+            (self.export_local_original_btn, self.local_original, "local_original"),
+            (self.export_local_translated_btn, self.local_translated, "local_translated"),
+        ):
+            _btn.setFixedSize(52, 20)
+            _btn.clicked.connect(lambda checked=False, e=_editor, n=_name: self._export_editor(e, n))
+
+        # TTS playback checkboxes — one per translated panel (default: disabled)
+        self.remote_tts_enabled_check = QCheckBox("播放")
+        self.remote_tts_enabled_check.setChecked(False)
+        self.remote_tts_enabled_check.setToolTip("勾選時播放右上角翻譯語音；取消勾選時，遠端輸入語音會直送本地輸出")
+        self.remote_tts_enabled_check.toggled.connect(self._handle_remote_tts_changed)
+        self.local_tts_enabled_check = QCheckBox("播放")
+        self.local_tts_enabled_check.setChecked(False)
+        self.local_tts_enabled_check.setToolTip("勾選時播放右下角翻譯語音；取消勾選時，本地輸入語音會直送遠端輸出")
+        self.local_tts_enabled_check.toggled.connect(self._handle_local_tts_changed)
+
+        # Per-editor append state (for persistent history without full setPlainText rebuilds)
+        self._editor_committed: dict[QTextEdit, list[str]] = {
+            self.remote_original: [],
+            self.remote_translated: [],
+            self.local_original: [],
+            self.local_translated: [],
+        }
+        self._editor_has_partial: dict[QTextEdit, bool] = {
+            self.remote_original: False,
+            self.remote_translated: False,
+            self.local_original: False,
+            self.local_translated: False,
+        }
+
         self.remote_original_label = QLabel("\u9060\u7aef\u539f\u6587")
         self.remote_translated_label = QLabel("\u9060\u7aef\u7ffb\u8b6f")
         self.local_original_label = QLabel("\u672c\u5730\u539f\u6587")
@@ -117,12 +164,12 @@ class LiveCaptionPage(QWidget):
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setHorizontalSpacing(6)
         grid.setVerticalSpacing(4)
-        grid.addLayout(self._make_panel_header(self.remote_original_label, self.remote_original_status), 0, 0)
-        grid.addLayout(self._make_panel_header(self.remote_translated_label, self.remote_translated_status), 0, 1)
+        grid.addLayout(self._make_panel_header(self.remote_original_label, self.remote_original_status, self.export_remote_original_btn), 0, 0)
+        grid.addLayout(self._make_panel_header(self.remote_translated_label, self.remote_translated_status, self.export_remote_translated_btn, self.remote_tts_enabled_check), 0, 1)
         grid.addWidget(self.remote_original, 1, 0)
         grid.addWidget(self.remote_translated, 1, 1)
-        grid.addLayout(self._make_panel_header(self.local_original_label, self.local_original_status), 2, 0)
-        grid.addLayout(self._make_panel_header(self.local_translated_label, self.local_translated_status), 2, 1)
+        grid.addLayout(self._make_panel_header(self.local_original_label, self.local_original_status, self.export_local_original_btn), 2, 0)
+        grid.addLayout(self._make_panel_header(self.local_translated_label, self.local_translated_status, self.export_local_translated_btn, self.local_tts_enabled_check), 2, 1)
         grid.addWidget(self.local_original, 3, 0)
         grid.addWidget(self.local_translated, 3, 1)
         grid.setRowStretch(1, 1)
@@ -146,9 +193,12 @@ class LiveCaptionPage(QWidget):
             self._set_mode_combo(config.direction.mode)
             self._set_lang_combo(self.remote_lang_combo, config.language.meeting_source, config.language.meeting_target)
             self._set_lang_combo(self.local_lang_combo, config.language.local_source, config.language.local_target)
+            self.remote_tts_enabled_check.setChecked(bool(getattr(config.runtime, "remote_tts_enabled", False)))
+            self.local_tts_enabled_check.setChecked(bool(getattr(config.runtime, "local_tts_enabled", False)))
         finally:
             self._suspend_notify = False
         self._refresh_panel_labels()
+        self.update_translation_voice_labels(config)
 
     def update_config(self, config: AppConfig) -> None:
         config.direction.mode = self.selected_mode()
@@ -158,6 +208,8 @@ class LiveCaptionPage(QWidget):
         config.language.meeting_target = r_target
         config.language.local_source = l_source
         config.language.local_target = l_target
+        config.runtime.remote_tts_enabled = self.remote_tts_enabled_check.isChecked()
+        config.runtime.local_tts_enabled = self.local_tts_enabled_check.isChecked()
 
     def selected_mode(self) -> str:
         value = self.mode_combo.currentData()
@@ -206,11 +258,20 @@ class LiveCaptionPage(QWidget):
         if self._on_test_local_tts_clicked:
             self._on_test_local_tts_clicked()
 
+    def _handle_remote_tts_changed(self, enabled: bool) -> None:
+        if self._on_remote_tts_changed:
+            self._on_remote_tts_changed(enabled)
+
+    def _handle_local_tts_changed(self, enabled: bool) -> None:
+        if self._on_local_tts_changed:
+            self._on_local_tts_changed(enabled)
+
     def clear(self) -> None:
-        self.remote_original.clear()
-        self.remote_translated.clear()
-        self.local_original.clear()
-        self.local_translated.clear()
+        for editor in (self.remote_original, self.remote_translated,
+                       self.local_original, self.local_translated):
+            editor.clear()
+            self._editor_committed[editor] = []
+            self._editor_has_partial[editor] = False
 
     def set_remote_original_lines(self, lines: list[str]) -> None:
         self._set_editor_lines(self.remote_original, lines)
@@ -224,12 +285,70 @@ class LiveCaptionPage(QWidget):
     def set_local_translated_lines(self, lines: list[str]) -> None:
         self._set_editor_lines(self.local_translated, lines)
 
-    @staticmethod
-    def _set_editor_lines(editor: QTextEdit, lines: list[str]) -> None:
-        padded_lines = [*lines, "", "", ""]
-        editor.setPlainText("\n".join(padded_lines))
+    def _set_editor_lines(self, editor: QTextEdit, lines: list[str]) -> None:
+        """Append-only update: only new final lines are appended; partial line is updated in-place."""
+        # Separate final lines (prefix "[final] ") and the optional trailing partial.
+        final_lines = [l for l in lines if not l.startswith("[partial]")]
+        partial_line: str | None = lines[-1] if lines and lines[-1].startswith("[partial]") else None
+
+        committed = self._editor_committed[editor]
+        had_partial = self._editor_has_partial[editor]
+
+        # Append any newly finalised lines.
+        new_finals = final_lines[len(committed):]
+        if new_finals:
+            if had_partial:
+                self._remove_editor_last_line(editor)
+                had_partial = False
+            for line in new_finals:
+                self._append_editor_line(editor, line)
+            self._editor_committed[editor] = final_lines
+            self._editor_has_partial[editor] = False
+
+        # Update the partial (in-progress) line.
+        if partial_line is not None:
+            if had_partial:
+                self._remove_editor_last_line(editor)
+            self._append_editor_line(editor, partial_line)
+            self._editor_has_partial[editor] = True
+        elif had_partial and not new_finals:
+            # Partial disappeared without a new final (silence flush); leave it as-is.
+            pass
+
         scrollbar = editor.verticalScrollBar()
         QTimer.singleShot(0, lambda: scrollbar.setValue(scrollbar.maximum()))
+
+    @staticmethod
+    def _append_editor_line(editor: QTextEdit, line: str) -> None:
+        cursor = editor.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        if editor.document().isEmpty():
+            cursor.insertText(line)
+        else:
+            cursor.insertText("\n" + line)
+        editor.setTextCursor(cursor)
+
+    @staticmethod
+    def _remove_editor_last_line(editor: QTextEdit) -> None:
+        cursor = editor.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.select(QTextCursor.SelectionType.LineUnderCursor)
+        cursor.removeSelectedText()
+        cursor.deletePreviousChar()  # remove the preceding newline (no-op if at start)
+        editor.setTextCursor(cursor)
+
+    def _export_editor(self, editor: QTextEdit, panel_name: str) -> None:
+        default_name = f"caption_{panel_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        path, _ = QFileDialog.getSaveFileName(self, "匯出字幕", default_name, "文字檔 (*.txt)")
+        if not path:
+            return
+        text = editor.toPlainText()
+        try:
+            with open(path, "w", encoding="utf-8") as fp:
+                fp.write(text)
+        except OSError as exc:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "匯出失敗", str(exc))
 
     @staticmethod
     def _get_lang_pair(combo: QComboBox, default: tuple[str, str]) -> tuple[str, str]:
@@ -258,13 +377,35 @@ class LiveCaptionPage(QWidget):
         self.local_original_label.setText(f"本地原文（{self._language_label(local_source)} ASR）")
         self.local_translated_label.setText(f"本地翻譯（{self._language_label(local_target)} LLM）")
 
-    def _make_panel_header(self, title_label: QLabel, status_label: QLabel) -> QHBoxLayout:
+    def update_translation_voice_labels(self, config: AppConfig) -> None:
+        remote_target = self._get_lang_pair(self.remote_lang_combo, default=("en", "zh-TW"))[1]
+        local_target = self._get_lang_pair(self.local_lang_combo, default=("zh-TW", "en"))[1]
+        remote_voice = self._display_voice_label(resolve_edge_voice_for_target(config, remote_target))
+        local_voice = self._display_voice_label(resolve_edge_voice_for_target(config, local_target))
+        self.remote_translated_label.setText(
+            f"遠端翻譯（{self._language_label(remote_target)} LLM / Edge: {remote_voice}）"
+        )
+        self.local_translated_label.setText(
+            f"本地翻譯（{self._language_label(local_target)} LLM / Edge: {local_voice}）"
+        )
+
+    def _make_panel_header(
+        self,
+        title_label: QLabel,
+        status_label: QLabel,
+        export_btn: QPushButton | None = None,
+        tts_check: QCheckBox | None = None,
+    ) -> QHBoxLayout:
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(6)
         row.addWidget(title_label)
         row.addStretch(1)
         row.addWidget(status_label)
+        if tts_check is not None:
+            row.addWidget(tts_check)
+        if export_btn is not None:
+            row.addWidget(export_btn)
         return row
 
     @staticmethod
@@ -294,3 +435,8 @@ class LiveCaptionPage(QWidget):
             return
         view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+    @staticmethod
+    def _display_voice_label(voice_name: str) -> str:
+        value = (voice_name or "").strip()
+        return value or "未設定"

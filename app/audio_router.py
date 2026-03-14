@@ -54,6 +54,12 @@ class AudioRouter:
         self._on_tts_request = on_tts_request
         self._on_diagnostic_event = on_diagnostic_event
         self._active_sources: set[str] = set()
+        self._mode: str = ""
+        self._routes: AudioRouteConfig | None = None
+        self._sample_rate: int = 0
+        self._chunk_ms: int = 100
+        self._capture_running: dict[str, bool] = {"local": False, "remote": False}
+        self._asr_running: dict[str, bool] = {"local": False, "remote": False}
 
     @property
     def running(self) -> bool:
@@ -63,24 +69,16 @@ class AudioRouter:
         self.stop()
         self._state.start_session()
         self._tts_manager.start()
-        self._active_sources = set()
+        self._mode = mode
+        self._routes = routes
+        self._sample_rate = int(sample_rate)
+        self._chunk_ms = int(chunk_ms)
+        self._active_sources = self._asr_sources_for_mode(mode)
 
-        if mode in ("meeting_to_local", "bidirectional"):
-            self._active_sources.add("remote")
-            self._asr_manager.set_enabled("remote", True)
-            self._asr_manager.start("remote", self._on_asr_event)
-            self._input_manager.add_consumer("remote", self._on_remote_audio_chunk)
-            self._input_manager.start("remote", routes.meeting_in, sample_rate=sample_rate, chunk_ms=chunk_ms)
-
-        if mode in ("local_to_meeting", "bidirectional"):
-            self._active_sources.add("local")
-            self._asr_manager.set_enabled("local", True)
-            self._asr_manager.start("local", self._on_asr_event)
-            self._input_manager.add_consumer("local", self._on_local_audio_chunk)
-            self._input_manager.start("local", routes.microphone_in, sample_rate=sample_rate, chunk_ms=chunk_ms)
-
-        if not self._active_sources:
+        if not self._active_sources and not self._has_passthrough_enabled():
             raise ValueError(f"Unsupported mode: {mode}")
+
+        self._reconcile_runtime_sources()
 
     def stop(self) -> None:
         for source, consumer in (("remote", self._on_remote_audio_chunk), ("local", self._on_local_audio_chunk)):
@@ -92,6 +90,12 @@ class AudioRouter:
         self._asr_manager.stop_all()
         self._tts_manager.stop()
         self._active_sources.clear()
+        self._mode = ""
+        self._routes = None
+        self._sample_rate = 0
+        self._chunk_ms = 100
+        self._capture_running = {"local": False, "remote": False}
+        self._asr_running = {"local": False, "remote": False}
         self._state.stop_session()
 
     def stats(self) -> RouterStats:
@@ -125,12 +129,16 @@ class AudioRouter:
 
     def _on_local_audio_chunk(self, chunk: np.ndarray, sample_rate: float) -> None:
         self._state.tick()
+        # Local microphone input can be directly forwarded to remote output when passthrough is enabled.
+        self._tts_manager.submit_passthrough("remote", chunk, sample_rate)
         if not self._state.can_accept_asr("local"):
             return
         self._asr_manager.submit("local", chunk, sample_rate)
 
     def _on_remote_audio_chunk(self, chunk: np.ndarray, sample_rate: float) -> None:
         self._state.tick()
+        # Remote meeting input can be directly forwarded to local output when passthrough is enabled.
+        self._tts_manager.submit_passthrough("local", chunk, sample_rate)
         if not self._state.can_accept_asr("remote"):
             return
         self._asr_manager.submit("remote", chunk, sample_rate)
@@ -217,3 +225,87 @@ class AudioRouter:
 
     def handle_tts_play_end(self, channel: str) -> None:
         self._state.on_tts_end(channel)
+
+    def set_tts_muted(self, channel: str, muted: bool) -> None:
+        self._tts_manager.set_muted(channel, muted)
+
+    def set_passthrough_enabled(self, channel: str, enabled: bool) -> None:
+        self._tts_manager.set_passthrough_enabled(channel, enabled)
+        self._reconcile_runtime_sources()
+
+    def set_output_mode(self, channel: str, mode: str) -> None:
+        self._tts_manager.set_output_mode(channel, mode)
+        self._reconcile_runtime_sources()
+
+    def _reconcile_runtime_sources(self) -> None:
+        if not self.running or self._routes is None or self._sample_rate <= 0:
+            return
+        desired = self._desired_source_state()
+        for source in ("local", "remote"):
+            capture_needed = bool(desired[source]["capture"])
+            asr_needed = bool(desired[source]["asr"])
+
+            self._asr_manager.set_enabled(source, asr_needed)
+            asr_running = self._asr_running.get(source, False)
+            if asr_needed and not asr_running:
+                self._asr_manager.start(source, self._on_asr_event)
+                self._asr_running[source] = True
+            elif (not asr_needed) and asr_running:
+                self._asr_manager.stop(source)
+                self._asr_running[source] = False
+
+            running = self._capture_running.get(source, False)
+            if capture_needed and not running:
+                self._input_manager.add_consumer(source, self._consumer_of(source))
+                self._input_manager.start(
+                    source,
+                    self._device_of(source),
+                    sample_rate=self._sample_rate,
+                    chunk_ms=self._chunk_ms,
+                )
+                self._capture_running[source] = True
+            elif not capture_needed and running:
+                self._input_manager.remove_consumer(source, self._consumer_of(source))
+                self._input_manager.stop(source)
+                self._capture_running[source] = False
+
+    def _desired_source_state(self) -> dict[str, dict[str, bool]]:
+        asr_sources = self._asr_sources_for_mode(self._mode)
+        # local input drives remote output passthrough; remote input drives local output passthrough.
+        local_passthrough_needed = self._tts_manager.is_passthrough_enabled("remote")
+        remote_passthrough_needed = self._tts_manager.is_passthrough_enabled("local")
+        return {
+            "local": {
+                "asr": "local" in asr_sources,
+                "capture": ("local" in asr_sources) or local_passthrough_needed,
+            },
+            "remote": {
+                "asr": "remote" in asr_sources,
+                "capture": ("remote" in asr_sources) or remote_passthrough_needed,
+            },
+        }
+
+    @staticmethod
+    def _asr_sources_for_mode(mode: str) -> set[str]:
+        if mode == "meeting_to_local":
+            return {"remote"}
+        if mode == "local_to_meeting":
+            return {"local"}
+        if mode == "bidirectional":
+            return {"local", "remote"}
+        return set()
+
+    def _has_passthrough_enabled(self) -> bool:
+        return self._tts_manager.is_passthrough_enabled("local") or self._tts_manager.is_passthrough_enabled("remote")
+
+    def _device_of(self, source: str) -> str:
+        if self._routes is None:
+            return ""
+        if source == "remote":
+            return self._routes.meeting_in
+        return self._routes.microphone_in
+
+    def _consumer_of(self, source: str):
+        if source == "remote":
+            return self._on_remote_audio_chunk
+        return self._on_local_audio_chunk

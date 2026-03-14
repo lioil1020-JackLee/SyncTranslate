@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import html
 import json
+import re
 from dataclasses import dataclass
 from urllib import error, request
 
@@ -140,7 +142,8 @@ class LmStudioClient:
 
     @staticmethod
     def _clean_translation_output(text: str, *, target_lang: str) -> str:
-        lines = [line.strip(" -*\t") for line in text.replace("\r", "\n").split("\n")]
+        normalized = _sanitize_surface_text(text)
+        lines = [line.strip(" -*\t") for line in normalized.replace("\r", "\n").split("\n")]
         filtered: list[str] = []
         banned_markers = (
             "thinking process",
@@ -153,8 +156,18 @@ class LmStudioClient:
             "common phrasing",
             "implies",
             "depending on",
+            "<translation",
+            "</translation",
+            "<target",
+            "</target",
+            "<p>",
+            "</p>",
+            "```",
         )
         for line in lines:
+            if not line:
+                continue
+            line = _sanitize_surface_text(line)
             if not line:
                 continue
             line = line.strip("[]\"'")
@@ -162,6 +175,8 @@ class LmStudioClient:
             if any(marker in lowered for marker in banned_markers):
                 continue
             line = _extract_rhs_candidate(line)
+            if _looks_like_markup_fragment(line):
+                continue
             if target_lang.lower().startswith("zh") and _looks_like_glossary(line):
                 continue
             filtered.append(line)
@@ -280,6 +295,30 @@ def _extract_translation_from_json(text: str) -> str:
             if isinstance(translation, str):
                 return translation.strip()
     return ""
+
+
+def _sanitize_surface_text(text: str) -> str:
+    value = html.unescape((text or "").strip())
+    if not value:
+        return ""
+    # Remove fenced blocks that frequently appear in non-compliant model replies.
+    value = re.sub(r"```[\s\S]*?```", " ", value)
+    value = re.sub(r"</?[^>\n]{1,120}>", " ", value)
+    value = value.replace("\\n", "\n")
+    value = re.sub(r"\s+", " ", value)
+    value = re.sub(r"^(translation|output|result|target|source|翻譯|译文)\s*[:：]\s*", "", value, flags=re.IGNORECASE)
+    return value.strip(" \t\n\r\"'`[]{}")
+
+
+def _looks_like_markup_fragment(text: str) -> bool:
+    value = (text or "").strip()
+    if not value:
+        return True
+    if re.search(r"</?[^>\n]{1,120}>", value):
+        return True
+    angle_pairs = value.count("<") + value.count(">")
+    slash_pairs = value.count("/")
+    return angle_pairs >= 2 and slash_pairs >= 1
 
 
 def _language_label(code: str) -> str:

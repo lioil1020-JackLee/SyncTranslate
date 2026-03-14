@@ -4,15 +4,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-
-@dataclass(slots=True)
-class VadConfig:
-    enabled: bool = True
-    min_speech_duration_ms: int = 250
-    min_silence_duration_ms: int = 1500
-    max_speech_duration_s: float = 15.0
-    speech_pad_ms: int = 300
-    rms_threshold: float = 0.01
+from app.schemas import VadSettings
 
 
 @dataclass(slots=True)
@@ -24,7 +16,7 @@ class VadDecision:
 
 
 class VadSegmenter:
-    def __init__(self, config: VadConfig) -> None:
+    def __init__(self, config: VadSettings) -> None:
         self._config = config
         self._speech_ms = 0.0
         self._silence_ms = 0.0

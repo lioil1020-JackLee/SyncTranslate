@@ -301,8 +301,10 @@ class LocalAiPage(QWidget):
         zh_asr.device = shared_device
         zh_asr.compute_type = shared_compute
         zh_asr.beam_size = self.asr_beam_spin.value()
+        zh_asr.final_beam_size = max(3, zh_asr.beam_size)
         zh_asr.condition_on_previous_text = self.asr_condition_prev_check.isChecked()
-        zh_asr.temperature_fallback = self.asr_temperature_fallback_local_edit.text().strip() or "0.0,0.2"
+        zh_asr.final_condition_on_previous_text = False
+        zh_asr.temperature_fallback = self.asr_temperature_fallback_local_edit.text().strip() or "0.0,0.2,0.4"
         zh_asr.streaming.partial_interval_ms = self.asr_partial_interval_spin.value()
         zh_asr.streaming.partial_history_seconds = self.asr_partial_history_spin.value()
         zh_asr.streaming.final_history_seconds = self.asr_final_history_spin.value()
@@ -320,7 +322,9 @@ class LocalAiPage(QWidget):
         en_asr.device = shared_device
         en_asr.compute_type = shared_compute
         en_asr.beam_size = self.remote_asr_beam_spin.value()
+        en_asr.final_beam_size = max(3, en_asr.beam_size)
         en_asr.condition_on_previous_text = self.remote_asr_condition_prev_check.isChecked()
+        en_asr.final_condition_on_previous_text = False
         en_asr.temperature_fallback = self.asr_temperature_fallback_remote_edit.text().strip() or "0.0,0.2,0.4"
         en_asr.streaming.partial_interval_ms = self.remote_asr_partial_interval_spin.value()
         en_asr.streaming.partial_history_seconds = self.remote_asr_partial_history_spin.value()
@@ -497,7 +501,7 @@ class LocalAiPage(QWidget):
         self.remote_asr_no_speech_threshold_spin.setSingleStep(0.05)
         self.remote_asr_no_speech_threshold_spin.setDecimals(2)
         self.asr_temperature_fallback_local_edit = QLineEdit()
-        self.asr_temperature_fallback_local_edit.setPlaceholderText("0.0,0.2")
+        self.asr_temperature_fallback_local_edit.setPlaceholderText("0.0,0.2,0.4")
         self.asr_temperature_fallback_remote_edit = QLineEdit()
         self.asr_temperature_fallback_remote_edit.setPlaceholderText("0.0,0.2,0.4")
         self.asr_queue_local_spin = QSpinBox()

@@ -32,7 +32,9 @@ asr:
     device: cuda
     compute_type: float16
     beam_size: 3
+    final_beam_size: 3
     condition_on_previous_text: true
+    final_condition_on_previous_text: false
     temperature_fallback: 0.0,0.2,0.4
     no_speech_threshold: 0.55
     vad:
@@ -46,6 +48,7 @@ asr:
         partial_interval_ms: 800
         partial_history_seconds: 3
         final_history_seconds: 6
+        soft_final_audio_ms: 4200
 asr_channels:
     chinese:
         engine: faster_whisper
@@ -53,7 +56,9 @@ asr_channels:
         device: cuda
         compute_type: float16
         beam_size: 3
+        final_beam_size: 3
         condition_on_previous_text: true
+        final_condition_on_previous_text: false
         temperature_fallback: 0.0,0.2,0.4
         no_speech_threshold: 0.55
         vad:
@@ -67,26 +72,30 @@ asr_channels:
             partial_interval_ms: 800
             partial_history_seconds: 3
             final_history_seconds: 6
+            soft_final_audio_ms: 4200
     english:
         engine: faster_whisper
-        model: distil-large-v3
+        model: large-v3
         device: cuda
         compute_type: float16
-        beam_size: 2
+        beam_size: 4
+        final_beam_size: 5
         condition_on_previous_text: true
+        final_condition_on_previous_text: false
         temperature_fallback: 0.0,0.2,0.4
-        no_speech_threshold: 0.50
+        no_speech_threshold: 0.40
         vad:
             enabled: true
             min_speech_duration_ms: 130
-            min_silence_duration_ms: 480
+            min_silence_duration_ms: 620
             max_speech_duration_s: 10.0
-            speech_pad_ms: 380
+            speech_pad_ms: 520
             rms_threshold: 0.02
         streaming:
-            partial_interval_ms: 800
+            partial_interval_ms: 900
             partial_history_seconds: 3
-            final_history_seconds: 5
+            final_history_seconds: 12
+            soft_final_audio_ms: 7600
 llm:
     backend: lm_studio
     base_url: http://127.0.0.1:1234
@@ -302,6 +311,8 @@ runtime:
     config_schema_version: 3
     last_migration_note: ''
     warmup_on_start: true
+    remote_tts_enabled: false
+    local_tts_enabled: false
     asr_pre_roll_ms: 500
     asr_queue_maxsize_chinese: 24
     asr_queue_maxsize_english: 16
@@ -528,8 +539,10 @@ def migrate_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
     result["asr"]["model"] = str(asr.get("model") or openai.get("asr_model") or "large-v3")
     result["asr"]["device"] = str(asr.get("device") or "cuda")
     result["asr"]["compute_type"] = str(asr.get("compute_type") or "float16")
-    result["asr"]["beam_size"] = int(asr.get("beam_size", 1))
+    result["asr"]["beam_size"] = int(asr.get("beam_size", 3))
+    result["asr"]["final_beam_size"] = int(asr.get("final_beam_size", max(3, result["asr"]["beam_size"])))
     result["asr"]["condition_on_previous_text"] = bool(asr.get("condition_on_previous_text", True))
+    result["asr"]["final_condition_on_previous_text"] = bool(asr.get("final_condition_on_previous_text", False))
     result["asr"]["temperature_fallback"] = str(asr.get("temperature_fallback", result["asr"]["temperature_fallback"]))
     result["asr"]["no_speech_threshold"] = float(asr.get("no_speech_threshold", result["asr"]["no_speech_threshold"]))
     if isinstance(asr.get("vad"), dict):
@@ -538,10 +551,17 @@ def migrate_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
         result["asr"]["streaming"].update(asr["streaming"])
     result["asr_channels"]["local"] = deepcopy(result["asr"])
     result["asr_channels"]["remote"] = deepcopy(result["asr"])
-    result["asr_channels"]["local"]["temperature_fallback"] = "0.0,0.2"
+    result["asr_channels"]["local"]["temperature_fallback"] = "0.0,0.2,0.4"
     result["asr_channels"]["remote"]["temperature_fallback"] = "0.0,0.2,0.4"
-    result["asr_channels"]["local"]["no_speech_threshold"] = 0.65
-    result["asr_channels"]["remote"]["no_speech_threshold"] = 0.55
+    result["asr_channels"]["local"]["final_beam_size"] = max(3, int(result["asr_channels"]["local"]["beam_size"]))
+    result["asr_channels"]["remote"]["final_beam_size"] = max(3, int(result["asr_channels"]["remote"]["beam_size"]))
+    result["asr_channels"]["local"]["final_condition_on_previous_text"] = False
+    result["asr_channels"]["remote"]["final_condition_on_previous_text"] = False
+    result["asr_channels"]["local"]["no_speech_threshold"] = 0.55
+    result["asr_channels"]["remote"]["no_speech_threshold"] = 0.40
+    result["asr_channels"]["local"]["streaming"]["soft_final_audio_ms"] = 4200
+    result["asr_channels"]["remote"]["streaming"]["final_history_seconds"] = 12
+    result["asr_channels"]["remote"]["streaming"]["soft_final_audio_ms"] = 7600
 
     llm = raw.get("llm") or {}
     result["llm"]["backend"] = "lm_studio"
@@ -636,7 +656,7 @@ def migrate_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
     result["runtime"]["remote_echo_guard_resume_delay_ms"] = int(
         runtime.get("remote_echo_guard_resume_delay_ms", result["runtime"]["remote_echo_guard_resume_delay_ms"])
     )
-    result["runtime"]["config_schema_version"] = 3
+    result["runtime"]["config_schema_version"] = 4
     result["runtime"]["last_migration_note"] = "migrated_from_legacy"
     result["runtime"]["warmup_on_start"] = bool(runtime.get("warmup_on_start", result["runtime"]["warmup_on_start"]))
 

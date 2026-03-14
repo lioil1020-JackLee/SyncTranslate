@@ -25,7 +25,9 @@ def main(argv: list[str] | None = None) -> int:
             device=config.asr.device,
             compute_type=config.asr.compute_type,
             beam_size=config.asr.beam_size,
+            final_beam_size=config.asr.final_beam_size,
             condition_on_previous_text=config.asr.condition_on_previous_text,
+            final_condition_on_previous_text=config.asr.final_condition_on_previous_text,
             language=config.language.meeting_source,
         )
         llm = create_translation_provider(config.llm)
