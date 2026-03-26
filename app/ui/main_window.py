@@ -37,7 +37,6 @@ from app.ui.pages.diagnostics_page import DiagnosticsPage
 from app.ui.pages.live_caption_page import LiveCaptionPage
 from app.ui.pages.local_ai_page import LocalAiPage
 from app.ui.pages.settings_page import SettingsPage
-from app.ui.widgets.debug_panel import DebugPanel
 from app.bootstrap.runtime_paths import runtime_logs_dir
 
 
@@ -126,13 +125,7 @@ class MainWindow(QMainWindow):
             on_health_check=self.run_system_check,
         )
         self.diagnostics_page = DiagnosticsPage(
-            on_health_check=self.run_system_check,
-            on_export_diagnostics=self.export_diagnostics,
-            on_save_config=self.persist_config,
-            on_reload_config=self.reload_config,
         )
-        self.debug_panel = DebugPanel()
-        self.diagnostics_page.set_extra_panel(self.debug_panel)
         self.settings_page = SettingsPage(
             audio_routing_page=self.audio_routing_page,
             local_ai_page=self.local_ai_page,
@@ -226,7 +219,6 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"已重載設定: {self.config_path}")
 
     def validate_current_routes(self) -> None:
-        self.debug_panel.update_recent_errors(self._get_recent_errors())
         is_running = self.session_controller.is_running() if self.session_controller else False
         self.live_caption_page.set_start_enabled(True)
         self.live_caption_page.set_start_label("停止" if is_running else "開始")
@@ -428,17 +420,17 @@ class MainWindow(QMainWindow):
 
     def _preferred_client_height(self) -> int:
         page_height = 0
-        if hasattr(self, "local_ai_page") and self.local_ai_page is not None:
+        if hasattr(self, "settings_page") and self.settings_page is not None:
             try:
                 page_height = max(
-                    self.local_ai_page.sizeHint().height(),
-                    self.local_ai_page.minimumSizeHint().height(),
+                    self.settings_page.sizeHint().height(),
+                    self.settings_page.minimumSizeHint().height(),
                 )
             except Exception:
-                page_height = self.local_ai_page.minimumHeight()
+                page_height = self.settings_page.minimumHeight()
         tab_bar_h = self.tabs.tabBar().sizeHint().height() if hasattr(self, "tabs") else 0
         status_h = self.statusBar().sizeHint().height() if self.statusBar() else 0
-        return max(760, min(1020, page_height + tab_bar_h + status_h + 12))
+        return max(760, min(1080, page_height + tab_bar_h + status_h + 12))
 
     def _standard_window_flags(self):
         return (
@@ -511,8 +503,6 @@ class MainWindow(QMainWindow):
 
     def refresh_live_caption(self) -> None:
         self._drain_health_check_results()
-        self.debug_panel.update_recent_errors(self._get_recent_errors())
-        self.debug_panel.update_runtime_stats(self._build_runtime_stats_text())
         self._apply_detected_asr_labels()
         remote_original_items = self.transcript_buffer.latest("meeting_original", limit=2000)
         remote_translated_items = self.transcript_buffer.latest("meeting_translated", limit=2000)

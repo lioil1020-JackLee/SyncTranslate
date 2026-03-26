@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import os
 import unittest
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from app.infra.audio.device_registry import DeviceInfo, encode_device_selector, parse_device_selector
+from app.infra.audio.device_registry import DeviceInfo, DeviceManager, encode_device_selector, parse_device_selector
 from app.ui.pages.audio_routing_page import AudioRoutingPage
 
 
@@ -132,6 +133,37 @@ class AudioRoutingVirtualDeviceTests(_QtTestCase):
             encode_device_selector(hostapi_name="MME", device_name="Laptop Speaker"),
             items,
         )
+
+    @patch("app.infra.audio.device_registry.hostapi_name_by_index", return_value="Windows WASAPI")
+    @patch("app.infra.audio.device_registry.list_indexed_devices")
+    def test_device_manager_collapses_duplicate_registry_rows(self, mock_list_indexed_devices, _mock_hostapi) -> None:
+        mock_list_indexed_devices.return_value = [
+            (
+                0,
+                {
+                    "name": "Desk Speaker",
+                    "hostapi": 0,
+                    "max_input_channels": 0,
+                    "max_output_channels": 2,
+                    "default_samplerate": 48000.0,
+                },
+            ),
+            (
+                1,
+                {
+                    "name": "Desk Speaker",
+                    "hostapi": 0,
+                    "max_input_channels": 0,
+                    "max_output_channels": 2,
+                    "default_samplerate": 48000.0,
+                },
+            ),
+        ]
+
+        devices = DeviceManager().list_output_devices()
+
+        self.assertEqual(len(devices), 1)
+        self.assertEqual(devices[0].name, "Desk Speaker")
 
 
 if __name__ == "__main__":

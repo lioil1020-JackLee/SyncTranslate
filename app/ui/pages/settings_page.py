@@ -14,26 +14,26 @@ class SettingsPage(QWidget):
         super().__init__()
         content = QWidget()
         content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(10, 10, 10, 10)
-        content_layout.setSpacing(12)
+        content_layout.setContentsMargins(8, 8, 8, 8)
+        content_layout.setSpacing(10)
         content_layout.addWidget(
             self._build_section(
                 "音訊裝置",
-                "設定遠端與本地的輸入/輸出裝置，包含虛擬音效卡、藍牙耳機與一般喇叭。",
+                "設定會議端與本地端的輸入與輸出裝置，使用固定雙向音源線。",
                 audio_routing_page,
             )
         )
         content_layout.addWidget(
             self._build_section(
                 "翻譯與輸出",
-                "先用快速設定完成大部分需求；只有需要時再展開進階參數。",
+                "集中放置模型、翻譯目標語言、輸出模式與進階設定。",
                 local_ai_page,
             )
         )
         content_layout.addWidget(
             self._build_section(
-                "儲存與診斷",
-                "集中放置儲存、重載、系統檢查與診斷匯出，不再拆成額外子頁。",
+                "診斷摘要",
+                "只顯示目前 ASR / LLM / TTS 的系統檢查結果摘要。",
                 diagnostics_page,
             )
         )
@@ -54,8 +54,8 @@ class SettingsPage(QWidget):
     def _build_section(title: str, description: str, widget: QWidget) -> QGroupBox:
         group = QGroupBox(title)
         layout = QVBoxLayout(group)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(8)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
         summary = QLabel(description)
         summary.setWordWrap(True)
         summary.setStyleSheet("color: #b7bdc6;")

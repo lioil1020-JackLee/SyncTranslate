@@ -6,10 +6,11 @@ import unittest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QGroupBox, QTabWidget, QWidget
+from PySide6.QtWidgets import QApplication, QGroupBox, QPushButton, QTabWidget, QWidget
 
 from app.infra.config.schema import AudioRouteConfig
 from app.ui.main_window import MainWindow
+from app.ui.pages.diagnostics_page import DiagnosticsPage
 from app.ui.pages.settings_page import SettingsPage
 
 
@@ -30,7 +31,7 @@ class SettingsContractTests(_QtTestCase):
         section_titles = {group.title() for group in page.findChildren(QGroupBox)}
         self.assertIn("音訊裝置", section_titles)
         self.assertIn("翻譯與輸出", section_titles)
-        self.assertIn("儲存與診斷", section_titles)
+        self.assertIn("診斷摘要", section_titles)
         self.assertEqual(page._scroll.horizontalScrollBarPolicy(), Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
     def test_route_validation_reports_missing_and_unavailable_devices(self) -> None:
@@ -54,6 +55,17 @@ class SettingsContractTests(_QtTestCase):
         self.assertTrue(has_error)
         self.assertIn("未設定裝置：本地輸入", message)
         self.assertIn("找不到裝置：遠端輸出: Missing Headset", message)
+
+    def test_diagnostics_page_is_three_line_summary_without_action_buttons(self) -> None:
+        page = DiagnosticsPage()
+        page.set_asr_details("ready")
+        page.set_llm_details("ready")
+        page.set_tts_details("ready")
+
+        text = page.diagnostics_details.toPlainText()
+        self.assertEqual(text.count("\n"), 2)
+        self.assertEqual(len(page.findChildren(QPushButton)), 0)
+        self.assertEqual(page.diagnostics_details.verticalScrollBarPolicy(), Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
 
 if __name__ == "__main__":
