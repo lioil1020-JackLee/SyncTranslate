@@ -1,39 +1,21 @@
 from __future__ import annotations
 
-import argparse
 import faulthandler
 from pathlib import Path
 import sys
 import threading
 import traceback
 
-from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QApplication
-import os
-
-from app.device_manager import DeviceManager
-from app.ui_main import MainWindow
-from app.settings import load_config
+from app.bootstrap.app_factory import run_from_cli
+from app.bootstrap.runtime_paths import runtime_logs_dir
 
 
 _FAULT_LOG_HANDLE = None
 
 
-def _apply_windows_app_id() -> None:
-    if sys.platform != "win32":
-        return
-    try:
-        import ctypes
-
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("lioil.synctranslate")
-    except Exception:
-        return
-
-
 def _configure_runtime_logging() -> None:
     global _FAULT_LOG_HANDLE
-    log_dir = Path("logs")
-    log_dir.mkdir(exist_ok=True)
+    log_dir = runtime_logs_dir()
     fault_path = log_dir / "runtime_crash.log"
     _FAULT_LOG_HANDLE = fault_path.open("a", encoding="utf-8")
     _FAULT_LOG_HANDLE.write(f"\n===== startup {Path.cwd()} =====\n")
@@ -65,76 +47,7 @@ def _configure_runtime_logging() -> None:
 
 def main() -> int:
     _configure_runtime_logging()
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="config.yaml")
-    parser.add_argument("--check", action="store_true", help="Run config + device checks without opening the UI")
-    parser.add_argument("--healthcheck-worker", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--healthcheck-config", default="", help=argparse.SUPPRESS)
-    parser.add_argument("--healthcheck-warmup", default="false", help=argparse.SUPPRESS)
-    args = parser.parse_args()
-
-    if args.healthcheck_worker:
-        worker_args: list[str] = []
-        if args.healthcheck_config:
-            worker_args.append(args.healthcheck_config)
-        worker_args.append(args.healthcheck_warmup)
-        from app.local_ai.healthcheck_worker import main as healthcheck_worker_main
-
-        return int(healthcheck_worker_main(worker_args))
-
-    config = load_config(args.config)
-    devices = DeviceManager().list_all()
-    if args.check:
-        print(f"Config OK: {args.config}")
-        print(f"mode={config.direction.mode}")
-        print(f"sample_rate={config.runtime.sample_rate} chunk_ms={config.runtime.chunk_ms}")
-        print(f"asr={config.asr.engine}:{config.asr.model} device={config.asr.device}")
-        print(f"llm={config.llm.backend} model={config.llm.model} base_url={config.llm.base_url}")
-        print(
-            "meeting_tts="
-            f"{config.meeting_tts.engine} voice={config.meeting_tts.voice_name or config.meeting_tts.model_path}"
-        )
-        print(
-            "local_tts="
-            f"{config.local_tts.engine} voice={config.local_tts.voice_name or config.local_tts.model_path}"
-        )
-        print(f"devices_found={len(devices)}")
-        return 0
-
-    _apply_windows_app_id()
-    app = QApplication(sys.argv)
-
-    # Resolve icon path for dev, onedir and onefile (PyInstaller)
-    def _resolve_icon() -> str | None:
-        # If frozen by PyInstaller, resources are unpacked to _MEIPASS
-        if getattr(sys, "frozen", False):
-            base = getattr(sys, "_MEIPASS", os.path.abspath('.'))
-        else:
-            base = os.path.abspath('.')
-        candidate = os.path.join(base, "lioil.ico")
-        if os.path.exists(candidate):
-            return candidate
-        # fallback: try script directory
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        candidate2 = os.path.join(script_dir, "..", "lioil.ico")
-        candidate2 = os.path.normpath(candidate2)
-        if os.path.exists(candidate2):
-            return candidate2
-        return None
-
-    icon_file = _resolve_icon()
-    if icon_file:
-        app.setWindowIcon(QIcon(icon_file))
-    window = MainWindow(args.config)
-    # Ensure main window also uses the same icon (some platforms require it)
-    if icon_file:
-        window.setWindowIcon(QIcon(icon_file))
-    window.show()
-    try:
-        return app.exec()
-    except KeyboardInterrupt:
-        # Allow clean Ctrl+C exit without traceback spam in terminal runs.
-        return 130
+    return run_from_cli()
 
 
 if __name__ == "__main__":

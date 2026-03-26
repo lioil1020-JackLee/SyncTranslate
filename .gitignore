@@ -1,4 +1,4 @@
-# Python
+﻿# Python
 __pycache__/
 *.py[cod]
 *.pyd
@@ -25,7 +25,6 @@ diagnostics_*.txt
 *.out
 *.err
 *.pid
-ReleaseNotes.md
 
 # Local runtime assets
 models/
@@ -37,3 +36,4 @@ logs/
 Thumbs.db
 .vscode/
 .idea/
+

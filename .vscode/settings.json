@@ -20,5 +20,6 @@
     "editor.defaultFormatter": "charliermarsh.ruff",
     "ruff.enable": true,
     "ruff.organizeImports": true,
-    "ruff.fixAll": true
+    "ruff.fixAll": true,
+    "cursorpyright.analysis.typeCheckingMode": "basic"
 }

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.local_ai.faster_whisper_engine import FasterWhisperEngine
-from app.local_ai.llm_provider import TranslationProvider
-from app.model_providers import EdgeTtsProvider
+from app.infra.asr.faster_whisper_adapter import FasterWhisperEngine
+from app.infra.translation.provider import TranslationProvider
+from app.infra.tts.edge_tts_adapter import EdgeTtsProvider
 
 
 @dataclass(slots=True)
@@ -26,7 +26,6 @@ def run_local_healthcheck(
     asr_engine: FasterWhisperEngine,
     llm_client: TranslationProvider,
     tts_engine: object,
-    warmup: bool = False,
 ) -> LocalHealthReport:
     asr_ok = True
     llm_ok = True
@@ -36,8 +35,6 @@ def run_local_healthcheck(
     tts_message = "ready"
 
     try:
-        if warmup:
-            asr_engine.warmup()
         asr_ok, asr_message = asr_engine.health_check()
     except Exception as exc:
         asr_ok = False

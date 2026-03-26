@@ -1,0 +1,344 @@
+audio:
+  meeting_in: ''
+  microphone_in: ''
+  speaker_out: ''
+  meeting_out: ''
+  meeting_in_gain: 1.0
+  microphone_in_gain: 1.0
+  speaker_out_volume: 1.0
+  meeting_out_volume: 1.0
+direction:
+  mode: bidirectional
+language:
+  remote_translation_target: zh-TW
+  local_translation_target: en
+asr:
+  engine: faster_whisper
+  model: large-v3
+  device: cuda
+  compute_type: float16
+  beam_size: 3
+  final_beam_size: 3
+  condition_on_previous_text: true
+  final_condition_on_previous_text: false
+  temperature_fallback: 0.0,0.2,0.4
+  no_speech_threshold: 0.55
+  vad:
+    enabled: true
+    min_speech_duration_ms: 150
+    min_silence_duration_ms: 520
+    max_speech_duration_s: 10.0
+    speech_pad_ms: 450
+    rms_threshold: 0.02
+  streaming:
+    partial_interval_ms: 800
+    partial_history_seconds: 3
+    final_history_seconds: 6
+    soft_final_audio_ms: 4200
+asr_channels:
+  local:
+    engine: faster_whisper
+    model: large-v3
+    device: cuda
+    compute_type: float16
+    beam_size: 3
+    final_beam_size: 3
+    condition_on_previous_text: true
+    final_condition_on_previous_text: false
+    temperature_fallback: 0.0,0.2,0.4
+    no_speech_threshold: 0.55
+    vad:
+      enabled: true
+      min_speech_duration_ms: 150
+      min_silence_duration_ms: 520
+      max_speech_duration_s: 10.0
+      speech_pad_ms: 450
+      rms_threshold: 0.02
+    streaming:
+      partial_interval_ms: 800
+      partial_history_seconds: 3
+      final_history_seconds: 6
+      soft_final_audio_ms: 4200
+  remote:
+    engine: faster_whisper
+    model: large-v3
+    device: cuda
+    compute_type: float16
+    beam_size: 3
+    final_beam_size: 3
+    condition_on_previous_text: true
+    final_condition_on_previous_text: false
+    temperature_fallback: 0.0,0.2,0.4
+    no_speech_threshold: 0.55
+    vad:
+      enabled: true
+      min_speech_duration_ms: 150
+      min_silence_duration_ms: 520
+      max_speech_duration_s: 10.0
+      speech_pad_ms: 450
+      rms_threshold: 0.02
+    streaming:
+      partial_interval_ms: 800
+      partial_history_seconds: 3
+      final_history_seconds: 6
+      soft_final_audio_ms: 4200
+llm:
+  backend: lm_studio
+  base_url: http://127.0.0.1:1234
+  model: qwen/qwen3.5-9b
+  temperature: 0.2
+  top_p: 0.9
+  max_output_tokens: 128
+  repeat_penalty: 1.05
+  stop_tokens: '</target>
+
+    Translation:'
+  request_timeout_sec: 20
+  sliding_window:
+    enabled: true
+    trigger_tokens: 20
+    max_context_items: 6
+  profiles:
+    live_caption_fast:
+      name: live_caption_fast
+      prompt_style: literal
+      context_items: 4
+      partial_trigger_tokens: 16
+      max_tokens: 192
+      preserve_terms: true
+      naturalize_tone: false
+      allow_subject_completion: false
+    live_caption_stable:
+      name: live_caption_stable
+      prompt_style: stable
+      context_items: 8
+      partial_trigger_tokens: 20
+      max_tokens: 256
+      preserve_terms: true
+      naturalize_tone: false
+      allow_subject_completion: false
+    speech_output_natural:
+      name: speech_output_natural
+      prompt_style: natural
+      context_items: 6
+      partial_trigger_tokens: 24
+      max_tokens: 256
+      preserve_terms: true
+      naturalize_tone: true
+      allow_subject_completion: true
+    technical_meeting:
+      name: technical_meeting
+      prompt_style: technical
+      context_items: 8
+      partial_trigger_tokens: 22
+      max_tokens: 320
+      preserve_terms: true
+      naturalize_tone: false
+      allow_subject_completion: false
+  caption_profile: live_caption_fast
+  speech_profile: speech_output_natural
+llm_channels:
+  local:
+    backend: lm_studio
+    base_url: http://127.0.0.1:1234
+    model: qwen/qwen3.5-9b
+    temperature: 0.2
+    top_p: 0.9
+    max_output_tokens: 128
+    repeat_penalty: 1.05
+    stop_tokens: '</target>
+
+      Translation:'
+    request_timeout_sec: 20
+    sliding_window:
+      enabled: true
+      trigger_tokens: 20
+      max_context_items: 6
+    profiles:
+      live_caption_fast:
+        name: live_caption_fast
+        prompt_style: literal
+        context_items: 4
+        partial_trigger_tokens: 16
+        max_tokens: 192
+        preserve_terms: true
+        naturalize_tone: false
+        allow_subject_completion: false
+      live_caption_stable:
+        name: live_caption_stable
+        prompt_style: stable
+        context_items: 8
+        partial_trigger_tokens: 20
+        max_tokens: 256
+        preserve_terms: true
+        naturalize_tone: false
+        allow_subject_completion: false
+      speech_output_natural:
+        name: speech_output_natural
+        prompt_style: natural
+        context_items: 6
+        partial_trigger_tokens: 24
+        max_tokens: 256
+        preserve_terms: true
+        naturalize_tone: true
+        allow_subject_completion: true
+      technical_meeting:
+        name: technical_meeting
+        prompt_style: technical
+        context_items: 8
+        partial_trigger_tokens: 22
+        max_tokens: 320
+        preserve_terms: true
+        naturalize_tone: false
+        allow_subject_completion: false
+    caption_profile: live_caption_fast
+    speech_profile: speech_output_natural
+  remote:
+    backend: lm_studio
+    base_url: http://127.0.0.1:1234
+    model: qwen/qwen3.5-9b
+    temperature: 0.2
+    top_p: 0.9
+    max_output_tokens: 128
+    repeat_penalty: 1.05
+    stop_tokens: '</target>
+
+      Translation:'
+    request_timeout_sec: 20
+    sliding_window:
+      enabled: true
+      trigger_tokens: 20
+      max_context_items: 6
+    profiles:
+      live_caption_fast:
+        name: live_caption_fast
+        prompt_style: literal
+        context_items: 4
+        partial_trigger_tokens: 16
+        max_tokens: 192
+        preserve_terms: true
+        naturalize_tone: false
+        allow_subject_completion: false
+      live_caption_stable:
+        name: live_caption_stable
+        prompt_style: stable
+        context_items: 8
+        partial_trigger_tokens: 20
+        max_tokens: 256
+        preserve_terms: true
+        naturalize_tone: false
+        allow_subject_completion: false
+      speech_output_natural:
+        name: speech_output_natural
+        prompt_style: natural
+        context_items: 6
+        partial_trigger_tokens: 24
+        max_tokens: 256
+        preserve_terms: true
+        naturalize_tone: true
+        allow_subject_completion: true
+      technical_meeting:
+        name: technical_meeting
+        prompt_style: technical
+        context_items: 8
+        partial_trigger_tokens: 22
+        max_tokens: 320
+        preserve_terms: true
+        naturalize_tone: false
+        allow_subject_completion: false
+    caption_profile: live_caption_fast
+    speech_profile: speech_output_natural
+tts:
+  engine: edge_tts
+  executable_path: ''
+  model_path: ''
+  config_path: ''
+  voice_name: zh-TW-HsiaoChenNeural
+  style_preset: balanced
+  speaker_id: 0
+  length_scale: 1.0
+  noise_scale: 0.667
+  noise_w: 0.8
+  sample_rate: 22050
+meeting_tts:
+  engine: edge_tts
+  executable_path: ''
+  model_path: ''
+  config_path: ''
+  voice_name: zh-TW-HsiaoChenNeural
+  style_preset: balanced
+  speaker_id: 0
+  length_scale: 1.0
+  noise_scale: 0.667
+  noise_w: 0.8
+  sample_rate: 22050
+local_tts:
+  engine: edge_tts
+  executable_path: ''
+  model_path: ''
+  config_path: ''
+  voice_name: zh-TW-HsiaoChenNeural
+  style_preset: balanced
+  speaker_id: 0
+  length_scale: 1.0
+  noise_scale: 0.667
+  noise_w: 0.8
+  sample_rate: 22050
+tts_channels:
+  local:
+    engine: null
+    executable_path: null
+    model_path: null
+    config_path: null
+    voice_name: null
+    style_preset: null
+    speaker_id: null
+    length_scale: null
+    noise_scale: null
+    noise_w: null
+    sample_rate: null
+  remote:
+    engine: null
+    executable_path: null
+    model_path: null
+    config_path: null
+    voice_name: null
+    style_preset: null
+    speaker_id: null
+    length_scale: null
+    noise_scale: null
+    noise_w: null
+    sample_rate: null
+runtime:
+  sample_rate: 48000
+  chunk_ms: 100
+  asr_pre_roll_ms: 500
+  asr_queue_maxsize_local: 128
+  asr_queue_maxsize_remote: 128
+  llm_queue_maxsize_local: 32
+  llm_queue_maxsize_remote: 32
+  tts_queue_maxsize_local: 32
+  tts_queue_maxsize_remote: 32
+  asr_queue_maxsize: 128
+  llm_queue_maxsize: 32
+  tts_queue_maxsize: 32
+  translation_exact_cache_size: 256
+  translation_prefix_min_delta_chars: 6
+  tts_cancel_pending_on_new_final: true
+  tts_cancel_policy: all_pending
+  tts_max_wait_ms: 4000
+  tts_max_chars: 200
+  tts_drop_backlog_threshold: 6
+  llm_streaming_tokens: 16
+  max_pipeline_latency_ms: 3000
+  config_schema_version: 5
+  last_migration_note: ''
+  remote_translation_enabled: true
+  local_translation_enabled: true
+  tts_output_mode: subtitle_only
+  remote_tts_enabled: false
+  local_tts_enabled: false
+health_last_success:
+  asr: ''
+  llm: ''
+  tts: ''
