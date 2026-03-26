@@ -134,6 +134,38 @@ class AudioRoutingVirtualDeviceTests(_QtTestCase):
             items,
         )
 
+    def test_empty_selector_uses_current_hostapi_filter_on_initial_load(self) -> None:
+        page = AudioRoutingPage(on_route_changed=lambda: None)
+        outputs = [
+            _device(
+                index=0,
+                name="Desk Speaker WASAPI",
+                input_channels=0,
+                hostapi_name="Windows WASAPI",
+            ),
+            _device(
+                index=1,
+                name="Desk Speaker MME",
+                input_channels=0,
+                hostapi_name="MME",
+            ),
+        ]
+
+        page.set_devices([], outputs)
+
+        current_hostapi = page.speaker_out_hostapi_combo.currentData()
+        selectors = [page.speaker_out_combo.itemData(i) for i in range(page.speaker_out_combo.count())]
+        if current_hostapi == "Windows WASAPI":
+            self.assertEqual(
+                selectors,
+                [encode_device_selector(hostapi_name="Windows WASAPI", device_name="Desk Speaker WASAPI")],
+            )
+        else:
+            self.assertEqual(
+                selectors,
+                [encode_device_selector(hostapi_name="MME", device_name="Desk Speaker MME")],
+            )
+
     @patch("app.infra.audio.device_registry.hostapi_name_by_index", return_value="Windows WASAPI")
     @patch("app.infra.audio.device_registry.list_indexed_devices")
     def test_device_manager_collapses_duplicate_registry_rows(self, mock_list_indexed_devices, _mock_hostapi) -> None:

@@ -214,7 +214,8 @@ class AudioRoutingPage(QWidget):
             )
             hostapi_name = matched
         self._select_hostapi(hostapi_combo, hostapi_name)
-        self._refill_device_combo(device_combo, devices, hostapi_name)
+        active_hostapi_name = str(hostapi_combo.currentData() or hostapi_name or "")
+        self._refill_device_combo(device_combo, devices, active_hostapi_name)
         self._select_device_selector(device_combo, selector or device_name)
 
     @staticmethod
