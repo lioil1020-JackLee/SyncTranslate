@@ -518,11 +518,32 @@ class TTSManager:
         return dropped
 
     def _channel_tts_config(self, channel: str) -> TtsConfig:
+        # 通道映射：remote 對應遠端翻譯目標(Meeting)，local 對應本地翻譯目標(Local)
         if channel == "remote":
-            target_language = self._config.language.local_target
-        else:
             target_language = self._config.language.meeting_target
-        return resolve_tts_config_for_target(self._config, target_language)
+            preferred_voice = str(getattr(self._config.runtime, "remote_tts_voice", "none") or "none")
+        else:
+            target_language = self._config.language.local_target
+            preferred_voice = str(getattr(self._config.runtime, "local_tts_voice", "none") or "none")
+
+        if preferred_voice.lower() == "none":
+            # allow no voice path to be handled by output mode subtitle_only / passthrough
+            return resolve_tts_config_for_target(self._config, target_language)
+
+        resolved_cfg = resolve_tts_config_for_target(self._config, target_language)
+        return TtsConfig(
+            engine=resolved_cfg.engine,
+            executable_path=resolved_cfg.executable_path,
+            model_path=resolved_cfg.model_path,
+            config_path=resolved_cfg.config_path,
+            voice_name=preferred_voice,
+            style_preset=resolved_cfg.style_preset,
+            speaker_id=resolved_cfg.speaker_id,
+            length_scale=resolved_cfg.length_scale,
+            noise_scale=resolved_cfg.noise_scale,
+            noise_w=resolved_cfg.noise_w,
+            sample_rate=resolved_cfg.sample_rate,
+        )
 
     def _resolve_engine(self, channel: str, tts_cfg: TtsConfig) -> Any:
         config_key: tuple[Any, ...] = (

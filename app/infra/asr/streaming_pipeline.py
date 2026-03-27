@@ -247,7 +247,27 @@ class ASRManager:
         return normalized_model or "large-v3"
 
     def _asr_language_for_source(self, source: str) -> str:
-        return ""
+        key = source if source in ("local", "remote") else "local"
+        runtime = self._config.runtime
+        if key == "remote":
+            asr_lang = str(getattr(runtime, "remote_asr_language", "auto") or "auto").strip().lower()
+        else:
+            asr_lang = str(getattr(runtime, "local_asr_language", "auto") or "auto").strip().lower()
+
+        if asr_lang == "auto" or not asr_lang:
+            return ""
+
+        if asr_lang.startswith("zh"):
+            return "zh"
+        if asr_lang.startswith("en"):
+            return "en"
+        if asr_lang.startswith("ja"):
+            return "ja"
+        if asr_lang.startswith("ko"):
+            return "ko"
+        if asr_lang.startswith("th"):
+            return "th"
+        return asr_lang
 
     def _build_runtime_fingerprint(self) -> str:
         payload = {
@@ -307,6 +327,8 @@ class ASRManager:
                 "local_source": "auto",
                 "meeting_source": "auto",
                 "asr_language_mode": "auto",
+                "local_asr_language": str(getattr(self._config.runtime, "local_asr_language", "auto") or "auto"),
+                "remote_asr_language": str(getattr(self._config.runtime, "remote_asr_language", "auto") or "auto"),
             },
             "runtime": {
                 "asr_queue_maxsize_local": self._config.runtime.asr_queue_maxsize_local,

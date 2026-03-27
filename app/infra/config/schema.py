@@ -234,6 +234,15 @@ class RuntimeConfig:
     translation_enabled: bool = True
     tts_output_mode: str = "subtitle_only"
     asr_language_mode: str = "auto"
+    # 新增控制項：手動固定 ASR 來源語言（auto / zh-TW / en / ja / ko / th）
+    remote_asr_language: str = "auto"
+    local_asr_language: str = "auto"
+    # 新增控制項：翻譯目標語言（none / zh-TW / en / ja / ko / th）
+    remote_translation_target: str = "zh-TW"
+    local_translation_target: str = "en"
+    # 新增控制項：TTS 聲線（none 表示不輸出）
+    remote_tts_voice: str = ""
+    local_tts_voice: str = ""
     remote_tts_enabled: bool = False
     local_tts_enabled: bool = False
     use_channel_specific_asr: bool = True

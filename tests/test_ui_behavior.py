@@ -26,9 +26,12 @@ class LiveCaptionPageUiTests(_QtTestCase):
     def test_runtime_mode_controls_apply_to_labels_and_target_pickers(self) -> None:
         page = LiveCaptionPage()
         config = AppConfig()
-        config.runtime.remote_translation_enabled = False
-        config.runtime.local_translation_enabled = True
-        config.runtime.tts_output_mode = "passthrough"
+        config.runtime.remote_asr_language = "zh-TW"
+        config.runtime.local_asr_language = "en"
+        config.runtime.remote_translation_target = "none"
+        config.runtime.local_translation_target = "ko"
+        config.runtime.remote_tts_voice = "none"
+        config.runtime.local_tts_voice = "none"
         config.language.meeting_target = "ja"
         config.language.local_target = "ko"
 
@@ -36,19 +39,64 @@ class LiveCaptionPageUiTests(_QtTestCase):
 
         self.assertFalse(page.translation_enabled("remote"))
         self.assertTrue(page.translation_enabled("local"))
-        self.assertEqual(page.selected_asr_language_mode(), "auto")
-        self.assertEqual(page.selected_tts_output_mode(), "passthrough")
+        self.assertEqual(page.selected_asr_language_mode(), "zh-TW")
+        self.assertEqual(page.selected_tts_output_mode(), "subtitle_only")
         self.assertTrue(page.remote_lang_combo.isEnabled())
         self.assertTrue(page.local_lang_combo.isEnabled())
-        self.assertIn("來源語言由 ASR 自動偵測", page.remote_lang_combo.toolTip())
-        self.assertIn("ASR 原文", page.remote_translated_label.text())
-        self.assertIn("韓文", page.local_translated_label.text())
+        self.assertIn("LLM翻譯目標", page.remote_lang_combo.toolTip())
+        self.assertIn("遠端輸出", page.remote_translated_label.text())
+        self.assertEqual(page.local_translated_label.text(), "本地翻譯")
+        self.assertEqual(page.selected_tts_output_mode_for_channel("remote"), "passthrough")
+        self.assertEqual(page.selected_tts_output_mode_for_channel("local"), "subtitle_only")
+        self.assertEqual(page.selected_tts_output_mode(), "subtitle_only")
         self.assertFalse(hasattr(page, "asr_language_mode_combo"))
+
+    def test_translation_labels_do_not_include_edge_in_status(self) -> None:
+        page = LiveCaptionPage()
+        config = AppConfig()
+        config.runtime.remote_translation_target = "zh-TW"
+        config.runtime.local_translation_target = "en"
+        config.runtime.remote_tts_voice = "zh-TW-HsiaoChenNeural"
+        config.runtime.local_tts_voice = "en-US-JennyNeural"
+
+        page.apply_config(config)
+
+        self.assertEqual(page.remote_translated_label.text(), "遠端翻譯")
+        self.assertEqual(page.local_translated_label.text(), "本地翻譯")
+
+    def test_live_broadcast_mode_shown_when_no_translation_tts(self) -> None:
+        page = LiveCaptionPage()
+        config = AppConfig()
+        config.runtime.remote_translation_target = "none"
+        config.runtime.local_translation_target = "none"
+        config.runtime.remote_tts_voice = "none"
+        config.runtime.local_tts_voice = "none"
+
+        page.apply_config(config)
+
+        self.assertEqual(page.remote_translated_label.text(), "遠端輸出")
+        self.assertEqual(page.local_translated_label.text(), "本地輸出")
+
+    def test_tts_voice_combo_populates_based_on_translation_target(self) -> None:
+        page = LiveCaptionPage()
+        page.remote_lang_combo.setCurrentIndex(page.remote_lang_combo.findData("zh-TW"))
+        page.local_lang_combo.setCurrentIndex(page.local_lang_combo.findData("en"))
+        page._on_translation_target_changed()
+
+        self.assertGreater(page.remote_tts_voice_combo.count(), 1)
+        self.assertEqual(page.remote_tts_voice_combo.itemData(0), "none")
+        self.assertNotEqual(page.remote_tts_voice_combo.itemData(0), page.remote_tts_voice_combo.itemData(1))
+
+    def test_four_panels_have_same_size(self) -> None:
+        page = LiveCaptionPage()
+        self.assertEqual(page.remote_original.size(), page.remote_translated.size())
+        self.assertEqual(page.remote_original.size(), page.local_original.size())
+        self.assertEqual(page.remote_original.size(), page.local_translated.size())
 
 
 class LocalAiPageUiTests(_QtTestCase):
     def test_tts_style_combo_round_trips_with_config(self) -> None:
-        page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None)
+        page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
         page._model_poll_timer.stop()
         page._reload_llm_models = lambda: None
 
@@ -69,7 +117,7 @@ class LocalAiPageUiTests(_QtTestCase):
         self.assertEqual(updated.local_tts.style_preset, "broadcast_clear")
 
     def test_llm_models_loaded_from_lm_studio_can_be_selected_per_direction(self) -> None:
-        page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None)
+        page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
         page._model_poll_timer.stop()
         page._model_loading = True
         page._model_load_queue.put((True, ["qwen-local", "qwen-remote"]))
@@ -92,6 +140,29 @@ class LocalAiPageUiTests(_QtTestCase):
         config.language.local_target = "en"
 
         self.assertEqual(MainWindow._local_output_test_language(config), "ja")
+
+    def test_local_output_tts_uses_selected_remote_voice(self) -> None:
+        window = MainWindow("config.yaml")
+        window.config.runtime.remote_tts_voice = "en-US-GuyNeural"
+        window.config.language.meeting_target = "en"
+
+        called = {}
+        def fake_build_output_test_audio(*, primary_tts, text):
+            called['voice'] = primary_tts.voice_name
+            return (b"", 22050, "edge_tts")
+
+        window._build_output_test_audio = fake_build_output_test_audio
+        window.speaker_playback.play = lambda audio, sample_rate, output_device_name, blocking: None
+
+        window.test_local_tts_output()
+        self.assertEqual(called.get('voice'), "en-US-GuyNeural")
+
+    def test_local_ai_page_exposes_quick_save_button(self) -> None:
+        page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
+        page._model_poll_timer.stop()
+
+        self.assertTrue(hasattr(page, "quick_save_btn"))
+        self.assertIn(page.quick_save_btn, page.experience_group.findChildren(type(page.quick_save_btn)))
 
 
 if __name__ == "__main__":

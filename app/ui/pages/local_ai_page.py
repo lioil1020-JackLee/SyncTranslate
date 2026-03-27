@@ -125,10 +125,12 @@ class LocalAiPage(QWidget):
         self,
         on_settings_changed: Callable[[], None] | None,
         on_health_check: Callable[[], None],
+        on_save_config: Callable[[], None] | None = None,
     ) -> None:
         super().__init__()
         self._on_settings_changed = on_settings_changed
         self._on_health_check = on_health_check
+        self._on_save_config = on_save_config
         self._suspend_notify = False
         self._model_load_queue: Queue[tuple[bool, list[str] | str]] = Queue()
         self._model_loading = False
@@ -287,6 +289,9 @@ class LocalAiPage(QWidget):
             self.runtime_translation_cache_spin.setValue(config.runtime.translation_exact_cache_size)
             self.runtime_prefix_delta_spin.setValue(config.runtime.translation_prefix_min_delta_chars)
             self.runtime_tts_drop_threshold_spin.setValue(int(getattr(config.runtime, "tts_drop_backlog_threshold", 6)))
+            self.local_echo_guard_check.setChecked(bool(getattr(config.runtime, "local_echo_guard_enabled", False)))
+            self.local_echo_guard_delay_spin.setValue(int(getattr(config.runtime, "local_echo_guard_resume_delay_ms", 300)))
+            self.remote_echo_guard_delay_spin.setValue(int(getattr(config.runtime, "remote_echo_guard_resume_delay_ms", 300)))
             self._apply_channel_strategy_controls()
             self._sync_experience_controls_from_config(config)
             if not self._advanced_visibility_initialized:
@@ -412,15 +417,15 @@ class LocalAiPage(QWidget):
         config.runtime.tts_cancel_policy = str(self.runtime_tts_cancel_policy_combo.currentData() or "all_pending")
         config.runtime.tts_max_wait_ms = self.runtime_tts_max_wait_spin.value()
         config.runtime.tts_max_chars = self.runtime_tts_max_chars_spin.value()
+        config.runtime.local_echo_guard_enabled = self.local_echo_guard_check.isChecked()
+        config.runtime.local_echo_guard_resume_delay_ms = self.local_echo_guard_delay_spin.value()
+        config.runtime.remote_echo_guard_resume_delay_ms = self.remote_echo_guard_delay_spin.value()
         config.runtime.llm_streaming_tokens = self.runtime_llm_streaming_tokens_spin.value()
         config.runtime.max_pipeline_latency_ms = self.runtime_max_pipeline_latency_spin.value()
         # Keep legacy shared fields aligned for backward compatibility.
         config.runtime.asr_queue_maxsize = config.runtime.asr_queue_maxsize_local
         config.runtime.llm_queue_maxsize = config.runtime.llm_queue_maxsize_local
         config.runtime.tts_queue_maxsize = config.runtime.tts_queue_maxsize_local
-        config.runtime.local_echo_guard_enabled = False
-        config.runtime.local_echo_guard_resume_delay_ms = 0
-        config.runtime.remote_echo_guard_resume_delay_ms = 0
         config.runtime.translation_exact_cache_size = self.runtime_translation_cache_spin.value()
         config.runtime.translation_prefix_min_delta_chars = self.runtime_prefix_delta_spin.value()
         config.runtime.tts_drop_backlog_threshold = self.runtime_tts_drop_threshold_spin.value()
@@ -450,6 +455,7 @@ class LocalAiPage(QWidget):
         self._configure_combo_popup(self.tts_style_combo)
 
         self.quick_health_btn = QPushButton("系統檢查")
+        self.quick_save_btn = QPushButton("快速儲存")
         self.show_advanced_check = QCheckBox("顯示進階設定")
         self.show_advanced_check.setChecked(False)
         self.channel_strategy_label = QLabel("ASR / LLM 固定為方向獨立")
@@ -457,7 +463,7 @@ class LocalAiPage(QWidget):
         for compact in (self.experience_preset_combo, self.translation_style_combo, self.tts_style_combo):
             self._set_uniform_field_style(compact, minimum_width=180)
 
-        button_row = self._build_inline_row(self.quick_health_btn, self.show_advanced_check)
+        button_row = self._build_inline_row(self.quick_save_btn, self.quick_health_btn, self.show_advanced_check)
 
         form = QFormLayout()
         self._configure_form_layout(form)
@@ -909,6 +915,13 @@ class LocalAiPage(QWidget):
         self._configure_combo_popup(self.runtime_tts_cancel_policy_combo)
         self.runtime_tts_max_wait_spin = QSpinBox()
         self.runtime_tts_max_wait_spin.setRange(500, 15000)
+        self.local_echo_guard_check = QCheckBox("本地迴音守護")
+        self.local_echo_guard_delay_spin = QSpinBox()
+        self.local_echo_guard_delay_spin.setRange(0, 5000)
+        self.local_echo_guard_delay_spin.setSuffix(" ms")
+        self.remote_echo_guard_delay_spin = QSpinBox()
+        self.remote_echo_guard_delay_spin.setRange(0, 5000)
+        self.remote_echo_guard_delay_spin.setSuffix(" ms")
         self.runtime_tts_max_chars_spin = QSpinBox()
         self.runtime_tts_max_chars_spin.setRange(20, 2000)
         self.runtime_tts_drop_threshold_spin = QSpinBox()
@@ -926,6 +939,9 @@ class LocalAiPage(QWidget):
         form.addRow("執行取樣率", self.runtime_sample_rate_spin)
         form.addRow("音訊切片(ms)", self.runtime_chunk_spin)
         form.addRow("ASR Pre-roll(ms)", self.runtime_asr_pre_roll_spin)
+        form.addRow("本地迴音守護", self.local_echo_guard_check)
+        form.addRow("迴音恢復延遲(ms)", self.local_echo_guard_delay_spin)
+        form.addRow("遠端迴音恢復延遲(ms)", self.remote_echo_guard_delay_spin)
         form.addRow("翻譯快取大小", self.runtime_translation_cache_spin)
         form.addRow("局部觸發差異字數", self.runtime_prefix_delta_spin)
         form.addRow("Streaming tokens", self.runtime_llm_streaming_tokens_spin)
@@ -1017,10 +1033,12 @@ class LocalAiPage(QWidget):
         engine_combo.addItem("Edge TTS（雲端）", "edge_tts")
         self._configure_combo_popup(engine_combo)
 
+        # 進階頁不顯示 edge 聲線下拉，仍保留欄位以兼容更新/儲存邏輯
         edge_voice_combo = QComboBox()
         for label, voice_name in self._edge_voice_options_for(language_kind):
             edge_voice_combo.addItem(label, voice_name)
         self._configure_combo_popup(edge_voice_combo)
+        edge_voice_combo.setVisible(False)
 
         sample_rate_spin = QComboBox()
         sample_rate_spin.setEditable(False)
@@ -1040,7 +1058,7 @@ class LocalAiPage(QWidget):
         form = QFormLayout()
         self._configure_form_layout(form)
         form.addRow("引擎", engine_combo)
-        form.addRow("Edge 聲線", edge_voice_combo)
+        # 不顯示 Edge 聲線於進階頁
         form.addRow("取樣率", sample_rate_spin)
         form.addRow("Noise W", noise_w_spin)
 
@@ -1065,13 +1083,6 @@ class LocalAiPage(QWidget):
             self._build_dual_field_row(
                 self.local_tts_override.engine_combo,
                 self.remote_tts_override.engine_combo,
-            ),
-        )
-        form.addRow(
-            "Edge 聲線",
-            self._build_dual_field_row(
-                self.local_tts_override.edge_voice_combo,
-                self.remote_tts_override.edge_voice_combo,
             ),
         )
         form.addRow(
@@ -1145,6 +1156,7 @@ class LocalAiPage(QWidget):
         self.show_advanced_check.toggled.connect(self._set_advanced_settings_visible)
         self.show_advanced_check.toggled.connect(lambda *_: self._notify_settings_changed())
         self.quick_health_btn.clicked.connect(lambda *_: self._on_health_check())
+        self.quick_save_btn.clicked.connect(lambda *_: self._on_save_config() if self._on_save_config else None)
         self.llm_backend_combo.currentIndexChanged.connect(self._on_backend_changed)
         self.asr_device_combo.currentIndexChanged.connect(self._on_asr_device_changed)
         self.llm_reload_models_btn.clicked.connect(self._reload_llm_models)
@@ -1244,7 +1256,6 @@ class LocalAiPage(QWidget):
     def _bind_tts_channel_events(self, widgets: TtsChannelWidgets) -> None:
         for widget in (
             widgets.engine_combo,
-            widgets.edge_voice_combo,
             widgets.sample_rate_spin,
             widgets.noise_w_spin,
         ):

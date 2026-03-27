@@ -8,7 +8,7 @@ from app.domain.transcript_models import TranscriptItem
 
 
 class TranscriptService:
-    def __init__(self, max_items: int = 200) -> None:
+    def __init__(self, max_items: int | None = 200) -> None:
         self._items: deque[TranscriptItem] = deque(maxlen=max_items)
         self._lock = Lock()
 

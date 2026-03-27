@@ -11,14 +11,14 @@ class _FakeAudioRouter:
     def __init__(self) -> None:
         self.fail_start = False
         self.fail_stop = False
-        self.start_calls: list[tuple[int, int]] = []
+        self.start_calls: list[tuple[str, int, int]] = []
         self.stop_calls = 0
         self._running = False
 
-    def start(self, routes: AudioRouteConfig, sample_rate: int, chunk_ms: int = 100) -> None:
+    def start(self, mode: str, routes: AudioRouteConfig, sample_rate: int, chunk_ms: int = 100) -> None:
         if self.fail_start:
             raise ValueError("start failed")
-        self.start_calls.append((sample_rate, chunk_ms))
+        self.start_calls.append((mode, sample_rate, chunk_ms))
         self._running = True
 
     def stop(self) -> None:

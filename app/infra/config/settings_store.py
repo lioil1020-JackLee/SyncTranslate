@@ -151,6 +151,25 @@ def _normalize_external_config_keys(raw: dict[str, Any]) -> dict[str, Any]:
             runtime["remote_translation_enabled"] = legacy_translation_enabled
         if "local_translation_enabled" not in runtime:
             runtime["local_translation_enabled"] = legacy_translation_enabled
+
+        # 新增 vNext 欄位
+        if "remote_asr_language" not in runtime:
+            runtime["remote_asr_language"] = "auto"
+        if "local_asr_language" not in runtime:
+            runtime["local_asr_language"] = "auto"
+
+        if "remote_translation_target" not in runtime:
+            enabled = bool(runtime.get("remote_translation_enabled", legacy_translation_enabled))
+            runtime["remote_translation_target"] = "zh-TW" if enabled else "none"
+        if "local_translation_target" not in runtime:
+            enabled = bool(runtime.get("local_translation_enabled", legacy_translation_enabled))
+            runtime["local_translation_target"] = "en" if enabled else "none"
+
+        if "remote_tts_voice" not in runtime:
+            runtime["remote_tts_voice"] = "none"
+        if "local_tts_voice" not in runtime:
+            runtime["local_tts_voice"] = "none"
+
         runtime["asr_language_mode"] = "auto"
     return data
 

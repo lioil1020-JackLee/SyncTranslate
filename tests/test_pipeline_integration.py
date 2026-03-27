@@ -336,11 +336,11 @@ class PipelineIntegrationTests(_QtTestCase):
 
         self.assertEqual(
             page.remote_original.toPlainText(),
-            "[final] hello world\n[partial] next sentence",
+            "[partial] next sentence\n[final] hello world",
         )
         self.assertEqual(
             page.remote_translated.toPlainText(),
-            "[final] ZH:hello world\n[partial] ZH:next sentence",
+            "[partial] ZH:next sentence\n[final] ZH:hello world",
         )
         self.assertEqual(page.local_original.toPlainText(), "[final] ni hao ma")
         self.assertEqual(page.local_translated.toPlainText(), "[final] EN:ni hao ma")

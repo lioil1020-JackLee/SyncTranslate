@@ -42,7 +42,11 @@ def build_pipeline_bundle(
     input_manager = AudioInputManager(local_capture=local_capture, remote_capture=meeting_capture)
     asr_manager = ASRManager(config, on_error=on_error, pipeline_revision=pipeline_revision)
     translator_manager = TranslatorManager(config, on_error=on_error)
-    state_manager = StateManager()
+    state_manager = StateManager(
+        local_echo_guard_enabled=config.runtime.local_echo_guard_enabled,
+        local_resume_delay_ms=config.runtime.local_echo_guard_resume_delay_ms,
+        remote_resume_delay_ms=config.runtime.remote_echo_guard_resume_delay_ms,
+    )
     tts_manager = TTSManager(
         config=config,
         local_playback=speaker_playback,

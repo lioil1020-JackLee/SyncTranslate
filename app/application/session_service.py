@@ -56,7 +56,7 @@ class SessionController:
             self._last_failure = ""
 
         try:
-            self._audio_router.start(routes, sample_rate, chunk_ms=chunk_ms)
+            self._audio_router.start("bidirectional", routes, sample_rate, chunk_ms=chunk_ms)
         except Exception as exc:
             try:
                 self._audio_router.stop()

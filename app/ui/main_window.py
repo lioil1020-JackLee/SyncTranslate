@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
@@ -8,7 +8,7 @@ from threading import Thread
 
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QCloseEvent, QGuiApplication, QIcon, QShowEvent
-from PySide6.QtWidgets import QMainWindow, QMessageBox, QScrollArea, QSizePolicy, QTabWidget, QWidget
+from PySide6.QtWidgets import QPushButton, QHBoxLayout, QMainWindow, QMessageBox, QScrollArea, QSizePolicy, QTabWidget, QWidget
 import numpy as np
 
 try:
@@ -64,7 +64,7 @@ class MainWindow(QMainWindow):
         self.local_capture = AudioCapture()
         self.speaker_playback = AudioPlayback()
         self.meeting_playback = AudioPlayback()
-        self.transcript_buffer = TranscriptBuffer(max_items=2000)
+        self.transcript_buffer = TranscriptBuffer(max_items=None)
         self.recent_errors: list[str] = []
         self._error_lock = Lock()
         self._asr_detected_lock = Lock()
@@ -75,6 +75,7 @@ class MainWindow(QMainWindow):
         self._session_action_name = ""
         self._session_action_queue: Queue[tuple[str, bool, object]] = Queue()
         self._pending_live_apply = False
+        self._live_apply_ready = False
 
         self.setWindowTitle("SyncTranslate - Local AI Runtime")
         self._set_window_icon()
@@ -123,6 +124,7 @@ class MainWindow(QMainWindow):
         self.local_ai_page = LocalAiPage(
             on_settings_changed=self._on_local_ai_changed,
             on_health_check=self.run_system_check,
+            on_save_config=self.persist_config,
         )
         self.diagnostics_page = DiagnosticsPage(
         )
@@ -132,8 +134,31 @@ class MainWindow(QMainWindow):
             diagnostics_page=self.diagnostics_page,
         )
 
-        self.tabs.addTab(self._wrap_in_scroll_area(self.live_caption_page), "即時字幕")
+        # 直接放置 LiveCaptionPage（不使用滾動區），以便 resizeEvent 在實際小部件上生效
+        self.tabs.addTab(self.live_caption_page, "即時字幕")
         self.tabs.addTab(self.settings_page, "設定")
+
+        # 將 清空字幕與 開始 統一放在 tab bar 同一高度（右側）
+        self._tab_corner_widget = QWidget()
+        tab_corner_layout = QHBoxLayout(self._tab_corner_widget)
+        tab_corner_layout.setContentsMargins(0, 0, 0, 0)
+        tab_corner_layout.setSpacing(6)
+        self._clear_caption_btn = QPushButton("清空字幕")
+        self._clear_caption_btn.clicked.connect(self.clear_live_caption)
+        self._start_session_btn = QPushButton("開始")
+        self._start_session_btn.clicked.connect(self.start_session)
+
+        # 調整角落按鈕大小與即時字幕/設定分頁按鈕一致
+        tab_height = self.tabs.tabBar().sizeHint().height() or 40
+        for btn in (self._clear_caption_btn, self._start_session_btn):
+            btn.setFixedHeight(tab_height)
+            btn.setMinimumWidth(96)
+            btn.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+
+        tab_corner_layout.addWidget(self._clear_caption_btn)
+        tab_corner_layout.addWidget(self._start_session_btn)
+        self.tabs.setCornerWidget(self._tab_corner_widget, Qt.TopRightCorner)
+
         self._config_apply_service = ConfigApplyService(
             meeting_capture=self.meeting_capture,
             local_capture=self.local_capture,
@@ -221,7 +246,9 @@ class MainWindow(QMainWindow):
     def validate_current_routes(self) -> None:
         is_running = self.session_controller.is_running() if self.session_controller else False
         self.live_caption_page.set_start_enabled(True)
-        self.live_caption_page.set_start_label("停止" if is_running else "開始")
+        label = "停止" if is_running else "開始"
+        self.live_caption_page.set_start_label(label)
+        self._start_session_btn.setText(label)
         self.live_caption_page.set_direction_controls_enabled(not is_running and not self._session_action_running)
         route_message, route_has_error = self._current_route_validation_message()
         self.audio_routing_page.set_validation_message(route_message, is_error=route_has_error)
@@ -463,6 +490,7 @@ class MainWindow(QMainWindow):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setWidget(widget)
         return scroll
 
@@ -479,7 +507,8 @@ class MainWindow(QMainWindow):
             pass
 
     def _apply_content_minimum_height(self) -> None:
-        desired_height = max(760, self._preferred_client_height() - 28)
+        # 降低最小高度以避免不必要的窗口溢出，並讓四個區塊在較小窗體中自動等比縮放
+        desired_height = max(640, self._preferred_client_height() - 28)
         self.setMinimumHeight(desired_height)
 
     def _fit_window_to_screen(self) -> None:
@@ -606,10 +635,20 @@ class MainWindow(QMainWindow):
     def test_local_tts_output(self) -> None:
         device_name = self._get_speaker_output_device()
         try:
+            # 優先保留當前配置中設定的遠端 TTS 聲線，避免 UI sync 清空後遺失
+            pre_sync_remote_voice = str(getattr(self.config.runtime, "remote_tts_voice", "none") or "none")
+
             self._sync_ui_to_config()
             self.live_caption_page.apply_config(self.config)
-            target_lang = self._local_output_test_language(self.config)
+            # 針對放在遠端翻譯區的測試按鈕，使用遠端語言/聲線設定
+            target_lang = str(getattr(self.config.language, "meeting_target", "zh-TW") or "zh-TW")
             test_tts = resolve_tts_config_for_target(self.config, target_lang)
+            preferred_voice = str(getattr(self.config.runtime, "remote_tts_voice", "none") or "none")
+            if preferred_voice == "none" and pre_sync_remote_voice != "none":
+                preferred_voice = pre_sync_remote_voice
+            if preferred_voice != "none":
+                test_tts.voice_name = preferred_voice
+
             audio, sample_rate, engine_label = self._build_output_test_audio(
                 primary_tts=test_tts,
                 text=self._tts_test_text(target_lang),
@@ -637,7 +676,8 @@ class MainWindow(QMainWindow):
 
     @classmethod
     def _build_transcript_lines(cls, items) -> list[str]:
-        return [cls._format_transcript_line(item.text, item.is_final) for item in items]
+        # newest first: 讓最新字幕顯示在畫面最上方
+        return [cls._format_transcript_line(item.text, item.is_final) for item in reversed(items)]
 
     def _report_error(self, message: str | ErrorEvent) -> None:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -714,10 +754,10 @@ class MainWindow(QMainWindow):
     def _apply_output_switches_to_router(self) -> None:
         if not self.audio_router:
             return
-        output_mode = self.live_caption_page.selected_tts_output_mode()
-        # Global output policy applies to both playback channels.
-        self.audio_router.set_output_mode("local", output_mode)
-        self.audio_router.set_output_mode("remote", output_mode)
+        local_mode = self.live_caption_page.selected_tts_output_mode_for_channel("local")
+        remote_mode = self.live_caption_page.selected_tts_output_mode_for_channel("remote")
+        self.audio_router.set_output_mode("local", local_mode)
+        self.audio_router.set_output_mode("remote", remote_mode)
 
     def run_system_check(self) -> None:
         if self._healthcheck_service.running:
@@ -786,9 +826,11 @@ class MainWindow(QMainWindow):
         self.live_caption_page.set_start_enabled(False)
         if action == "stop":
             self.live_caption_page.set_start_label("停止中...")
+            self._start_session_btn.setText("停止中...")
             self.statusBar().showMessage("正在停止 session...")
         else:
             self.live_caption_page.set_start_label("啟動中...")
+            self._start_session_btn.setText("啟動中...")
             self.statusBar().showMessage("正在啟動 session...")
             self._update_live_panel_statuses(
                 remote_original_active=False,

@@ -224,11 +224,15 @@ class TranslatorManager:
         if source == "remote":
             default_source = self._config.language.meeting_source
             target = self._config.language.meeting_target
+            configured_asr_source = getattr(self._config.runtime, "remote_asr_language", "auto")
         else:
             default_source = self._config.language.local_source
             target = self._config.language.local_target
+            configured_asr_source = getattr(self._config.runtime, "local_asr_language", "auto")
 
         detected = (detected_language or "").strip()
+        if configured_asr_source and configured_asr_source != "auto":
+            return configured_asr_source, target
         if detected:
             return detected, target
         return default_source, target

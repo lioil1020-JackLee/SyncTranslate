@@ -88,7 +88,7 @@ class LiveCaptionExportTests(_QtTestCase):
 
             self.assertEqual(
                 paths["remote_original"].read_text(encoding="utf-8"),
-                "[final] remote hello\n[partial] remote next",
+                "[partial] remote next\n[final] remote hello",
             )
             self.assertEqual(
                 paths["remote_translated"].read_text(encoding="utf-8"),
