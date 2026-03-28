@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 from queue import Empty, Queue
+import sys
 from threading import Lock
 from threading import Thread
 
@@ -489,9 +490,32 @@ class MainWindow(QMainWindow):
         self.setWindowFlags(self._standard_window_flags())
 
     def _set_window_icon(self) -> None:
-        icon = QIcon("lioil.ico")
-        if not icon.isNull():
-            self.setWindowIcon(icon)
+        for candidate in self._icon_candidates():
+            icon = QIcon(str(candidate))
+            if not icon.isNull():
+                self.setWindowIcon(icon)
+                return
+
+    @staticmethod
+    def _icon_candidates() -> list[Path]:
+        candidates: list[Path] = []
+        if getattr(sys, "frozen", False):
+            exe_dir = Path(sys.executable).resolve().parent
+            candidates.append(exe_dir / "lioil.ico")
+            meipass = getattr(sys, "_MEIPASS", "")
+            if meipass:
+                candidates.append(Path(meipass) / "lioil.ico")
+        candidates.append(Path.cwd() / "lioil.ico")
+        candidates.append(Path(__file__).resolve().parent.parent.parent / "lioil.ico")
+        deduped: list[Path] = []
+        seen: set[str] = set()
+        for item in candidates:
+            key = str(item)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(item)
+        return deduped
 
     @staticmethod
     def _wrap_in_scroll_area(widget: QWidget) -> QScrollArea:
