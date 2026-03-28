@@ -74,5 +74,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name="SyncTranslate",
+    name="SyncTranslate-onedir",
 )
