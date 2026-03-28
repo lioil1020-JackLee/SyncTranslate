@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from queue import Empty, Full, Queue
+from threading import Event, Thread
 from typing import Callable
 
 import numpy as np
@@ -41,6 +43,7 @@ class AudioRouter:
         on_translation_event: Callable[[object], None] | None = None,
         on_tts_request: Callable[[str, str], None] | None = None,
         on_diagnostic_event: Callable[[str], None] | None = None,
+        async_translation: bool = False,
     ) -> None:
         self._transcript_buffer = transcript_buffer
         self._input_manager = input_manager
@@ -60,6 +63,13 @@ class AudioRouter:
         self._chunk_ms: int = 100
         self._capture_running: dict[str, bool] = {"local": False, "remote": False}
         self._asr_running: dict[str, bool] = {"local": False, "remote": False}
+        self._async_translation = bool(async_translation)
+        self._translation_workers: dict[str, Thread] = {}
+        self._translation_stop_event = Event()
+        self._translation_queues = {
+            "local": Queue(maxsize=self._translation_queue_maxsize_for_source("local")),
+            "remote": Queue(maxsize=self._translation_queue_maxsize_for_source("remote")),
+        }
 
     @property
     def running(self) -> bool:
@@ -78,6 +88,7 @@ class AudioRouter:
         if not self._active_sources and not self._has_passthrough_enabled():
             raise ValueError("No active sources configured")
 
+        self._start_translation_workers()
         self._reconcile_runtime_sources()
 
     def stop(self) -> None:
@@ -88,6 +99,7 @@ class AudioRouter:
                 pass
         self._input_manager.stop_all()
         self._asr_manager.stop_all()
+        self._stop_translation_workers()
         self._tts_manager.stop()
         self._active_sources.clear()
         self._mode = ""
@@ -128,20 +140,36 @@ class AudioRouter:
         )
 
     def _on_local_audio_chunk(self, chunk: np.ndarray, sample_rate: float) -> None:
-        self._state.tick()
-        # Local microphone input can be directly forwarded to remote output when passthrough is enabled.
-        self._tts_manager.submit_passthrough("remote", chunk, sample_rate)
-        if not self._state.can_accept_asr("local"):
-            return
-        self._asr_manager.submit("local", chunk, sample_rate)
+        self._handle_source_audio_chunk(
+            source="local",
+            passthrough_channel="remote",
+            chunk=chunk,
+            sample_rate=sample_rate,
+        )
 
     def _on_remote_audio_chunk(self, chunk: np.ndarray, sample_rate: float) -> None:
+        self._handle_source_audio_chunk(
+            source="remote",
+            passthrough_channel="local",
+            chunk=chunk,
+            sample_rate=sample_rate,
+        )
+
+    def _handle_source_audio_chunk(
+        self,
+        *,
+        source: str,
+        passthrough_channel: str,
+        chunk: np.ndarray,
+        sample_rate: float,
+    ) -> None:
         self._state.tick()
-        # Remote meeting input can be directly forwarded to local output when passthrough is enabled.
-        self._tts_manager.submit_passthrough("local", chunk, sample_rate)
-        if not self._state.can_accept_asr("remote"):
+        # Keep local/remote passthrough handling fully symmetric: the source-specific
+        # difference is only which output channel receives the live audio.
+        self._tts_manager.submit_passthrough(passthrough_channel, chunk, sample_rate)
+        if not self._state.can_accept_asr(source):
             return
-        self._asr_manager.submit("remote", chunk, sample_rate)
+        self._asr_manager.submit(source, chunk, sample_rate)
 
     def _on_asr_event(self, event: ASREventWithSource) -> None:
         try:
@@ -194,33 +222,10 @@ class AudioRouter:
                             is_final=True,
                         )
                 return
-            translated = self._translator_manager.process(event)
-            if not translated:
-                self._emit_diagnostic_event(
-                    f"translation_skipped source={event.source} utterance_id={event.utterance_id} revision={event.revision}"
-                )
+            if self._async_translation:
+                self._enqueue_translation_event(event)
                 return
-            self._emit_translation_event(translated)
-            self._transcript_buffer.upsert_event(
-                source=translated.translated_channel,
-                channel=translated.translated_channel,
-                kind="translated",
-                text=translated.text,
-                is_final=translated.is_final,
-                utterance_id=translated.utterance_id,
-                revision=translated.revision,
-                latency_ms=event.latency_ms,
-                created_at=datetime.fromtimestamp(translated.created_at),
-            )
-            if translated.should_speak and self._tts_manager.output_mode(translated.tts_channel) == "tts":
-                self._emit_tts_request(translated.tts_channel, translated.speak_text)
-                self._tts_manager.enqueue(
-                    translated.tts_channel,
-                    translated.speak_text,
-                    utterance_id=translated.utterance_id,
-                    revision=translated.revision,
-                    is_final=translated.is_final,
-                )
+            self._process_translation_event(event)
         except Exception as exc:
             if self._on_error:
                 self._on_error(
@@ -233,6 +238,35 @@ class AudioRouter:
                         detail=str(exc),
                     )
                 )
+
+    def _process_translation_event(self, event: ASREventWithSource) -> None:
+        translated = self._translator_manager.process(event)
+        if not translated:
+            self._emit_diagnostic_event(
+                f"translation_skipped source={event.source} utterance_id={event.utterance_id} revision={event.revision}"
+            )
+            return
+        self._emit_translation_event(translated)
+        self._transcript_buffer.upsert_event(
+            source=translated.translated_channel,
+            channel=translated.translated_channel,
+            kind="translated",
+            text=translated.text,
+            is_final=translated.is_final,
+            utterance_id=translated.utterance_id,
+            revision=translated.revision,
+            latency_ms=event.latency_ms,
+            created_at=datetime.fromtimestamp(translated.created_at),
+        )
+        if translated.should_speak and self._tts_manager.output_mode(translated.tts_channel) == "tts":
+            self._emit_tts_request(translated.tts_channel, translated.speak_text)
+            self._tts_manager.enqueue(
+                translated.tts_channel,
+                translated.speak_text,
+                utterance_id=translated.utterance_id,
+                revision=translated.revision,
+                is_final=translated.is_final,
+            )
 
     def _emit_asr_event(self, event: ASREventWithSource) -> None:
         if self._on_asr_stage_event:
@@ -339,3 +373,80 @@ class AudioRouter:
         if source == "remote":
             return self._on_remote_audio_chunk
         return self._on_local_audio_chunk
+
+    def _translation_queue_maxsize_for_source(self, source: str) -> int:
+        runtime = getattr(getattr(self._translator_manager, "_config", None), "runtime", None)
+        if source == "remote":
+            value = int(getattr(runtime, "llm_queue_maxsize_remote", 32)) if runtime is not None else 32
+        else:
+            value = int(getattr(runtime, "llm_queue_maxsize_local", 32)) if runtime is not None else 32
+        return max(4, value)
+
+    def _start_translation_workers(self) -> None:
+        if not self._async_translation:
+            return
+        self._translation_stop_event.clear()
+        for source in ("local", "remote"):
+            worker = self._translation_workers.get(source)
+            if worker and worker.is_alive():
+                continue
+            thread = Thread(target=self._run_translation_worker, args=(source,), daemon=True)
+            self._translation_workers[source] = thread
+            thread.start()
+
+    def _stop_translation_workers(self) -> None:
+        self._translation_stop_event.set()
+        for source, queue in self._translation_queues.items():
+            while not queue.empty():
+                try:
+                    queue.get_nowait()
+                except Empty:
+                    break
+            worker = self._translation_workers.get(source)
+            if worker and worker.is_alive():
+                worker.join(timeout=2.0)
+        self._translation_workers.clear()
+        self._translation_stop_event = Event()
+
+    def _enqueue_translation_event(self, event: ASREventWithSource) -> None:
+        key = event.source if event.source in ("local", "remote") else "local"
+        queue = self._translation_queues[key]
+        try:
+            queue.put_nowait(event)
+        except Full:
+            dropped = False
+            try:
+                queue.get_nowait()
+                dropped = True
+            except Empty:
+                pass
+            try:
+                queue.put_nowait(event)
+            except Full:
+                pass
+            if dropped:
+                self._emit_diagnostic_event(
+                    f"translation_queue_overflow source={key} utterance_id={event.utterance_id} revision={event.revision}"
+                )
+
+    def _run_translation_worker(self, source: str) -> None:
+        queue = self._translation_queues[source]
+        while not self._translation_stop_event.is_set():
+            try:
+                event = queue.get(timeout=0.2)
+            except Empty:
+                continue
+            try:
+                self._process_translation_event(event)
+            except Exception as exc:
+                if self._on_error:
+                    self._on_error(
+                        ErrorEvent(
+                            level="error",
+                            module="audio_router",
+                            source=source,
+                            code="translation_worker_failed",
+                            message="Failed to process translation event",
+                            detail=str(exc),
+                        )
+                    )

@@ -117,8 +117,17 @@ class ASRManager:
     def submit(self, source: str, chunk: np.ndarray, sample_rate: float) -> None:
         if not self.is_enabled(source):
             return
+        payload = chunk
+        if payload.ndim == 2 and payload.shape[1] > 1:
+            # Keep ASR behavior stable for virtual stereo devices: pick the
+            # strongest channel instead of summing, which can cancel signal when
+            # left/right carry different or phase-shifted content.
+            channels = payload.astype(np.float32, copy=False)
+            channel_energy = np.sqrt(np.mean(np.square(channels), axis=0, dtype=np.float32))
+            channel_index = int(np.argmax(channel_energy))
+            payload = channels[:, channel_index].astype(np.float32, copy=False)
         stream = self._stream_of(source)
-        stream.submit_chunk(chunk, sample_rate)
+        stream.submit_chunk(payload, sample_rate)
 
     def set_enabled(self, source: str, enabled: bool) -> None:
         key = source if source in ("local", "remote") else "local"

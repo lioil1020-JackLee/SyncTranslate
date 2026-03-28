@@ -66,6 +66,7 @@ def build_pipeline_bundle(
         on_asr_event=on_asr_event,
         on_translation_event=on_translation_event,
         on_diagnostic_event=on_diagnostic_event,
+        async_translation=True,
     )
     tts_manager.set_callbacks(
         on_play_start=audio_router.handle_tts_play_start,

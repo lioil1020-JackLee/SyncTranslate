@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import platform
 import time
+from collections import deque
 from threading import Event, Lock, Thread
 
 import numpy as np
@@ -30,13 +31,19 @@ class AudioPlayback:
         self._state_lock = Lock()
         self._play_lock = Lock()
         self._stream: sd.OutputStream | None = None
+        self._stream_signature: tuple[int, float, int] | None = None
+        self._passthrough_stream: sd.OutputStream | None = None
+        self._passthrough_signature: tuple[int, float, int] | None = None
+        self._passthrough_buffer: deque[np.ndarray] = deque()
+        self._passthrough_buffer_frames: int = 0
+        self._passthrough_max_buffer_frames: int = 0
 
     def play(self, audio: np.ndarray, sample_rate: int, output_device_name: str, *, blocking: bool = False) -> None:
         if audio.size == 0 or not output_device_name:
             return
         requested_sample_rate = float(sample_rate)
         with self._play_lock:
-            self._stop_current_stream()
+            self._stop_passthrough_stream()
             errors: list[str] = []
             try:
                 if self._try_play_via_soundcard(
@@ -44,6 +51,7 @@ class AudioPlayback:
                     sample_rate=requested_sample_rate,
                     output_device_name=output_device_name,
                 ):
+                    self._stop_current_stream()
                     return
             except Exception as exc:
                 # If soundcard backend fails, continue to sounddevice fallback candidates.
@@ -57,6 +65,7 @@ class AudioPlayback:
                 requested_sample_rate=requested_sample_rate,
                 errors=errors,
                 tried_indices=tried_indices,
+                blocking=blocking,
             ):
                 return
 
@@ -72,6 +81,7 @@ class AudioPlayback:
                     requested_sample_rate=requested_sample_rate,
                     errors=errors,
                     tried_indices=tried_indices,
+                    blocking=blocking,
                 ):
                     return
 
@@ -85,11 +95,32 @@ class AudioPlayback:
     def stop(self) -> None:
         with self._play_lock:
             self._stop_current_stream()
+            self._stop_passthrough_stream()
 
     def _stop_current_stream(self) -> None:
         with self._state_lock:
             stream = self._stream
             self._stream = None
+            self._stream_signature = None
+        if not stream:
+            return
+        try:
+            stream.abort()
+        except Exception:
+            pass
+        try:
+            stream.close()
+        except Exception:
+            pass
+
+    def _stop_passthrough_stream(self) -> None:
+        with self._state_lock:
+            stream = self._passthrough_stream
+            self._passthrough_stream = None
+            self._passthrough_signature = None
+            self._passthrough_buffer.clear()
+            self._passthrough_buffer_frames = 0
+            self._passthrough_max_buffer_frames = 0
         if not stream:
             return
         try:
@@ -104,6 +135,44 @@ class AudioPlayback:
     def set_volume(self, volume: float) -> None:
         with self._state_lock:
             self._volume = max(0.0, float(volume))
+
+    def push_passthrough(self, audio: np.ndarray, sample_rate: float, output_device_name: str) -> None:
+        if audio.size == 0 or not output_device_name or sample_rate <= 0:
+            return
+        requested_sample_rate = float(sample_rate)
+        with self._play_lock:
+            self._stop_current_stream()
+            errors: list[str] = []
+            tried_indices: set[int] = set()
+            selected_candidates = self._find_output_devices(output_device_name)
+            if self._try_push_passthrough_on_candidates(
+                candidates=selected_candidates,
+                audio=audio,
+                requested_sample_rate=requested_sample_rate,
+                errors=errors,
+                tried_indices=tried_indices,
+            ):
+                return
+
+            canonical_name = canonical_device_name(output_device_name)
+            if canonical_name and canonical_name != output_device_name:
+                fallback_candidates = self._find_output_devices(canonical_name)
+                fallback_candidates = [pair for pair in fallback_candidates if pair[0] not in tried_indices]
+                if self._try_push_passthrough_on_candidates(
+                    candidates=fallback_candidates,
+                    audio=audio,
+                    requested_sample_rate=requested_sample_rate,
+                    errors=errors,
+                    tried_indices=tried_indices,
+                ):
+                    return
+
+            if not errors:
+                raise ValueError(f"Output device not found: {output_device_name}")
+            raise ValueError(
+                "Unable to stream passthrough audio on the selected output device. "
+                + " | ".join(errors[:6])
+            )
 
     def preview_resolved_sample_rate(self, output_device_name: str, requested_sample_rate: int) -> float:
         if self._can_play_via_soundcard(output_device_name):
@@ -137,6 +206,7 @@ class AudioPlayback:
         requested_sample_rate: float,
         errors: list[str],
         tried_indices: set[int],
+        blocking: bool,
     ) -> bool:
         for device_index, device_info in candidates:
             tried_indices.add(device_index)
@@ -166,6 +236,7 @@ class AudioPlayback:
                     hostapi_name = hostapi_name_by_index(int(device_info.get("hostapi", -1))).strip().lower()
                     timeout_sec = max(3.0, float(playback_audio.shape[0]) / max(1.0, resolved_sample_rate) + 2.0)
                     if hostapi_name == "windows wdm-ks":
+                        self._stop_current_stream()
                         self._play_via_callback_stream(
                             device_index=device_index,
                             samplerate=resolved_sample_rate,
@@ -174,32 +245,171 @@ class AudioPlayback:
                             timeout_sec=timeout_sec,
                         )
                     else:
-                        stream = sd.OutputStream(
-                            device=device_index,
+                        stream = self._ensure_output_stream(
+                            device_index=device_index,
                             samplerate=resolved_sample_rate,
                             channels=channels,
-                            dtype="float32",
                         )
-                        with self._state_lock:
-                            self._stream = stream
-                        try:
-                            stream.start()
-                            self._write_stream_blocking_with_timeout(
-                                stream=stream,
-                                audio=playback_audio,
-                                timeout_sec=timeout_sec,
-                            )
-                            stream.stop()
-                        finally:
-                            with self._state_lock:
-                                if self._stream is stream:
-                                    self._stream = None
-                            stream.close()
+                        self._write_stream_blocking_with_timeout(
+                            stream=stream,
+                            audio=playback_audio,
+                            timeout_sec=timeout_sec,
+                        )
+                        if blocking:
+                            self._stop_current_stream()
                     self._last_play_device = str(device_info["name"])
                     return True
                 except Exception as exc:
+                    self._stop_current_stream()
                     errors.append(f"{device_info['name']} [idx={device_index}, {channels}ch]: {exc}")
         return False
+
+    def _ensure_output_stream(self, *, device_index: int, samplerate: float, channels: int) -> sd.OutputStream:
+        signature = (int(device_index), float(samplerate), int(channels))
+        with self._state_lock:
+            stream = self._stream
+            current_signature = self._stream_signature
+        if stream is not None and current_signature == signature:
+            return stream
+        self._stop_current_stream()
+        stream = sd.OutputStream(
+            device=device_index,
+            samplerate=samplerate,
+            channels=channels,
+            dtype="float32",
+        )
+        stream.start()
+        with self._state_lock:
+            self._stream = stream
+            self._stream_signature = signature
+        return stream
+
+    def _try_push_passthrough_on_candidates(
+        self,
+        *,
+        candidates: list[tuple[int, dict[str, object]]],
+        audio: np.ndarray,
+        requested_sample_rate: float,
+        errors: list[str],
+        tried_indices: set[int],
+    ) -> bool:
+        for device_index, device_info in candidates:
+            tried_indices.add(device_index)
+            max_output_channels = int(device_info["max_output_channels"])
+            if max_output_channels <= 0:
+                continue
+            default_sample_rate = float(device_info["default_samplerate"])
+            input_channels = 1 if audio.ndim == 1 else int(audio.shape[1])
+            channel_candidates: list[int] = []
+            for candidate in (min(max_output_channels, max(1, input_channels)), 2, 1):
+                if candidate <= 0 or candidate > max_output_channels or candidate in channel_candidates:
+                    continue
+                channel_candidates.append(candidate)
+            for channels in channel_candidates:
+                try:
+                    resolved_sample_rate = self._resolve_supported_output_sample_rate(
+                        device_index=device_index,
+                        channels=channels,
+                        requested_sample_rate=requested_sample_rate,
+                        default_sample_rate=default_sample_rate,
+                        prefer_device_rate=self._should_prefer_device_sample_rate(str(device_info["name"])),
+                    )
+                    playback_audio = self._prepare_passthrough_audio(
+                        audio=audio,
+                        output_channels=channels,
+                        source_sample_rate=requested_sample_rate,
+                        target_sample_rate=resolved_sample_rate,
+                    )
+                    self._enqueue_passthrough_audio(
+                        device_index=device_index,
+                        samplerate=resolved_sample_rate,
+                        channels=channels,
+                        audio=playback_audio,
+                    )
+                    self._last_play_device = str(device_info["name"])
+                    return True
+                except Exception as exc:
+                    self._stop_passthrough_stream()
+                    errors.append(f"{device_info['name']} [idx={device_index}, {channels}ch]: {exc}")
+        return False
+
+    def _ensure_passthrough_stream(self, *, device_index: int, samplerate: float, channels: int) -> sd.OutputStream:
+        signature = (int(device_index), float(samplerate), int(channels))
+        with self._state_lock:
+            stream = self._passthrough_stream
+            current_signature = self._passthrough_signature
+        if stream is not None and current_signature == signature:
+            return stream
+        self._stop_passthrough_stream()
+        self._passthrough_max_buffer_frames = max(int(samplerate * 1.5), 2048)
+
+        def _callback(outdata: np.ndarray, frames: int, _time_info, _status) -> None:
+            outdata.fill(0)
+            with self._state_lock:
+                remaining = frames
+                offset = 0
+                while remaining > 0 and self._passthrough_buffer:
+                    chunk = self._passthrough_buffer[0]
+                    take = min(remaining, int(chunk.shape[0]))
+                    outdata[offset:offset + take] = chunk[:take]
+                    offset += take
+                    remaining -= take
+                    self._passthrough_buffer_frames -= take
+                    if take >= int(chunk.shape[0]):
+                        self._passthrough_buffer.popleft()
+                    else:
+                        self._passthrough_buffer[0] = chunk[take:]
+
+        stream = sd.OutputStream(
+            device=device_index,
+            samplerate=samplerate,
+            channels=channels,
+            dtype="float32",
+            callback=_callback,
+            blocksize=0,
+        )
+        stream.start()
+        with self._state_lock:
+            self._passthrough_stream = stream
+            self._passthrough_signature = signature
+        return stream
+
+    def _enqueue_passthrough_audio(self, *, device_index: int, samplerate: float, channels: int, audio: np.ndarray) -> None:
+        self._ensure_passthrough_stream(device_index=device_index, samplerate=samplerate, channels=channels)
+        payload = np.ascontiguousarray(audio, dtype=np.float32)
+        if payload.ndim == 1:
+            payload = payload.reshape(-1, 1)
+        with self._state_lock:
+            self._passthrough_buffer.append(payload)
+            self._passthrough_buffer_frames += int(payload.shape[0])
+            while self._passthrough_buffer and self._passthrough_buffer_frames > self._passthrough_max_buffer_frames:
+                dropped = self._passthrough_buffer.popleft()
+                self._passthrough_buffer_frames -= int(dropped.shape[0])
+
+    def _prepare_passthrough_audio(
+        self,
+        *,
+        audio: np.ndarray,
+        output_channels: int,
+        source_sample_rate: float,
+        target_sample_rate: float,
+    ) -> np.ndarray:
+        base = audio.astype(np.float32, copy=False)
+        if base.ndim == 1:
+            base = base.reshape(-1, 1)
+        if output_channels == 1 and base.shape[1] > 1:
+            base = np.mean(base, axis=1, dtype=np.float32, keepdims=True)
+        elif output_channels > 1 and base.shape[1] == 1:
+            base = np.repeat(base, output_channels, axis=1)
+        elif output_channels > 1 and base.shape[1] != output_channels:
+            base = base[:, :output_channels]
+        return self._apply_volume(
+            self._resample_audio_if_needed(
+                audio=base,
+                source_sample_rate=source_sample_rate,
+                target_sample_rate=target_sample_rate,
+            )
+        )
 
     def _try_play_via_soundcard(self, *, audio: np.ndarray, sample_rate: float, output_device_name: str) -> bool:
         if platform.system().lower() != "windows" or sc is None:

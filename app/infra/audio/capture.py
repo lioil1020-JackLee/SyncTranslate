@@ -50,7 +50,7 @@ class AudioCapture:
         errors: list[str] = []
         for device_index, device_info in self._rank_input_devices(device_name):
             max_input_channels = int(device_info["max_input_channels"])
-            channels = 1 if max_input_channels >= 1 else 0
+            channels = self._preferred_input_channels(device_name, max_input_channels)
             if channels <= 0:
                 continue
             default_sample_rate = float(device_info["default_samplerate"])
@@ -97,7 +97,7 @@ class AudioCapture:
         requested = float(requested_sample_rate) if requested_sample_rate else None
         errors: list[str] = []
         for device_index, device_info in self._rank_input_devices(device_name):
-            channels = 1 if int(device_info["max_input_channels"]) >= 1 else 0
+            channels = self._preferred_input_channels(device_name, int(device_info["max_input_channels"]))
             if channels <= 0:
                 continue
             default_rate = float(device_info["default_samplerate"])
@@ -273,6 +273,15 @@ class AudioCapture:
             return 0
         frames = int(round(float(sample_rate) * int(chunk_ms) / 1000.0))
         return max(256, frames)
+
+    @staticmethod
+    def _preferred_input_channels(device_name: str, max_input_channels: int) -> int:
+        if max_input_channels <= 0:
+            return 0
+        normalized = normalize_device_text(device_name)
+        if max_input_channels >= 2 and any(token in normalized for token in ("voicemeeter", "vb audio", "virtual", "cable")):
+            return 2
+        return 1
 
 
 __all__ = ["CaptureStats", "AudioCapture"]

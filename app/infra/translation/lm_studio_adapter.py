@@ -55,6 +55,10 @@ class LmStudioClient:
             "Do not explain, analyze, answer, summarize, add notes, add bullet points, use markdown, or show thinking process.\n"
             "Never output Thinking Process, Analysis, Notes, romanization, pinyin, or source-language quotes.\n"
             "If the input is a fragment, translate it as a fragment.\n"
+            "Translate literally and conservatively.\n"
+            "Do not continue the sentence, do not infer missing context, do not add emotions, and do not make the text longer than needed.\n"
+            "If the source is short, keep the translation short.\n"
+            "If the meaning is unclear, prefer a plain literal translation over a natural rewrite.\n"
             "Keep named entities and numbers accurate.\n"
             f"Style policy: {style_hint}"
         )
@@ -182,6 +186,10 @@ class LmStudioClient:
             filtered.append(line)
         if not filtered:
             return ""
+        if target_lang.lower().startswith("zh"):
+            filtered = [line for line in filtered if not _looks_like_overexpanded_translation(line)]
+            if not filtered:
+                return ""
         if target_lang.lower().startswith("zh"):
             prioritized = sorted(
                 [line for line in filtered if _contains_cjk(line) and not _looks_like_glossary(line)],
@@ -319,6 +327,19 @@ def _looks_like_markup_fragment(text: str) -> bool:
     angle_pairs = value.count("<") + value.count(">")
     slash_pairs = value.count("/")
     return angle_pairs >= 2 and slash_pairs >= 1
+
+
+def _looks_like_overexpanded_translation(text: str) -> bool:
+    value = (text or "").strip()
+    if not value:
+        return False
+    banned_phrases = (
+        "我會成為你的朋友",
+        "我也愛你",
+        "我能感受到你的存在",
+        "非常感謝你",
+    )
+    return any(token in value for token in banned_phrases)
 
 
 def _language_label(code: str) -> str:

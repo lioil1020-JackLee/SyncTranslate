@@ -6,6 +6,7 @@ from collections import deque
 from queue import Empty, Full, Queue
 from threading import Event, Lock, Thread
 from typing import Callable
+import re
 
 import numpy as np
 
@@ -259,6 +260,9 @@ class StreamingAsr:
             return
         if not text.strip():
             return
+        if _looks_like_silence_hallucination(text, audio_ms=audio_ms, vad_rms=self._vad.last_rms):
+            self._debug(f"drop hallucinated partial text={text.strip()[:80]}")
+            return
         latency_ms = int((time.perf_counter() - start) * 1000)
         if latency_ms >= 1500:
             now_ms = int(time.monotonic() * 1000)
@@ -297,6 +301,10 @@ class StreamingAsr:
                     latency_ms=0,
                 )
             )
+            return
+        audio_ms = int(len(audio) * 1000 / max(1, self._segment_sample_rate))
+        if _looks_like_silence_hallucination(text, audio_ms=audio_ms, vad_rms=self._vad.last_rms):
+            self._debug(f"drop hallucinated final text={text.strip()[:80]}")
             return
         latency_ms = int((time.perf_counter() - start) * 1000)
         if latency_ms >= 1500:
@@ -373,3 +381,25 @@ class StreamingAsr:
         self._pre_roll_sample_count = 0
         self._pre_roll_sample_rate = sr
         return True
+
+
+_HALLUCINATION_PATTERNS = (
+    re.compile(r"^\s*thank(s| you)( everyone| all)?[.! ]*$", re.IGNORECASE),
+    re.compile(r"^\s*good night[.! ]*$", re.IGNORECASE),
+    re.compile(r"^\s*bye(-| )?bye[.! ]*$", re.IGNORECASE),
+    re.compile(r"^\s*y[' ]?all[.! ]*$", re.IGNORECASE),
+    re.compile(r"^\s*謝謝(大家|各位)?[。！! ]*$"),
+    re.compile(r"^\s*晚安[。！! ]*$"),
+)
+
+
+def _looks_like_silence_hallucination(text: str, *, audio_ms: int, vad_rms: float) -> bool:
+    value = (text or "").strip()
+    if not value:
+        return False
+    if audio_ms > 1800:
+        return False
+    if vad_rms >= 0.035:
+        return False
+    compact = re.sub(r"\s+", " ", value)
+    return any(pattern.match(compact) for pattern in _HALLUCINATION_PATTERNS)

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from threading import Event
+import time
 import unittest
 
 from app.application.audio_router import AudioRouter
@@ -55,6 +57,7 @@ class _FakeAsrManager:
         self.enabled = {"local": False, "remote": False}
         self.start_calls: list[str] = []
         self.stop_calls: list[str] = []
+        self.submit_calls: list[tuple[str, float]] = []
 
     def set_enabled(self, source: str, enabled: bool) -> None:
         self.enabled[source] = enabled
@@ -69,7 +72,7 @@ class _FakeAsrManager:
         pass
 
     def submit(self, source: str, chunk, sample_rate: float) -> None:
-        pass
+        self.submit_calls.append((source, sample_rate))
 
     def stats(self) -> dict[str, dict[str, object]]:
         return {
@@ -117,6 +120,7 @@ class _FakeTtsManager:
     def __init__(self) -> None:
         self._mode = {"local": "subtitle_only", "remote": "subtitle_only"}
         self.enqueued: list[tuple[str, str]] = []
+        self.passthrough_calls: list[tuple[str, float]] = []
 
     def start(self) -> None:
         pass
@@ -140,7 +144,7 @@ class _FakeTtsManager:
         return self._mode.get(channel, "subtitle_only")
 
     def submit_passthrough(self, channel: str, chunk, sample_rate: float) -> None:
-        pass
+        self.passthrough_calls.append((channel, sample_rate))
 
     def enqueue(self, channel: str, text: str, *, utterance_id: str, revision: int, is_final: bool) -> None:
         self.enqueued.append((channel, text))
@@ -160,10 +164,15 @@ def _build_router(
     *,
     translation_enabled: bool = True,
     enabled_by_source: dict[str, bool] | None = None,
+    async_translation: bool = False,
+    translator_manager=None,
 ) -> tuple[AudioRouter, _FakeInputManager, _FakeAsrManager, _FakeTranslatorManager, _FakeTtsManager]:
     input_manager = _FakeInputManager()
     asr_manager = _FakeAsrManager()
-    translator_manager = _FakeTranslatorManager(enabled=translation_enabled, enabled_by_source=enabled_by_source)
+    translator_manager = translator_manager or _FakeTranslatorManager(
+        enabled=translation_enabled,
+        enabled_by_source=enabled_by_source,
+    )
     tts_manager = _FakeTtsManager()
     router = AudioRouter(
         transcript_buffer=TranscriptBuffer(),
@@ -172,6 +181,7 @@ def _build_router(
         translator_manager=translator_manager,  # type: ignore[arg-type]
         tts_manager=tts_manager,  # type: ignore[arg-type]
         state_manager=StateManager(local_echo_guard_enabled=True),
+        async_translation=async_translation,
     )
     return router, input_manager, asr_manager, translator_manager, tts_manager
 
@@ -299,6 +309,76 @@ class AudioRouterPolicyTests(unittest.TestCase):
         self.assertIn("remote", input_manager.start_calls)
         self.assertIn("local", asr_manager.start_calls)
         self.assertIn("remote", asr_manager.start_calls)
+
+    def test_local_source_passthrough_targets_remote_output_channel(self) -> None:
+        router, _, _, _, tts = _build_router()
+        router.set_output_mode("remote", "passthrough")
+
+        router._on_local_audio_chunk(chunk=[0.0], sample_rate=16000.0)  # type: ignore[arg-type]
+
+        self.assertIn(("remote", 16000.0), tts.passthrough_calls)
+
+    def test_remote_source_passthrough_targets_local_output_channel(self) -> None:
+        router, _, _, _, tts = _build_router()
+        router.set_output_mode("local", "passthrough")
+
+        router._on_remote_audio_chunk(chunk=[0.0], sample_rate=24000.0)  # type: ignore[arg-type]
+
+        self.assertIn(("local", 24000.0), tts.passthrough_calls)
+
+    def test_local_and_remote_chunk_handlers_follow_same_passthrough_then_asr_pattern(self) -> None:
+        router, _, asr_manager, _, tts = _build_router()
+        routes = AudioRouteConfig(meeting_in="remote-dev", microphone_in="local-dev", speaker_out="spk", meeting_out="mtg")
+        router.start("bidirectional", routes, sample_rate=24000, chunk_ms=40)
+        router._on_local_audio_chunk(chunk=[0.0], sample_rate=16000.0)  # type: ignore[arg-type]
+        router._on_remote_audio_chunk(chunk=[0.0], sample_rate=24000.0)  # type: ignore[arg-type]
+
+        self.assertIn(("remote", 16000.0), tts.passthrough_calls)
+        self.assertIn(("local", 24000.0), tts.passthrough_calls)
+        self.assertIn(("local", 16000.0), asr_manager.submit_calls)
+        self.assertIn(("remote", 24000.0), asr_manager.submit_calls)
+
+    def test_async_translation_keeps_asr_callback_non_blocking_per_direction(self) -> None:
+        class _BlockingTranslator(_FakeTranslatorManager):
+            def __init__(self) -> None:
+                super().__init__(enabled=True)
+                self.release = Event()
+
+            def process(self, event):
+                self.process_calls += 1
+                self.release.wait(timeout=2.0)
+                return None
+
+        translator = _BlockingTranslator()
+        router, _, _, _, _ = _build_router(async_translation=True, translator_manager=translator)
+        routes = AudioRouteConfig(meeting_in="remote-dev", microphone_in="local-dev", speaker_out="spk", meeting_out="mtg")
+        router.start("bidirectional", routes, sample_rate=24000, chunk_ms=40)
+        event = ASREventWithSource(
+            source="remote",
+            utterance_id="u-block",
+            revision=1,
+            pipeline_revision=1,
+            config_fingerprint="fp",
+            created_at=0.0,
+            text="hello",
+            is_final=True,
+            start_ms=0,
+            end_ms=500,
+            latency_ms=50,
+            detected_language="en",
+        )
+
+        started = time.perf_counter()
+        router._on_asr_event(event)
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        translator.release.set()
+        router.stop()
+
+        self.assertLess(elapsed_ms, 100.0)
+        self.assertEqual(
+            router._transcript_buffer.latest("meeting_original", limit=1)[0].text,
+            "hello",
+        )
 
 
 if __name__ == "__main__":

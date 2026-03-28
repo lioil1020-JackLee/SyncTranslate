@@ -244,17 +244,28 @@ class TTSManager:
             return
         if audio.size == 0 or sample_rate <= 0:
             return
-        payload = audio.astype(np.float32, copy=True)
-        if payload.ndim == 2 and payload.shape[1] > 1:
-            payload = payload[:, :1]
-        task = _PassthroughTask(audio=payload, sample_rate=float(sample_rate), created_at=time.time())
-        with self._queue_changed:
-            queue = self._passthrough_pending[key]
-            queue.append(task)
-            while len(queue) > self._passthrough_queue_limit:
-                queue.popleft()
-                self._passthrough_drop_count[key] += 1
-            self._queue_changed.notify_all()
+        try:
+            passthrough_audio = audio.astype(np.float32, copy=False)
+            gain = max(0.1, float(getattr(self._config.runtime, "passthrough_gain", 1.6) or 1.6))
+            if gain != 1.0:
+                passthrough_audio = np.clip(passthrough_audio * gain, -1.0, 1.0).astype(np.float32, copy=False)
+            self._playbacks[key].push_passthrough(
+                audio=passthrough_audio,
+                sample_rate=float(sample_rate),
+                output_device_name=self._output_getters[key](),
+            )
+        except Exception as exc:
+            if self._on_error:
+                self._on_error(
+                    ErrorEvent(
+                        level="warning",
+                        module="tts_manager",
+                        source=key,
+                        code="passthrough_stream_failed",
+                        message="Passthrough streaming failed",
+                        detail=str(exc),
+                    )
+                )
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
@@ -520,11 +531,11 @@ class TTSManager:
     def _channel_tts_config(self, channel: str) -> TtsConfig:
         # 通道映射：remote 對應遠端翻譯目標(Meeting)，local 對應本地翻譯目標(Local)
         if channel == "remote":
-            target_language = self._config.language.meeting_target
-            preferred_voice = str(getattr(self._config.runtime, "remote_tts_voice", "none") or "none")
-        else:
             target_language = self._config.language.local_target
             preferred_voice = str(getattr(self._config.runtime, "local_tts_voice", "none") or "none")
+        else:
+            target_language = self._config.language.meeting_target
+            preferred_voice = str(getattr(self._config.runtime, "remote_tts_voice", "none") or "none")
 
         if preferred_voice.lower() == "none":
             # allow no voice path to be handled by output mode subtitle_only / passthrough

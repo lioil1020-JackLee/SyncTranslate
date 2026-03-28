@@ -756,8 +756,11 @@ class MainWindow(QMainWindow):
             return
         local_mode = self.live_caption_page.selected_tts_output_mode_for_channel("local")
         remote_mode = self.live_caption_page.selected_tts_output_mode_for_channel("remote")
-        self.audio_router.set_output_mode("local", local_mode)
-        self.audio_router.set_output_mode("remote", remote_mode)
+        # UI controls are organized by transcript/source panel, while router output modes
+        # are organized by playback destination channel. Remote-source output plays locally,
+        # and local-source output plays remotely, so the mapping is intentionally crossed.
+        self.audio_router.set_output_mode("local", remote_mode)
+        self.audio_router.set_output_mode("remote", local_mode)
 
     def run_system_check(self) -> None:
         if self._healthcheck_service.running:

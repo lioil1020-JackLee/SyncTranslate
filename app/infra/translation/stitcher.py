@@ -42,7 +42,7 @@ class TranslationStitcher:
         self._trigger_tokens = max(8, int(trigger_tokens))
         self._context: deque[str] = deque(maxlen=max(2, int(max_context_items)))
         self._last_partial_call_ms = 0
-        self._min_partial_interval_ms = max(300, int(min_partial_interval_ms))
+        self._min_partial_interval_ms = max(900, int(min_partial_interval_ms))
         self._last_spoken = ""
         self._exact_cache_size = max(32, int(exact_cache_size))
         self._prefix_min_delta_chars = max(1, int(prefix_min_delta_chars))
@@ -79,14 +79,14 @@ class TranslationStitcher:
             return None
 
         now_ms = int(time.monotonic() * 1000)
-        effective_trigger = min(self._trigger_tokens, 24)
+        effective_trigger = min(self._trigger_tokens, 28)
         units = self._estimated_units(text)
         segment_ms = max(0, int(event.end_ms) - int(event.start_ms))
         can_translate_partial = (
             (not event.is_final)
             and (
                 units >= effective_trigger
-                or (segment_ms >= 900 and units >= 6)
+                or (segment_ms >= 1400 and units >= 8)
             )
             and (now_ms - self._last_partial_call_ms >= self._min_partial_interval_ms)
         )

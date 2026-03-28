@@ -93,6 +93,39 @@ class LiveCaptionPageUiTests(_QtTestCase):
         self.assertEqual(page.remote_original.size(), page.local_original.size())
         self.assertEqual(page.remote_original.size(), page.local_translated.size())
 
+    def test_main_window_maps_remote_controls_to_local_output_and_local_controls_to_remote_output(self) -> None:
+        window = MainWindow("config.yaml")
+
+        class _Router:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, str]] = []
+
+            def set_output_mode(self, channel: str, mode: str) -> None:
+                self.calls.append((channel, mode))
+
+        router = _Router()
+        window.audio_router = router  # type: ignore[assignment]
+
+        remote_none_index = window.live_caption_page.remote_lang_combo.findData("none")
+        local_none_index = window.live_caption_page.local_lang_combo.findData("none")
+        remote_zh_index = window.live_caption_page.remote_lang_combo.findData("zh-TW")
+        local_en_index = window.live_caption_page.local_lang_combo.findData("en")
+
+        window.live_caption_page.remote_lang_combo.setCurrentIndex(remote_zh_index)
+        window.live_caption_page.local_lang_combo.setCurrentIndex(local_none_index)
+        window.live_caption_page._on_translation_target_changed()
+        window.live_caption_page.remote_tts_voice_combo.setCurrentIndex(
+            window.live_caption_page.remote_tts_voice_combo.findData("none")
+        )
+        window.live_caption_page.local_tts_voice_combo.setCurrentIndex(
+            window.live_caption_page.local_tts_voice_combo.findData("none")
+        )
+
+        window._apply_output_switches_to_router()
+
+        self.assertIn(("local", "subtitle_only"), router.calls)
+        self.assertIn(("remote", "passthrough"), router.calls)
+
 
 class LocalAiPageUiTests(_QtTestCase):
     def test_tts_style_combo_round_trips_with_config(self) -> None:
@@ -143,8 +176,13 @@ class LocalAiPageUiTests(_QtTestCase):
 
     def test_local_output_tts_uses_selected_remote_voice(self) -> None:
         window = MainWindow("config.yaml")
-        window.config.runtime.remote_tts_voice = "en-US-GuyNeural"
         window.config.language.meeting_target = "en"
+        window.live_caption_page.apply_config(window.config)
+        remote_target_index = window.live_caption_page.remote_lang_combo.findData("en")
+        window.live_caption_page.remote_lang_combo.setCurrentIndex(remote_target_index)
+        window.live_caption_page._on_translation_target_changed()
+        remote_voice_index = window.live_caption_page.remote_tts_voice_combo.findData("en-US-GuyNeural")
+        window.live_caption_page.remote_tts_voice_combo.setCurrentIndex(remote_voice_index)
 
         called = {}
         def fake_build_output_test_audio(*, primary_tts, text):
@@ -163,6 +201,34 @@ class LocalAiPageUiTests(_QtTestCase):
 
         self.assertTrue(hasattr(page, "quick_save_btn"))
         self.assertIn(page.quick_save_btn, page.experience_group.findChildren(type(page.quick_save_btn)))
+
+    def test_experience_fast_preset_updates_runtime_and_queue_defaults(self) -> None:
+        page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
+        page._model_poll_timer.stop()
+        index = page.experience_preset_combo.findData("fast")
+        self.assertGreaterEqual(index, 0)
+
+        page.experience_preset_combo.setCurrentIndex(index)
+
+        self.assertEqual(page.asr_model_combo.currentText(), "large-v3-turbo")
+        self.assertEqual(page.remote_asr_model_combo.currentText(), "large-v3-turbo")
+        self.assertEqual(page.asr_queue_local_spin.value(), 64)
+        self.assertEqual(page.llm_queue_local_spin.value(), 16)
+        self.assertEqual(page.runtime_chunk_spin.value(), 30)
+        self.assertEqual(page.runtime_tts_max_wait_spin.value(), 1500)
+
+    def test_tts_style_updates_runtime_tts_controls(self) -> None:
+        page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
+        page._model_poll_timer.stop()
+        index = page.tts_style_combo.findData("fast_response")
+        self.assertGreaterEqual(index, 0)
+
+        page.tts_style_combo.setCurrentIndex(index)
+
+        self.assertEqual(page.runtime_tts_max_wait_spin.value(), 1400)
+        self.assertEqual(page.runtime_tts_max_chars_spin.value(), 120)
+        self.assertEqual(page.runtime_tts_drop_threshold_spin.value(), 3)
+        self.assertEqual(page.runtime_tts_cancel_policy_combo.currentData(), "older_only")
 
 
 if __name__ == "__main__":
