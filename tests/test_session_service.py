@@ -42,6 +42,7 @@ class _FakeAudioRouter:
             capture={},
             asr={},
             tts={},
+            latency=[],
         )
 
 

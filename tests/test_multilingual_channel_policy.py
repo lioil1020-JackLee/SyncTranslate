@@ -234,6 +234,54 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
         self.assertTrue(hasattr(StreamingAsr, "_append_pre_roll_chunk"))
         self.assertTrue(hasattr(StreamingAsr, "_prime_segment_from_pre_roll"))
 
+    def test_streaming_asr_uses_runtime_partial_floor_instead_of_old_hard_clamp(self) -> None:
+        class _DummyEngine:
+            pass
+
+        class _DummyVad:
+            last_rms = 0.0
+            effective_rms_threshold = 0.0
+            _config = type("_Cfg", (), {"min_silence_duration_ms": 220})()
+
+            def reset(self) -> None:
+                pass
+
+        stream = StreamingAsr(
+            engine=_DummyEngine(),  # type: ignore[arg-type]
+            vad=_DummyVad(),  # type: ignore[arg-type]
+            partial_interval_ms=250,
+            partial_interval_floor_ms=250,
+            min_partial_audio_ms=240,
+        )
+
+        self.assertEqual(stream._partial_interval_ms, 250)
+        self.assertEqual(stream._min_partial_audio_ms, 240)
+
+    def test_tts_queue_can_accept_stable_partial_before_final(self) -> None:
+        cfg = AppConfig()
+        cfg.runtime.tts_accept_stable_partial = True
+        cfg.runtime.tts_partial_min_chars = 4
+        manager = TTSManager(
+            config=cfg,
+            local_playback=_DummyPlayback(),
+            remote_playback=_DummyPlayback(),
+            get_local_output_device=lambda: "speaker",
+            get_remote_output_device=lambda: "meeting",
+        )
+        manager.set_output_mode("local", "tts")
+
+        manager.enqueue(
+            "local",
+            "stable partial text",
+            utterance_id="u1",
+            revision=1,
+            is_final=False,
+            is_stable_partial=True,
+        )
+
+        self.assertEqual(len(manager._pending), 1)
+        self.assertTrue(manager._pending[0].is_stable_partial)
+
     def test_translation_cleanup_rejects_overexpanded_zh_output(self) -> None:
         cleaned = LmStudioClient._clean_translation_output(
             "從現在開始，我會成為你的朋友。我也愛你，我能感受到你的存在。",

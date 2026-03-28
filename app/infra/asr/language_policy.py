@@ -13,6 +13,8 @@ class VadDecision:
     finalize: bool
     force_split: bool
     chunk_ms: float
+    speech_ms: float = 0.0
+    silence_ms: float = 0.0
 
 
 class VadSegmenter:
@@ -80,6 +82,8 @@ class VadSegmenter:
                 finalize=finalize,
                 force_split=force_split,
                 chunk_ms=chunk_ms,
+                speech_ms=self._speech_ms,
+                silence_ms=self._silence_ms,
             )
 
         rms = float(np.sqrt(np.mean(np.square(chunk)))) if chunk.size else 0.0
@@ -121,4 +125,6 @@ class VadSegmenter:
             finalize=finalize,
             force_split=force_split,
             chunk_ms=chunk_ms,
+            speech_ms=self._speech_ms,
+            silence_ms=self._silence_ms,
         )

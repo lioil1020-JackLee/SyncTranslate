@@ -211,9 +211,6 @@ def _present_external_config_keys(raw: dict[str, Any]) -> dict[str, Any]:
         runtime.pop("warmup_on_start", None)
         runtime.pop("use_channel_specific_asr", None)
         runtime.pop("use_channel_specific_llm", None)
-        runtime.pop("local_echo_guard_enabled", None)
-        runtime.pop("local_echo_guard_resume_delay_ms", None)
-        runtime.pop("remote_echo_guard_resume_delay_ms", None)
     return data
 
 
@@ -329,6 +326,39 @@ def migrate_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
     runtime = raw.get("runtime") or {}
     result["runtime"]["sample_rate"] = int(runtime.get("sample_rate", raw.get("sample_rate", 48000)))
     result["runtime"]["chunk_ms"] = int(runtime.get("chunk_ms", raw.get("chunk_ms", 100)))
+    result["runtime"]["passthrough_gain"] = float(runtime.get("passthrough_gain", result["runtime"]["passthrough_gain"]))
+    result["runtime"]["tts_gain"] = float(runtime.get("tts_gain", result["runtime"]["tts_gain"]))
+    result["runtime"]["latency_mode"] = str(runtime.get("latency_mode", result["runtime"]["latency_mode"]))
+    result["runtime"]["display_partial_strategy"] = str(
+        runtime.get("display_partial_strategy", result["runtime"]["display_partial_strategy"])
+    )
+    result["runtime"]["stable_partial_min_repeats"] = int(
+        runtime.get("stable_partial_min_repeats", result["runtime"]["stable_partial_min_repeats"])
+    )
+    result["runtime"]["partial_stability_max_delta_chars"] = int(
+        runtime.get("partial_stability_max_delta_chars", result["runtime"]["partial_stability_max_delta_chars"])
+    )
+    result["runtime"]["asr_partial_min_audio_ms"] = int(
+        runtime.get("asr_partial_min_audio_ms", result["runtime"]["asr_partial_min_audio_ms"])
+    )
+    result["runtime"]["asr_partial_interval_floor_ms"] = int(
+        runtime.get("asr_partial_interval_floor_ms", result["runtime"]["asr_partial_interval_floor_ms"])
+    )
+    result["runtime"]["llm_partial_interval_floor_ms"] = int(
+        runtime.get("llm_partial_interval_floor_ms", result["runtime"]["llm_partial_interval_floor_ms"])
+    )
+    result["runtime"]["early_final_enabled"] = bool(
+        runtime.get("early_final_enabled", result["runtime"]["early_final_enabled"])
+    )
+    result["runtime"]["tts_accept_stable_partial"] = bool(
+        runtime.get("tts_accept_stable_partial", result["runtime"]["tts_accept_stable_partial"])
+    )
+    result["runtime"]["tts_partial_min_chars"] = int(
+        runtime.get("tts_partial_min_chars", result["runtime"]["tts_partial_min_chars"])
+    )
+    result["runtime"]["tts_use_speech_profile"] = bool(
+        runtime.get("tts_use_speech_profile", result["runtime"]["tts_use_speech_profile"])
+    )
     asr_shared = int(runtime.get("asr_queue_maxsize", result["runtime"]["asr_queue_maxsize"]))
     llm_shared = int(runtime.get("llm_queue_maxsize", result["runtime"]["llm_queue_maxsize"]))
     tts_shared = int(runtime.get("tts_queue_maxsize", result["runtime"]["tts_queue_maxsize"]))

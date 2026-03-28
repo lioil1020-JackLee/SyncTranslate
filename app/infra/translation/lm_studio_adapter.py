@@ -19,6 +19,9 @@ class LmStudioClient:
     repeat_penalty: float = 1.05
     stop_tokens: str = "</target>\nTranslation:"
     request_timeout_sec: float = 20.0
+    _last_raw_response: str = ""
+    _last_cleaned_response: str = ""
+    _last_error: str = ""
 
     def health_check(self) -> tuple[bool, str]:
         try:
@@ -43,6 +46,9 @@ class LmStudioClient:
     ) -> str:
         if not text.strip():
             return ""
+        self._last_raw_response = ""
+        self._last_cleaned_response = ""
+        self._last_error = ""
         context_text = "\n".join((context or [])[-6:])
         source_label = _language_label(source_lang)
         target_label = _language_label(target_lang)
@@ -79,6 +85,8 @@ class LmStudioClient:
             response_format=_translation_response_format(),
         )
         cleaned = self._extract_translation_text(response, target_lang=target_lang)
+        self._last_raw_response = response
+        self._last_cleaned_response = cleaned
         if self._looks_like_reasoning(cleaned, target_lang=target_lang):
             response = self._chat_completion(
                 messages=[
@@ -100,7 +108,16 @@ class LmStudioClient:
                 response_format=_translation_response_format(),
             )
             cleaned = self._extract_translation_text(response, target_lang=target_lang)
+            self._last_raw_response = response
+            self._last_cleaned_response = cleaned
         return cleaned
+
+    def debug_snapshot(self) -> dict[str, str]:
+        return {
+            "raw_response": self._trim_debug_text(self._last_raw_response),
+            "cleaned_response": self._trim_debug_text(self._last_cleaned_response),
+            "last_error": self._trim_debug_text(self._last_error),
+        }
 
     def _chat_completion(
         self,
@@ -234,13 +251,22 @@ class LmStudioClient:
                 content = resp.read().decode("utf-8", errors="replace")
         except error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
+            self._last_error = f"HTTP {exc.code}: {body or exc.reason}"
             raise ValueError(f"HTTP {exc.code}: {body or exc.reason}") from exc
         except error.URLError as exc:
             reason = getattr(exc, "reason", exc)
+            self._last_error = f"local llm connection failed: {reason}"
             raise ValueError(f"local llm connection failed: {reason}") from exc
         if not content.strip():
             return {}
         return json.loads(content)
+
+    @staticmethod
+    def _trim_debug_text(text: str, limit: int = 240) -> str:
+        value = (text or "").strip().replace("\n", "\\n")
+        if len(value) <= limit:
+            return value
+        return value[: limit - 3] + "..."
 
 
 def _contains_cjk(text: str) -> bool:

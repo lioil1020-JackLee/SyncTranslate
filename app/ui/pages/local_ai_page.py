@@ -72,6 +72,31 @@ _EDGE_VOICE_OPTIONS: list[tuple[str, str]] = [
     ("泰文男聲（泰國）- Niwat", "th-TH-NiwatNeural"),
 ]
 
+_LLM_PROFILE_OPTIONS: list[tuple[str, str]] = [
+    ("即時字幕（快速）", "live_caption_fast"),
+    ("即時字幕（穩定）", "live_caption_stable"),
+    ("語音輸出（自然）", "speech_output_natural"),
+    ("技術會議", "technical_meeting"),
+]
+
+_TTS_STYLE_OPTIONS: list[tuple[str, str]] = [
+    ("平衡", "balanced"),
+    ("清晰播報", "broadcast_clear"),
+    ("自然對話", "conversational"),
+    ("快速回應", "fast_response"),
+]
+
+_LATENCY_MODE_OPTIONS: list[tuple[str, str]] = [
+    ("平衡", "balanced"),
+    ("低延遲", "low_latency"),
+]
+
+_DISPLAY_PARTIAL_OPTIONS: list[tuple[str, str]] = [
+    ("只顯示穩定 partial", "stable_only"),
+    ("顯示所有 partial", "all"),
+    ("不顯示 partial", "none"),
+]
+
 _CONTROL_HEIGHT = 26
 _FORM_V_SPACING = 4
 # reduce extra group height to free vertical space
@@ -105,6 +130,7 @@ class TtsWidgets:
     model_edit: PathPickerLineEdit
     config_edit: PathPickerLineEdit
     speaker_combo: QComboBox
+    style_preset_combo: QComboBox
     length_scale_spin: QDoubleSpinBox
     noise_scale_spin: QDoubleSpinBox
     noise_w_spin: QDoubleSpinBox
@@ -187,6 +213,7 @@ class LocalAiPage(QWidget):
 
         self._reload_tts_speaker_options(self.base_tts)
         self._apply_channel_strategy_controls()
+        self._apply_optimized_defaults()
         self._set_advanced_settings_visible(False)
         self._disable_wheel_for_advanced_controls()
 
@@ -258,6 +285,8 @@ class LocalAiPage(QWidget):
             self.remote_llm_trigger_tokens_spin.setValue(en_zh_llm.sliding_window.trigger_tokens)
             self.llm_context_items_spin.setValue(zh_en_llm.sliding_window.max_context_items)
             self.remote_llm_context_items_spin.setValue(en_zh_llm.sliding_window.max_context_items)
+            self._select_combo_data(self.llm_caption_profile_combo, config.llm.caption_profile)
+            self._select_combo_data(self.llm_speech_profile_combo, config.llm.speech_profile)
             self.llm_queue_local_spin.setValue(
                 int(getattr(config.runtime, "llm_queue_maxsize_local", config.runtime.llm_queue_maxsize))
             )
@@ -266,10 +295,6 @@ class LocalAiPage(QWidget):
             )
 
             self._apply_tts_config(self.base_tts, config.tts)
-            self._select_combo_data(
-                self.tts_style_combo,
-                str(getattr(config.tts, "style_preset", "balanced") or "balanced"),
-            )
             self._apply_tts_override(self.local_tts_override, config.tts_channels.local, fallback=config.meeting_tts)
             self._apply_tts_override(self.remote_tts_override, config.tts_channels.remote, fallback=config.local_tts)
             self.tts_queue_local_spin.setValue(
@@ -280,8 +305,38 @@ class LocalAiPage(QWidget):
             )
 
             self._select_combo_data(self.runtime_sample_rate_spin, config.runtime.sample_rate)
+            self._select_combo_data(self.runtime_latency_mode_combo, str(getattr(config.runtime, "latency_mode", "balanced")))
+            self._select_combo_data(
+                self.runtime_display_partial_strategy_combo,
+                str(getattr(config.runtime, "display_partial_strategy", "stable_only")),
+            )
             self.runtime_chunk_spin.setValue(config.runtime.chunk_ms)
             self.runtime_asr_pre_roll_spin.setValue(int(getattr(config.runtime, "asr_pre_roll_ms", 500)))
+            self.runtime_stable_partial_min_repeats_spin.setValue(
+                int(getattr(config.runtime, "stable_partial_min_repeats", 2))
+            )
+            self.runtime_partial_stability_delta_spin.setValue(
+                int(getattr(config.runtime, "partial_stability_max_delta_chars", 8))
+            )
+            self.runtime_asr_partial_min_audio_spin.setValue(
+                int(getattr(config.runtime, "asr_partial_min_audio_ms", 280))
+            )
+            self.runtime_asr_partial_floor_spin.setValue(
+                int(getattr(config.runtime, "asr_partial_interval_floor_ms", 280))
+            )
+            self.runtime_llm_partial_floor_spin.setValue(
+                int(getattr(config.runtime, "llm_partial_interval_floor_ms", 320))
+            )
+            self.runtime_early_final_check.setChecked(bool(getattr(config.runtime, "early_final_enabled", True)))
+            self.runtime_tts_accept_stable_partial_check.setChecked(
+                bool(getattr(config.runtime, "tts_accept_stable_partial", True))
+            )
+            self.runtime_tts_partial_min_chars_spin.setValue(
+                int(getattr(config.runtime, "tts_partial_min_chars", 12))
+            )
+            self.runtime_tts_use_speech_profile_check.setChecked(
+                bool(getattr(config.runtime, "tts_use_speech_profile", False))
+            )
             self.runtime_tts_cancel_pending_check.setChecked(config.runtime.tts_cancel_pending_on_new_final)
             self._select_combo_data(self.runtime_tts_cancel_policy_combo, str(getattr(config.runtime, "tts_cancel_policy", "all_pending")))
             self.runtime_tts_max_wait_spin.setValue(int(getattr(config.runtime, "tts_max_wait_ms", 4000)))
@@ -295,7 +350,6 @@ class LocalAiPage(QWidget):
             self.local_echo_guard_delay_spin.setValue(int(getattr(config.runtime, "local_echo_guard_resume_delay_ms", 300)))
             self.remote_echo_guard_delay_spin.setValue(int(getattr(config.runtime, "remote_echo_guard_resume_delay_ms", 300)))
             self._apply_channel_strategy_controls()
-            self._sync_experience_controls_from_config(config)
             if not self._advanced_visibility_initialized:
                 self.show_advanced_check.setChecked(False)
                 self._set_advanced_settings_visible(False)
@@ -385,6 +439,8 @@ class LocalAiPage(QWidget):
         en_zh_llm.sliding_window.max_context_items = self.remote_llm_context_items_spin.value()
         config.runtime.llm_queue_maxsize_local = self.llm_queue_local_spin.value()
         config.runtime.llm_queue_maxsize_remote = self.llm_queue_remote_spin.value()
+        caption_profile = str(self.llm_caption_profile_combo.currentData() or "live_caption_fast")
+        speech_profile = str(self.llm_speech_profile_combo.currentData() or "speech_output_natural")
 
         chosen_model = self.llm_model_combo.currentText().strip()
         if not chosen_model:
@@ -399,7 +455,7 @@ class LocalAiPage(QWidget):
         config.runtime.use_channel_specific_llm = True
 
         self._update_tts_config(self.base_tts, config.tts)
-        config.tts.style_preset = str(self.tts_style_combo.currentData() or "balanced")
+        config.tts.style_preset = str(self.base_tts.style_preset_combo.currentData() or "broadcast_clear")
         config.meeting_tts.style_preset = config.tts.style_preset
         config.local_tts.style_preset = config.tts.style_preset
         config.tts_channels.local = self._update_tts_override(self.local_tts_override)
@@ -413,8 +469,21 @@ class LocalAiPage(QWidget):
             config.runtime.sample_rate = int(self.runtime_sample_rate_spin.currentData() or config.runtime.sample_rate)
         except Exception:
             config.runtime.sample_rate = int(str(self.runtime_sample_rate_spin.currentText()).strip() or config.runtime.sample_rate)
+        config.runtime.latency_mode = str(self.runtime_latency_mode_combo.currentData() or "balanced")
+        config.runtime.display_partial_strategy = str(
+            self.runtime_display_partial_strategy_combo.currentData() or "stable_only"
+        )
         config.runtime.chunk_ms = self.runtime_chunk_spin.value()
         config.runtime.asr_pre_roll_ms = self.runtime_asr_pre_roll_spin.value()
+        config.runtime.stable_partial_min_repeats = self.runtime_stable_partial_min_repeats_spin.value()
+        config.runtime.partial_stability_max_delta_chars = self.runtime_partial_stability_delta_spin.value()
+        config.runtime.asr_partial_min_audio_ms = self.runtime_asr_partial_min_audio_spin.value()
+        config.runtime.asr_partial_interval_floor_ms = self.runtime_asr_partial_floor_spin.value()
+        config.runtime.llm_partial_interval_floor_ms = self.runtime_llm_partial_floor_spin.value()
+        config.runtime.early_final_enabled = self.runtime_early_final_check.isChecked()
+        config.runtime.tts_accept_stable_partial = self.runtime_tts_accept_stable_partial_check.isChecked()
+        config.runtime.tts_partial_min_chars = self.runtime_tts_partial_min_chars_spin.value()
+        config.runtime.tts_use_speech_profile = self.runtime_tts_use_speech_profile_check.isChecked()
         config.runtime.tts_cancel_pending_on_new_final = self.runtime_tts_cancel_pending_check.isChecked()
         config.runtime.tts_cancel_policy = str(self.runtime_tts_cancel_policy_combo.currentData() or "all_pending")
         config.runtime.tts_max_wait_ms = self.runtime_tts_max_wait_spin.value()
@@ -431,51 +500,116 @@ class LocalAiPage(QWidget):
         config.runtime.translation_exact_cache_size = self.runtime_translation_cache_spin.value()
         config.runtime.translation_prefix_min_delta_chars = self.runtime_prefix_delta_spin.value()
         config.runtime.tts_drop_backlog_threshold = self.runtime_tts_drop_threshold_spin.value()
+        config.llm.caption_profile = caption_profile
+        config.llm.speech_profile = speech_profile
+        config.llm_channels.local.caption_profile = caption_profile
+        config.llm_channels.local.speech_profile = speech_profile
+        config.llm_channels.remote.caption_profile = caption_profile
+        config.llm_channels.remote.speech_profile = speech_profile
 
     def set_runtime_status(self, text: str) -> None:
         self.runtime_status_label.setText(text)
 
+    def _apply_optimized_defaults(self) -> None:
+        self._suspend_notify = True
+        try:
+            self._set_combo_text(self.asr_model_combo, "large-v3")
+            self._set_combo_text(self.remote_asr_model_combo, "large-v3")
+            self.asr_beam_spin.setValue(3)
+            self.remote_asr_beam_spin.setValue(3)
+            self.asr_partial_interval_spin.setValue(320)
+            self.remote_asr_partial_interval_spin.setValue(320)
+            self.asr_partial_history_spin.setValue(3)
+            self.remote_asr_partial_history_spin.setValue(3)
+            self.asr_final_history_spin.setValue(6)
+            self.remote_asr_final_history_spin.setValue(6)
+            self.asr_min_speech_spin.setValue(150)
+            self.remote_asr_min_speech_spin.setValue(150)
+            self.asr_min_silence_spin.setValue(240)
+            self.remote_asr_min_silence_spin.setValue(240)
+            self.asr_speech_pad_spin.setValue(170)
+            self.remote_asr_speech_pad_spin.setValue(170)
+            self.asr_max_speech_spin.setValue(16)
+            self.remote_asr_max_speech_spin.setValue(16)
+            self.asr_rms_threshold_spin.setValue(0.02)
+            self.remote_asr_rms_threshold_spin.setValue(0.02)
+            self.asr_no_speech_threshold_spin.setValue(0.55)
+            self.remote_asr_no_speech_threshold_spin.setValue(0.55)
+            self.asr_queue_local_spin.setValue(96)
+            self.asr_queue_remote_spin.setValue(96)
+
+            self.llm_temperature_spin.setValue(0.0)
+            self.remote_llm_temperature_spin.setValue(0.0)
+            self.llm_top_p_spin.setValue(0.78)
+            self.remote_llm_top_p_spin.setValue(0.78)
+            self.llm_repeat_penalty_spin.setValue(1.1)
+            self.remote_llm_repeat_penalty_spin.setValue(1.1)
+            self.llm_max_tokens_spin.setValue(96)
+            self.remote_llm_max_tokens_spin.setValue(128)
+            self.llm_trigger_tokens_spin.setValue(18)
+            self.remote_llm_trigger_tokens_spin.setValue(18)
+            self.llm_context_items_spin.setValue(4)
+            self.remote_llm_context_items_spin.setValue(4)
+            self.llm_queue_local_spin.setValue(24)
+            self.llm_queue_remote_spin.setValue(24)
+            self._select_combo_data(self.llm_caption_profile_combo, "live_caption_fast")
+            self._select_combo_data(self.llm_speech_profile_combo, "speech_output_natural")
+
+            self._select_combo_data(self.base_tts.sample_rate_spin, 24000)
+            self._select_combo_data(self.base_tts.style_preset_combo, "broadcast_clear")
+            self.base_tts.length_scale_spin.setValue(1.0)
+            self.base_tts.noise_scale_spin.setValue(0.60)
+            self.base_tts.noise_w_spin.setValue(0.65)
+            self._select_combo_data(self.local_tts_override.sample_rate_spin, 24000)
+            self._select_combo_data(self.remote_tts_override.sample_rate_spin, 24000)
+            self.local_tts_override.noise_w_spin.setValue(0.65)
+            self.remote_tts_override.noise_w_spin.setValue(0.65)
+            self.tts_queue_local_spin.setValue(16)
+            self.tts_queue_remote_spin.setValue(16)
+
+            self._select_combo_data(self.runtime_sample_rate_spin, 48000)
+            self._select_combo_data(self.runtime_latency_mode_combo, "balanced")
+            self._select_combo_data(self.runtime_display_partial_strategy_combo, "stable_only")
+            self.runtime_chunk_spin.setValue(40)
+            self.runtime_asr_pre_roll_spin.setValue(220)
+            self.runtime_stable_partial_min_repeats_spin.setValue(2)
+            self.runtime_partial_stability_delta_spin.setValue(8)
+            self.runtime_asr_partial_min_audio_spin.setValue(280)
+            self.runtime_asr_partial_floor_spin.setValue(280)
+            self.runtime_llm_partial_floor_spin.setValue(280)
+            self.runtime_early_final_check.setChecked(True)
+            self.runtime_tts_accept_stable_partial_check.setChecked(True)
+            self.runtime_tts_partial_min_chars_spin.setValue(12)
+            self.runtime_tts_use_speech_profile_check.setChecked(False)
+            self.runtime_translation_cache_spin.setValue(256)
+            self.runtime_prefix_delta_spin.setValue(6)
+            self.runtime_llm_streaming_tokens_spin.setValue(16)
+            self.runtime_max_pipeline_latency_spin.setValue(2200)
+            self.runtime_tts_max_wait_spin.setValue(2200)
+            self.runtime_tts_max_chars_spin.setValue(160)
+            self.runtime_tts_drop_threshold_spin.setValue(3)
+            self._select_combo_data(self.runtime_tts_cancel_policy_combo, "older_only")
+        finally:
+            self._suspend_notify = False
+
     def _build_experience_group(self) -> tuple[QGroupBox, QFormLayout]:
-        self.experience_preset_combo = QComboBox()
-        self.experience_preset_combo.addItem("平衡（建議）", "balanced")
-        self.experience_preset_combo.addItem("低延遲", "fast")
-        self.experience_preset_combo.addItem("高準確", "accurate")
-        self.experience_preset_combo.addItem("自訂", "custom")
-        self._configure_combo_popup(self.experience_preset_combo)
-
-        self.translation_style_combo = QComboBox()
-        self.translation_style_combo.addItem("自然語氣（建議）", "natural")
-        self.translation_style_combo.addItem("平衡", "balanced")
-        self.translation_style_combo.addItem("精準直譯", "faithful")
-        self._configure_combo_popup(self.translation_style_combo)
-
-        self.tts_style_combo = QComboBox()
-        self.tts_style_combo.addItem("清晰播報（建議）", "broadcast_clear")
-        self.tts_style_combo.addItem("平衡", "balanced")
-        self.tts_style_combo.addItem("輕快對話", "conversational")
-        self.tts_style_combo.addItem("快速回應", "fast_response")
-        self._configure_combo_popup(self.tts_style_combo)
-
         self.quick_health_btn = QPushButton("系統檢查")
         self.quick_save_btn = QPushButton("快速儲存")
         self.show_advanced_check = QCheckBox("顯示進階設定")
         self.show_advanced_check.setChecked(False)
-        self.channel_strategy_label = QLabel("ASR / LLM 固定為方向獨立")
-
-        for compact in (self.experience_preset_combo, self.translation_style_combo, self.tts_style_combo):
-            self._set_uniform_field_style(compact, minimum_width=180)
+        self.channel_strategy_label = QLabel("已內建高準確 + 低延遲優化參數")
+        self.optimized_profile_label = QLabel("翻譯採精準直譯，TTS 採清晰播報，進階參數可在下方展開後微調。")
+        self.optimized_profile_label.setWordWrap(False)
 
         button_row = self._build_inline_row(self.quick_save_btn, self.quick_health_btn, self.show_advanced_check)
 
         form = QFormLayout()
         self._configure_form_layout(form)
-        form.addRow("效能預設", self.experience_preset_combo)
-        form.addRow("翻譯風格", self.translation_style_combo)
-        form.addRow("TTS 朗讀策略", self.tts_style_combo)
-        form.addRow("模型策略", self.channel_strategy_label)
+        form.addRow("優化策略", self.channel_strategy_label)
+        form.addRow("目前設定", self.optimized_profile_label)
         form.addRow("", button_row)
 
-        group = QGroupBox("快速設定")
+        group = QGroupBox("快速操作")
         group.setLayout(form)
         return group, form
 
@@ -519,268 +653,6 @@ class LocalAiPage(QWidget):
             self.llm_queue_remote_spin,
         ):
             widget.setEnabled(True)
-
-    def _on_experience_preset_changed(self) -> None:
-        if self._suspend_notify:
-            return
-        preset = str(self.experience_preset_combo.currentData() or "balanced")
-        if preset == "custom":
-            self._notify_settings_changed()
-            return
-        self._apply_experience_preset(preset)
-        self._notify_settings_changed()
-
-    def _apply_experience_preset(self, preset: str) -> None:
-        self._suspend_notify = True
-        try:
-            if preset == "fast":
-                self._set_combo_text(self.asr_model_combo, "large-v3-turbo")
-                self._set_combo_text(self.remote_asr_model_combo, "large-v3-turbo")
-                self.asr_beam_spin.setValue(1)
-                self.remote_asr_beam_spin.setValue(1)
-                self.asr_partial_interval_spin.setValue(240)
-                self.remote_asr_partial_interval_spin.setValue(240)
-                self.asr_partial_history_spin.setValue(2)
-                self.remote_asr_partial_history_spin.setValue(2)
-                self.asr_final_history_spin.setValue(4)
-                self.remote_asr_final_history_spin.setValue(4)
-                self.asr_min_speech_spin.setValue(120)
-                self.remote_asr_min_speech_spin.setValue(120)
-                self.asr_min_silence_spin.setValue(180)
-                self.remote_asr_min_silence_spin.setValue(180)
-                self.asr_speech_pad_spin.setValue(120)
-                self.remote_asr_speech_pad_spin.setValue(120)
-                self.asr_max_speech_spin.setValue(12)
-                self.remote_asr_max_speech_spin.setValue(12)
-                self.asr_rms_threshold_spin.setValue(0.020)
-                self.remote_asr_rms_threshold_spin.setValue(0.020)
-                self.asr_no_speech_threshold_spin.setValue(0.72)
-                self.remote_asr_no_speech_threshold_spin.setValue(0.72)
-                self.asr_queue_local_spin.setValue(64)
-                self.asr_queue_remote_spin.setValue(64)
-                self.llm_queue_local_spin.setValue(16)
-                self.llm_queue_remote_spin.setValue(16)
-                self.tts_queue_local_spin.setValue(16)
-                self.tts_queue_remote_spin.setValue(16)
-                self.runtime_chunk_spin.setValue(30)
-                self.runtime_asr_pre_roll_spin.setValue(220)
-                self.runtime_translation_cache_spin.setValue(128)
-                self.runtime_prefix_delta_spin.setValue(10)
-                self.runtime_llm_streaming_tokens_spin.setValue(32)
-                self.runtime_max_pipeline_latency_spin.setValue(1400)
-                self.runtime_tts_max_wait_spin.setValue(1500)
-                self.runtime_tts_max_chars_spin.setValue(120)
-                self.runtime_tts_drop_threshold_spin.setValue(3)
-                self._select_combo_data(self.runtime_tts_cancel_policy_combo, "older_only")
-                self.llm_max_tokens_spin.setValue(96)
-                self.remote_llm_max_tokens_spin.setValue(128)
-            elif preset == "accurate":
-                self._set_combo_text(self.asr_model_combo, "large-v3")
-                self._set_combo_text(self.remote_asr_model_combo, "large-v3")
-                self.asr_beam_spin.setValue(4)
-                self.remote_asr_beam_spin.setValue(4)
-                self.asr_partial_interval_spin.setValue(420)
-                self.remote_asr_partial_interval_spin.setValue(420)
-                self.asr_partial_history_spin.setValue(4)
-                self.remote_asr_partial_history_spin.setValue(4)
-                self.asr_final_history_spin.setValue(8)
-                self.remote_asr_final_history_spin.setValue(8)
-                self.asr_min_speech_spin.setValue(180)
-                self.remote_asr_min_speech_spin.setValue(180)
-                self.asr_min_silence_spin.setValue(320)
-                self.remote_asr_min_silence_spin.setValue(320)
-                self.asr_speech_pad_spin.setValue(220)
-                self.remote_asr_speech_pad_spin.setValue(220)
-                self.asr_max_speech_spin.setValue(20)
-                self.remote_asr_max_speech_spin.setValue(20)
-                self.asr_rms_threshold_spin.setValue(0.015)
-                self.remote_asr_rms_threshold_spin.setValue(0.015)
-                self.asr_no_speech_threshold_spin.setValue(0.55)
-                self.remote_asr_no_speech_threshold_spin.setValue(0.55)
-                self.asr_queue_local_spin.setValue(128)
-                self.asr_queue_remote_spin.setValue(128)
-                self.llm_queue_local_spin.setValue(32)
-                self.llm_queue_remote_spin.setValue(32)
-                self.tts_queue_local_spin.setValue(32)
-                self.tts_queue_remote_spin.setValue(32)
-                self.runtime_chunk_spin.setValue(60)
-                self.runtime_asr_pre_roll_spin.setValue(500)
-                self.runtime_translation_cache_spin.setValue(384)
-                self.runtime_prefix_delta_spin.setValue(4)
-                self.runtime_llm_streaming_tokens_spin.setValue(12)
-                self.runtime_max_pipeline_latency_spin.setValue(3200)
-                self.runtime_tts_max_wait_spin.setValue(3500)
-                self.runtime_tts_max_chars_spin.setValue(220)
-                self.runtime_tts_drop_threshold_spin.setValue(6)
-                self._select_combo_data(self.runtime_tts_cancel_policy_combo, "all_pending")
-                self.llm_max_tokens_spin.setValue(128)
-                self.remote_llm_max_tokens_spin.setValue(192)
-            else:
-                self._set_combo_text(self.asr_model_combo, "large-v3-turbo")
-                self._set_combo_text(self.remote_asr_model_combo, "large-v3-turbo")
-                self.asr_beam_spin.setValue(2)
-                self.remote_asr_beam_spin.setValue(2)
-                self.asr_partial_interval_spin.setValue(320)
-                self.remote_asr_partial_interval_spin.setValue(320)
-                self.asr_partial_history_spin.setValue(3)
-                self.remote_asr_partial_history_spin.setValue(3)
-                self.asr_final_history_spin.setValue(6)
-                self.remote_asr_final_history_spin.setValue(6)
-                self.asr_min_speech_spin.setValue(140)
-                self.remote_asr_min_speech_spin.setValue(140)
-                self.asr_min_silence_spin.setValue(240)
-                self.remote_asr_min_silence_spin.setValue(240)
-                self.asr_speech_pad_spin.setValue(180)
-                self.remote_asr_speech_pad_spin.setValue(180)
-                self.asr_max_speech_spin.setValue(16)
-                self.remote_asr_max_speech_spin.setValue(16)
-                self.asr_rms_threshold_spin.setValue(0.018)
-                self.remote_asr_rms_threshold_spin.setValue(0.018)
-                self.asr_no_speech_threshold_spin.setValue(0.65)
-                self.remote_asr_no_speech_threshold_spin.setValue(0.65)
-                self.asr_queue_local_spin.setValue(96)
-                self.asr_queue_remote_spin.setValue(96)
-                self.llm_queue_local_spin.setValue(24)
-                self.llm_queue_remote_spin.setValue(24)
-                self.tts_queue_local_spin.setValue(24)
-                self.tts_queue_remote_spin.setValue(24)
-                self.runtime_chunk_spin.setValue(40)
-                self.runtime_asr_pre_roll_spin.setValue(350)
-                self.runtime_translation_cache_spin.setValue(256)
-                self.runtime_prefix_delta_spin.setValue(6)
-                self.runtime_llm_streaming_tokens_spin.setValue(16)
-                self.runtime_max_pipeline_latency_spin.setValue(2200)
-                self.runtime_tts_max_wait_spin.setValue(2200)
-                self.runtime_tts_max_chars_spin.setValue(160)
-                self.runtime_tts_drop_threshold_spin.setValue(4)
-                self._select_combo_data(self.runtime_tts_cancel_policy_combo, "older_only")
-                self.llm_max_tokens_spin.setValue(128)
-                self.remote_llm_max_tokens_spin.setValue(160)
-        finally:
-            self._suspend_notify = False
-
-    def _on_translation_style_changed(self) -> None:
-        if self._suspend_notify:
-            return
-        style = str(self.translation_style_combo.currentData() or "natural")
-        self._apply_translation_style(style)
-        self._notify_settings_changed()
-
-    def _apply_translation_style(self, style: str) -> None:
-        self._suspend_notify = True
-        try:
-            if style == "faithful":
-                temp, top_p, penalty = 0.0, 0.75, 1.10
-                local_max_tokens, remote_max_tokens = 96, 128
-                trigger_tokens, context_items = 20, 4
-            elif style == "balanced":
-                temp, top_p, penalty = 0.12, 0.88, 1.06
-                local_max_tokens, remote_max_tokens = 128, 160
-                trigger_tokens, context_items = 16, 5
-            else:
-                temp, top_p, penalty = 0.24, 0.94, 1.02
-                local_max_tokens, remote_max_tokens = 160, 224
-                trigger_tokens, context_items = 14, 6
-            self.llm_temperature_spin.setValue(temp)
-            self.remote_llm_temperature_spin.setValue(temp)
-            self.llm_top_p_spin.setValue(top_p)
-            self.remote_llm_top_p_spin.setValue(top_p)
-            self.llm_repeat_penalty_spin.setValue(penalty)
-            self.remote_llm_repeat_penalty_spin.setValue(penalty)
-            self.llm_max_tokens_spin.setValue(local_max_tokens)
-            self.remote_llm_max_tokens_spin.setValue(remote_max_tokens)
-            self.llm_trigger_tokens_spin.setValue(trigger_tokens)
-            self.remote_llm_trigger_tokens_spin.setValue(trigger_tokens)
-            self.llm_context_items_spin.setValue(context_items)
-            self.remote_llm_context_items_spin.setValue(context_items)
-        finally:
-            self._suspend_notify = False
-
-    def _on_tts_style_changed(self) -> None:
-        if self._suspend_notify:
-            return
-        style = str(self.tts_style_combo.currentData() or "balanced")
-        self._apply_tts_style(style)
-        self._notify_settings_changed()
-
-    def _apply_tts_style(self, style: str) -> None:
-        self._suspend_notify = True
-        try:
-            if style == "broadcast_clear":
-                base_sample_rate = 24000
-                base_noise_w = 0.65
-                length_scale = 1.0
-                noise_scale = 0.60
-                max_wait_ms = 2400
-                max_chars = 180
-                drop_threshold = 4
-                cancel_policy = "all_pending"
-            elif style == "fast_response":
-                base_sample_rate = 24000
-                base_noise_w = 0.55
-                length_scale = 0.96
-                noise_scale = 0.58
-                max_wait_ms = 1400
-                max_chars = 120
-                drop_threshold = 3
-                cancel_policy = "older_only"
-            elif style == "conversational":
-                base_sample_rate = 22050
-                base_noise_w = 0.85
-                length_scale = 1.03
-                noise_scale = 0.70
-                max_wait_ms = 2600
-                max_chars = 220
-                drop_threshold = 5
-                cancel_policy = "older_only"
-            else:
-                base_sample_rate = 22050
-                base_noise_w = 0.75
-                length_scale = 1.0
-                noise_scale = 0.667
-                max_wait_ms = 2200
-                max_chars = 160
-                drop_threshold = 4
-                cancel_policy = "all_pending"
-
-            self._select_combo_data(self.base_tts.sample_rate_spin, base_sample_rate)
-            self.base_tts.length_scale_spin.setValue(length_scale)
-            self.base_tts.noise_scale_spin.setValue(noise_scale)
-            self.base_tts.noise_w_spin.setValue(base_noise_w)
-            self._select_combo_data(self.local_tts_override.sample_rate_spin, base_sample_rate)
-            self._select_combo_data(self.remote_tts_override.sample_rate_spin, base_sample_rate)
-            self.local_tts_override.noise_w_spin.setValue(base_noise_w)
-            self.remote_tts_override.noise_w_spin.setValue(base_noise_w)
-            self.runtime_tts_max_wait_spin.setValue(max_wait_ms)
-            self.runtime_tts_max_chars_spin.setValue(max_chars)
-            self.runtime_tts_drop_threshold_spin.setValue(drop_threshold)
-            self._select_combo_data(self.runtime_tts_cancel_policy_combo, cancel_policy)
-        finally:
-            self._suspend_notify = False
-
-    def _sync_experience_controls_from_config(self, config: AppConfig) -> None:
-        local_asr_model = (config.asr_channels.local.model or "").lower()
-        latency = int(getattr(config.runtime, "max_pipeline_latency_ms", 2500))
-        local_beam = int(getattr(config.asr_channels.local, "beam_size", 2))
-        llm_temp = float(getattr(config.llm_channels.local, "temperature", 0.15))
-
-        if ("turbo" in local_asr_model or "distil" in local_asr_model) and latency <= 1800:
-            preset = "fast"
-        elif local_beam >= 3 or latency >= 3200:
-            preset = "accurate"
-        else:
-            preset = "balanced"
-
-        if llm_temp <= 0.08:
-            style = "faithful"
-        elif llm_temp <= 0.22:
-            style = "balanced"
-        else:
-            style = "natural"
-
-        self._select_combo_data(self.experience_preset_combo, preset)
-        self._select_combo_data(self.translation_style_combo, style)
-        self._select_combo_data(self.tts_style_combo, str(getattr(config.tts, "style_preset", "balanced") or "balanced"))
 
     def _build_asr_group(self) -> tuple[QGroupBox, QFormLayout]:
         self.asr_engine_combo = QComboBox()
@@ -1010,6 +882,13 @@ class LocalAiPage(QWidget):
         self.llm_queue_local_spin.setRange(4, 512)
         self.llm_queue_remote_spin = QSpinBox()
         self.llm_queue_remote_spin.setRange(4, 512)
+        self.llm_caption_profile_combo = QComboBox()
+        self.llm_speech_profile_combo = QComboBox()
+        for label, value in _LLM_PROFILE_OPTIONS:
+            self.llm_caption_profile_combo.addItem(label, value)
+            self.llm_speech_profile_combo.addItem(label, value)
+        self._configure_combo_popup(self.llm_caption_profile_combo)
+        self._configure_combo_popup(self.llm_speech_profile_combo)
         self._set_dual_field_style(
             self.llm_model_combo,
             self.remote_llm_model_combo,
@@ -1032,6 +911,8 @@ class LocalAiPage(QWidget):
             self.llm_sliding_window_enabled,
             self.remote_llm_sliding_window_enabled,
         )
+        self._set_uniform_field_style(self.llm_caption_profile_combo, minimum_width=180)
+        self._set_uniform_field_style(self.llm_speech_profile_combo, minimum_width=180)
         llm_service_row = self._build_inline_row(self.llm_url_label, self.llm_reload_models_btn)
 
         form = QFormLayout()
@@ -1040,6 +921,8 @@ class LocalAiPage(QWidget):
         form.addRow("模型", self._build_dual_field_row(self.llm_model_combo, self.remote_llm_model_combo))
         form.addRow("後端(共用)", self.llm_backend_combo)
         form.addRow("服務位址(共用)", llm_service_row)
+        form.addRow("字幕 Profile(共用)", self.llm_caption_profile_combo)
+        form.addRow("朗讀 Profile(共用)", self.llm_speech_profile_combo)
         form.addRow("LLM 佇列", self._build_dual_field_row(self.llm_queue_local_spin, self.llm_queue_remote_spin))
         form.addRow("逾時(秒)", self._build_dual_field_row(self.llm_timeout_spin, self.remote_llm_timeout_spin))
         form.addRow("溫度", self._build_dual_field_row(self.llm_temperature_spin, self.remote_llm_temperature_spin))
@@ -1061,10 +944,33 @@ class LocalAiPage(QWidget):
         for r in _COMMON_SAMPLE_RATES:
             self.runtime_sample_rate_spin.addItem(str(r), r)
         self._configure_combo_popup(self.runtime_sample_rate_spin)
+        self.runtime_latency_mode_combo = QComboBox()
+        for label, value in _LATENCY_MODE_OPTIONS:
+            self.runtime_latency_mode_combo.addItem(label, value)
+        self._configure_combo_popup(self.runtime_latency_mode_combo)
+        self.runtime_display_partial_strategy_combo = QComboBox()
+        for label, value in _DISPLAY_PARTIAL_OPTIONS:
+            self.runtime_display_partial_strategy_combo.addItem(label, value)
+        self._configure_combo_popup(self.runtime_display_partial_strategy_combo)
         self.runtime_chunk_spin = QSpinBox()
         self.runtime_chunk_spin.setRange(20, 1000)
         self.runtime_asr_pre_roll_spin = QSpinBox()
         self.runtime_asr_pre_roll_spin.setRange(0, 2000)
+        self.runtime_stable_partial_min_repeats_spin = QSpinBox()
+        self.runtime_stable_partial_min_repeats_spin.setRange(1, 10)
+        self.runtime_partial_stability_delta_spin = QSpinBox()
+        self.runtime_partial_stability_delta_spin.setRange(1, 50)
+        self.runtime_asr_partial_min_audio_spin = QSpinBox()
+        self.runtime_asr_partial_min_audio_spin.setRange(50, 3000)
+        self.runtime_asr_partial_floor_spin = QSpinBox()
+        self.runtime_asr_partial_floor_spin.setRange(50, 3000)
+        self.runtime_llm_partial_floor_spin = QSpinBox()
+        self.runtime_llm_partial_floor_spin.setRange(50, 3000)
+        self.runtime_early_final_check = QCheckBox("啟用 early final")
+        self.runtime_tts_accept_stable_partial_check = QCheckBox("TTS 接受穩定 partial")
+        self.runtime_tts_partial_min_chars_spin = QSpinBox()
+        self.runtime_tts_partial_min_chars_spin.setRange(1, 200)
+        self.runtime_tts_use_speech_profile_check = QCheckBox("TTS 使用 speech profile")
         self.runtime_tts_cancel_pending_check = QCheckBox("新句取消舊語音")
         self.runtime_tts_cancel_policy_combo = QComboBox()
         self.runtime_tts_cancel_policy_combo.addItem("取消所有未播", "all_pending")
@@ -1091,11 +997,46 @@ class LocalAiPage(QWidget):
         self.runtime_llm_streaming_tokens_spin.setRange(8, 256)
         self.runtime_max_pipeline_latency_spin = QSpinBox()
         self.runtime_max_pipeline_latency_spin.setRange(500, 20000)
+        for compact in (
+            self.runtime_sample_rate_spin,
+            self.runtime_latency_mode_combo,
+            self.runtime_display_partial_strategy_combo,
+            self.runtime_chunk_spin,
+            self.runtime_asr_pre_roll_spin,
+            self.runtime_stable_partial_min_repeats_spin,
+            self.runtime_partial_stability_delta_spin,
+            self.runtime_asr_partial_min_audio_spin,
+            self.runtime_asr_partial_floor_spin,
+            self.runtime_llm_partial_floor_spin,
+            self.runtime_tts_partial_min_chars_spin,
+            self.runtime_tts_cancel_policy_combo,
+            self.runtime_tts_max_wait_spin,
+            self.runtime_tts_max_chars_spin,
+            self.runtime_tts_drop_threshold_spin,
+            self.runtime_translation_cache_spin,
+            self.runtime_prefix_delta_spin,
+            self.runtime_llm_streaming_tokens_spin,
+            self.runtime_max_pipeline_latency_spin,
+            self.local_echo_guard_delay_spin,
+            self.remote_echo_guard_delay_spin,
+        ):
+            self._set_uniform_field_style(compact, minimum_width=140)
         form = QFormLayout()
         self._configure_form_layout(form)
         form.addRow("執行取樣率", self.runtime_sample_rate_spin)
+        form.addRow("延遲模式", self.runtime_latency_mode_combo)
+        form.addRow("字幕 partial 顯示", self.runtime_display_partial_strategy_combo)
         form.addRow("音訊切片(ms)", self.runtime_chunk_spin)
         form.addRow("ASR Pre-roll(ms)", self.runtime_asr_pre_roll_spin)
+        form.addRow("穩定 partial 次數", self.runtime_stable_partial_min_repeats_spin)
+        form.addRow("穩定 partial 最大差異字數", self.runtime_partial_stability_delta_spin)
+        form.addRow("ASR partial 最小音訊(ms)", self.runtime_asr_partial_min_audio_spin)
+        form.addRow("ASR partial 節流下限(ms)", self.runtime_asr_partial_floor_spin)
+        form.addRow("LLM partial 節流下限(ms)", self.runtime_llm_partial_floor_spin)
+        form.addRow("", self.runtime_early_final_check)
+        form.addRow("", self.runtime_tts_accept_stable_partial_check)
+        form.addRow("TTS partial 最小字數", self.runtime_tts_partial_min_chars_spin)
+        form.addRow("", self.runtime_tts_use_speech_profile_check)
         form.addRow("本地迴音守護", self.local_echo_guard_check)
         form.addRow("迴音恢復延遲(ms)", self.local_echo_guard_delay_spin)
         form.addRow("遠端迴音恢復延遲(ms)", self.remote_echo_guard_delay_spin)
@@ -1138,6 +1079,10 @@ class LocalAiPage(QWidget):
         for r in [8000, 16000, 22050, 24000, 32000, 44100, 48000]:
             sample_rate_spin.addItem(str(r), r)
         self._configure_combo_popup(sample_rate_spin)
+        style_preset_combo = QComboBox()
+        for label, value in _TTS_STYLE_OPTIONS:
+            style_preset_combo.addItem(label, value)
+        self._configure_combo_popup(style_preset_combo)
 
         for editor in (exec_edit, model_edit, config_edit):
             editor.setReadOnly(True)
@@ -1153,11 +1098,13 @@ class LocalAiPage(QWidget):
             noise_scale_spin,
             noise_w_spin,
             sample_rate_spin,
+            style_preset_combo,
         ):
             self._set_uniform_field_style(compact, minimum_width=180)
 
         form = QFormLayout()
         self._configure_form_layout(form)
+        form.addRow("朗讀風格", style_preset_combo)
         form.addRow("語速 Length Scale", length_scale_spin)
         form.addRow("隨機度 Noise Scale", noise_scale_spin)
         form.addRow("音色 Noise W", noise_w_spin)
@@ -1179,6 +1126,7 @@ class LocalAiPage(QWidget):
             model_edit=model_edit,
             config_edit=config_edit,
             speaker_combo=speaker_combo,
+            style_preset_combo=style_preset_combo,
             length_scale_spin=length_scale_spin,
             noise_scale_spin=noise_scale_spin,
             noise_w_spin=noise_w_spin,
@@ -1282,9 +1230,6 @@ class LocalAiPage(QWidget):
 
     def _wire_events(self) -> None:
         for compact in (
-            self.experience_preset_combo,
-            self.translation_style_combo,
-            self.tts_style_combo,
             self.asr_engine_combo,
             self.llm_backend_combo,
             self.runtime_sample_rate_spin,
@@ -1307,9 +1252,6 @@ class LocalAiPage(QWidget):
         self.llm_url_label.setMinimumHeight(_CONTROL_HEIGHT)
         self.asr_compute_label.setMinimumHeight(_CONTROL_HEIGHT)
         self.llm_reload_models_btn.setMinimumHeight(_CONTROL_HEIGHT)
-        self.experience_preset_combo.currentIndexChanged.connect(self._on_experience_preset_changed)
-        self.translation_style_combo.currentIndexChanged.connect(self._on_translation_style_changed)
-        self.tts_style_combo.currentIndexChanged.connect(self._on_tts_style_changed)
         self.show_advanced_check.toggled.connect(self._set_advanced_settings_visible)
         self.show_advanced_check.toggled.connect(lambda *_: self._notify_settings_changed())
         self.quick_health_btn.clicked.connect(lambda *_: self._on_health_check())
@@ -1370,15 +1312,28 @@ class LocalAiPage(QWidget):
             self.remote_llm_trigger_tokens_spin,
             self.llm_context_items_spin,
             self.remote_llm_context_items_spin,
+            self.llm_caption_profile_combo,
+            self.llm_speech_profile_combo,
             self.runtime_sample_rate_spin,
+            self.runtime_latency_mode_combo,
+            self.runtime_display_partial_strategy_combo,
             self.runtime_chunk_spin,
             self.runtime_asr_pre_roll_spin,
+            self.runtime_stable_partial_min_repeats_spin,
+            self.runtime_partial_stability_delta_spin,
+            self.runtime_asr_partial_min_audio_spin,
+            self.runtime_asr_partial_floor_spin,
+            self.runtime_llm_partial_floor_spin,
             self.asr_queue_local_spin,
             self.asr_queue_remote_spin,
             self.llm_queue_local_spin,
             self.llm_queue_remote_spin,
             self.tts_queue_local_spin,
             self.tts_queue_remote_spin,
+            self.runtime_early_final_check,
+            self.runtime_tts_accept_stable_partial_check,
+            self.runtime_tts_partial_min_chars_spin,
+            self.runtime_tts_use_speech_profile_check,
             self.runtime_translation_cache_spin,
             self.runtime_prefix_delta_spin,
             self.runtime_tts_drop_threshold_spin,
@@ -1403,6 +1358,7 @@ class LocalAiPage(QWidget):
         widgets.config_edit.setVisible(False)
         widgets.speaker_combo.setVisible(False)
         for widget in (
+            widgets.style_preset_combo,
             widgets.length_scale_spin,
             widgets.noise_scale_spin,
             widgets.noise_w_spin,
@@ -1421,6 +1377,7 @@ class LocalAiPage(QWidget):
     def _apply_tts_config(self, widgets: TtsWidgets, config: TtsConfig) -> None:
         self._select_combo_data(widgets.engine_combo, config.engine)
         self._select_combo_data(widgets.edge_voice_combo, config.voice_name.strip() or "zh-TW-HsiaoChenNeural")
+        self._select_combo_data(widgets.style_preset_combo, config.style_preset)
         widgets.exec_edit.setText(config.executable_path)
         widgets.model_edit.setText(config.model_path)
         widgets.config_edit.setText(config.config_path)
@@ -1436,6 +1393,7 @@ class LocalAiPage(QWidget):
         # Base profile only stores shared synthesis params; per-channel voice is set via overrides.
         if not (config.voice_name or "").strip():
             config.voice_name = "zh-TW-HsiaoChenNeural"
+        config.style_preset = str(widgets.style_preset_combo.currentData() or "broadcast_clear")
         config.executable_path = ""
         config.model_path = ""
         config.config_path = ""

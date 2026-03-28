@@ -24,6 +24,9 @@ class TranslationEvent:
     text: str
     speak_text: str
     is_final: bool
+    is_stable_partial: bool
+    is_early_final: bool
+    should_display: bool
     should_speak: bool
 
 
@@ -61,6 +64,8 @@ class TranslatorManager:
                 enabled=remote_llm.sliding_window.enabled,
                 trigger_tokens=remote_trigger_tokens,
                 max_context_items=remote_context_items,
+                min_partial_interval_ms=int(getattr(config.runtime, "llm_partial_interval_floor_ms", 320)),
+                partial_interval_floor_ms=int(getattr(config.runtime, "llm_partial_interval_floor_ms", 320)),
                 exact_cache_size=config.runtime.translation_exact_cache_size,
                 prefix_min_delta_chars=config.runtime.translation_prefix_min_delta_chars,
             ),
@@ -72,6 +77,8 @@ class TranslatorManager:
                 enabled=local_llm.sliding_window.enabled,
                 trigger_tokens=local_trigger_tokens,
                 max_context_items=local_context_items,
+                min_partial_interval_ms=int(getattr(config.runtime, "llm_partial_interval_floor_ms", 320)),
+                partial_interval_floor_ms=int(getattr(config.runtime, "llm_partial_interval_floor_ms", 320)),
                 exact_cache_size=config.runtime.translation_exact_cache_size,
                 prefix_min_delta_chars=config.runtime.translation_prefix_min_delta_chars,
             ),
@@ -89,6 +96,13 @@ class TranslatorManager:
             "remote": remote_llm.speech_profile,
         }
 
+    def last_skip_reason(self, source: str) -> str:
+        key = source if source in {"local", "remote"} else "local"
+        stitcher = self._stitchers.get(key)
+        if stitcher is None:
+            return ""
+        return stitcher.last_skip_reason()
+
     def translation_enabled(self, source: str | None = None) -> bool:
         if source in {"local", "remote"}:
             return translation_enabled_for_source(self._config.runtime, source)
@@ -105,6 +119,14 @@ class TranslatorManager:
         try:
             stitched = stitcher.process(event)
         except Exception as exc:
+            debug_snapshot = getattr(self._providers.get(source, self._providers["local"]), "debug_snapshot", lambda: {})()
+            extra = ""
+            if debug_snapshot:
+                extra = (
+                    f" | raw={debug_snapshot.get('raw_response', '')!r}"
+                    f" | cleaned={debug_snapshot.get('cleaned_response', '')!r}"
+                    f" | provider_error={debug_snapshot.get('last_error', '')!r}"
+                )
             if self._on_error:
                 self._on_error(
                     ErrorEvent(
@@ -113,7 +135,7 @@ class TranslatorManager:
                         source=source,
                         code="translate_failed",
                         message="Translation failed",
-                        detail=str(exc),
+                        detail=str(exc) + extra,
                     )
                 )
             return None
@@ -141,6 +163,9 @@ class TranslatorManager:
                 text=stitched.text,
                 speak_text=speak_text,
                 is_final=stitched.is_final,
+                is_stable_partial=stitched.is_stable_partial,
+                is_early_final=stitched.is_early_final,
+                should_display=stitched.should_display,
                 should_speak=stitched.should_speak,
             )
         speak_text = self._resolve_speak_text(
@@ -163,6 +188,9 @@ class TranslatorManager:
             text=stitched.text,
             speak_text=speak_text,
             is_final=stitched.is_final,
+            is_stable_partial=stitched.is_stable_partial,
+            is_early_final=stitched.is_early_final,
+            should_display=stitched.should_display,
             should_speak=stitched.should_speak,
         )
 
@@ -193,6 +221,8 @@ class TranslatorManager:
         should_speak: bool,
     ) -> str:
         if not is_final or not should_speak:
+            return caption_text
+        if not bool(getattr(self._config.runtime, "tts_use_speech_profile", False)):
             return caption_text
         if self._speech_profile_name.get(source) == self._caption_profile_name.get(source):
             return caption_text

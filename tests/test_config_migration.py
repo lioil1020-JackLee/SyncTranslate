@@ -307,6 +307,9 @@ class ConfigMigrationTests(unittest.TestCase):
         cfg.runtime.local_translation_enabled = True
         cfg.runtime.tts_output_mode = "passthrough"
         cfg.runtime.asr_language_mode = "auto"
+        cfg.runtime.local_echo_guard_enabled = True
+        cfg.runtime.local_echo_guard_resume_delay_ms = 420
+        cfg.runtime.remote_echo_guard_resume_delay_ms = 520
 
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "roundtrip.yaml"
@@ -320,6 +323,9 @@ class ConfigMigrationTests(unittest.TestCase):
         self.assertTrue(loaded.runtime.local_translation_enabled)
         self.assertEqual(loaded.runtime.tts_output_mode, "passthrough")
         self.assertEqual(loaded.runtime.asr_language_mode, "auto")
+        self.assertTrue(loaded.runtime.local_echo_guard_enabled)
+        self.assertEqual(loaded.runtime.local_echo_guard_resume_delay_ms, 420)
+        self.assertEqual(loaded.runtime.remote_echo_guard_resume_delay_ms, 520)
 
 
 if __name__ == "__main__":

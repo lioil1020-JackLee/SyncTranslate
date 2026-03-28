@@ -34,6 +34,8 @@ class TranslationProvider(Protocol):
 
     def capabilities(self) -> ProviderCapabilities: ...
 
+    def debug_snapshot(self) -> dict[str, str]: ...
+
 
 class LmStudioTranslationProvider:
     def __init__(self, config: LlmConfig) -> None:
@@ -80,6 +82,9 @@ class LmStudioTranslationProvider:
             supports_prefill=False,
             supports_response_format=True,
         )
+
+    def debug_snapshot(self) -> dict[str, str]:
+        return self._client.debug_snapshot()
 
 
 def create_translation_provider(config: LlmConfig) -> TranslationProvider:

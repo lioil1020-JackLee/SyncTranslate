@@ -146,7 +146,17 @@ class _FakeTtsManager:
     def submit_passthrough(self, channel: str, chunk, sample_rate: float) -> None:
         self.passthrough_calls.append((channel, sample_rate))
 
-    def enqueue(self, channel: str, text: str, *, utterance_id: str, revision: int, is_final: bool) -> None:
+    def enqueue(
+        self,
+        channel: str,
+        text: str,
+        *,
+        utterance_id: str,
+        revision: int,
+        is_final: bool,
+        is_stable_partial: bool = False,
+        is_early_final: bool = False,
+    ) -> None:
         self.enqueued.append((channel, text))
 
     def stats(self) -> dict[str, object]:
@@ -229,6 +239,7 @@ class AudioRouterPolicyTests(unittest.TestCase):
             created_at=0.0,
             text="hello from asr",
             is_final=True,
+            is_early_final=False,
             start_ms=0,
             end_ms=500,
             latency_ms=50,
@@ -254,6 +265,7 @@ class AudioRouterPolicyTests(unittest.TestCase):
             created_at=0.0,
             text="final asr text",
             is_final=True,
+            is_early_final=False,
             start_ms=0,
             end_ms=500,
             latency_ms=50,
@@ -273,6 +285,7 @@ class AudioRouterPolicyTests(unittest.TestCase):
             created_at=0.0,
             text="remote asr only",
             is_final=True,
+            is_early_final=False,
             start_ms=0,
             end_ms=500,
             latency_ms=50,
@@ -287,6 +300,7 @@ class AudioRouterPolicyTests(unittest.TestCase):
             created_at=0.0,
             text="local translated",
             is_final=True,
+            is_early_final=False,
             start_ms=0,
             end_ms=500,
             latency_ms=50,
@@ -362,6 +376,7 @@ class AudioRouterPolicyTests(unittest.TestCase):
             created_at=0.0,
             text="hello",
             is_final=True,
+            is_early_final=False,
             start_ms=0,
             end_ms=500,
             latency_ms=50,

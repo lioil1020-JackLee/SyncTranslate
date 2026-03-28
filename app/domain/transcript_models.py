@@ -13,6 +13,7 @@ class TranscriptItem:
     revision: int
     text: str
     is_final: bool
+    is_stable_partial: bool
     latency_ms: int | None
     created_at: datetime
 

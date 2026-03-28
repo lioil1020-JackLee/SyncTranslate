@@ -126,6 +126,7 @@ class _FakeAsrManager:
                     created_at=0.0,
                     text="hello",
                     is_final=False,
+                    is_early_final=False,
                     start_ms=0,
                     end_ms=300,
                     latency_ms=40,
@@ -140,6 +141,7 @@ class _FakeAsrManager:
                     created_at=0.1,
                     text="hello world",
                     is_final=True,
+                    is_early_final=False,
                     start_ms=0,
                     end_ms=900,
                     latency_ms=55,
@@ -154,9 +156,25 @@ class _FakeAsrManager:
                     created_at=0.2,
                     text="next sentence",
                     is_final=False,
+                    is_early_final=False,
                     start_ms=1000,
                     end_ms=1400,
                     latency_ms=35,
+                    detected_language="en",
+                ),
+                ASREventWithSource(
+                    source="remote",
+                    utterance_id="remote-2",
+                    revision=2,
+                    pipeline_revision=1,
+                    config_fingerprint="fp",
+                    created_at=0.3,
+                    text="next sentence now",
+                    is_final=False,
+                    is_early_final=False,
+                    start_ms=1000,
+                    end_ms=1550,
+                    latency_ms=38,
                     detected_language="en",
                 ),
             ]
@@ -170,6 +188,7 @@ class _FakeAsrManager:
                 created_at=0.0,
                 text="ni hao",
                 is_final=False,
+                is_early_final=False,
                 start_ms=0,
                 end_ms=250,
                 latency_ms=30,
@@ -184,6 +203,7 @@ class _FakeAsrManager:
                 created_at=0.1,
                 text="ni hao ma",
                 is_final=True,
+                is_early_final=False,
                 start_ms=0,
                 end_ms=850,
                 latency_ms=45,
@@ -213,6 +233,9 @@ class _FakeTranslatorManager:
                 text=f"ZH:{event.text}",
                 speak_text=f"SAY_LOCAL:{event.text}",
                 is_final=event.is_final,
+                is_stable_partial=not event.is_final,
+                is_early_final=event.is_early_final,
+                should_display=True,
                 should_speak=event.is_final,
             )
         return TranslationEvent(
@@ -226,6 +249,9 @@ class _FakeTranslatorManager:
             text=f"EN:{event.text}",
             speak_text=f"SAY_REMOTE:{event.text}",
             is_final=event.is_final,
+            is_stable_partial=not event.is_final,
+            is_early_final=event.is_early_final,
+            should_display=True,
             should_speak=event.is_final,
         )
 
@@ -259,7 +285,17 @@ class _FakeTtsManager:
     def submit_passthrough(self, channel: str, chunk, sample_rate: float) -> None:
         pass
 
-    def enqueue(self, channel: str, text: str, *, utterance_id: str, revision: int, is_final: bool) -> None:
+    def enqueue(
+        self,
+        channel: str,
+        text: str,
+        *,
+        utterance_id: str,
+        revision: int,
+        is_final: bool,
+        is_stable_partial: bool = False,
+        is_early_final: bool = False,
+    ) -> None:
         self.enqueued.append((channel, text, is_final))
 
     def stats(self) -> dict[str, object]:
@@ -314,9 +350,9 @@ class PipelineIntegrationTests(_QtTestCase):
         local_original_items = transcript_buffer.latest("local_original", limit=10)
         local_translated_items = transcript_buffer.latest("local_translated", limit=10)
 
-        self.assertEqual([item.text for item in remote_original_items], ["hello world", "next sentence"])
+        self.assertEqual([item.text for item in remote_original_items], ["hello world", "next sentence now"])
         self.assertEqual([item.is_final for item in remote_original_items], [True, False])
-        self.assertEqual([item.text for item in remote_translated_items], ["ZH:hello world", "ZH:next sentence"])
+        self.assertEqual([item.text for item in remote_translated_items], ["ZH:hello world", "ZH:next sentence now"])
         self.assertEqual([item.is_final for item in remote_translated_items], [True, False])
         self.assertEqual([item.text for item in local_original_items], ["ni hao ma"])
         self.assertEqual([item.text for item in local_translated_items], ["EN:ni hao ma"])
@@ -336,14 +372,69 @@ class PipelineIntegrationTests(_QtTestCase):
 
         self.assertEqual(
             page.remote_original.toPlainText(),
-            "[partial] next sentence\n[final] hello world",
+            "[partial] next sentence now\n[final] hello world",
         )
         self.assertEqual(
             page.remote_translated.toPlainText(),
-            "[partial] ZH:next sentence\n[final] ZH:hello world",
+            "[partial] ZH:next sentence now\n[final] ZH:hello world",
         )
         self.assertEqual(page.local_original.toPlainText(), "[final] ni hao ma")
         self.assertEqual(page.local_translated.toPlainText(), "[final] EN:ni hao ma")
+
+    def test_unstable_partial_is_hidden_until_a_stable_follow_up_arrives(self) -> None:
+        transcript_buffer = TranscriptBuffer()
+        input_manager = _FakeInputManager()
+        asr_manager = _FakeAsrManager()
+        translator_manager = _FakeTranslatorManager()
+        tts_manager = _FakeTtsManager()
+        router = AudioRouter(
+            transcript_buffer=transcript_buffer,
+            input_manager=input_manager,  # type: ignore[arg-type]
+            asr_manager=asr_manager,  # type: ignore[arg-type]
+            translator_manager=translator_manager,  # type: ignore[arg-type]
+            tts_manager=tts_manager,  # type: ignore[arg-type]
+            state_manager=StateManager(local_echo_guard_enabled=True),
+        )
+
+        router._on_asr_event(  # type: ignore[attr-defined]
+            ASREventWithSource(
+                source="remote",
+                utterance_id="u-1",
+                revision=1,
+                pipeline_revision=1,
+                config_fingerprint="fp",
+                created_at=0.0,
+                text="draft sentence",
+                is_final=False,
+                is_early_final=False,
+                start_ms=0,
+                end_ms=400,
+                latency_ms=20,
+                detected_language="en",
+            )
+        )
+        self.assertEqual(transcript_buffer.latest("meeting_original", limit=10), [])
+        self.assertEqual(transcript_buffer.latest("meeting_translated", limit=10), [])
+
+        router._on_asr_event(  # type: ignore[attr-defined]
+            ASREventWithSource(
+                source="remote",
+                utterance_id="u-1",
+                revision=2,
+                pipeline_revision=1,
+                config_fingerprint="fp",
+                created_at=0.1,
+                text="draft sentence now",
+                is_final=False,
+                is_early_final=False,
+                start_ms=0,
+                end_ms=700,
+                latency_ms=25,
+                detected_language="en",
+            )
+        )
+        self.assertEqual([item.text for item in transcript_buffer.latest("meeting_original", limit=10)], ["draft sentence now"])
+        self.assertEqual([item.text for item in transcript_buffer.latest("meeting_translated", limit=10)], ["ZH:draft sentence now"])
 
 
 if __name__ == "__main__":

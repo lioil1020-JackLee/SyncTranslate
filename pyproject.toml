@@ -2,7 +2,7 @@
 name = "synctranslate"
 version = "2.0.0"
 description = "Windows desktop live interpreter for meeting audio with local ASR and local LLM backends"
-readme = "docs/README.md"
+readme = "docs/文件導覽.md"
 requires-python = ">=3.11"
 dependencies = [
     "edge-tts>=7.2.7",

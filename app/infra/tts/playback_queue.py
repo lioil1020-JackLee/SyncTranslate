@@ -22,6 +22,9 @@ class _TtsTask:
     utterance_id: str | None
     revision: int
     created_at: float
+    is_final: bool
+    is_stable_partial: bool
+    is_early_final: bool
 
 
 @dataclass(slots=True)
@@ -93,6 +96,7 @@ class TTSManager:
         self._passthrough_stop = Event()
         self._passthrough_workers: dict[str, Thread | None] = {"local": None, "remote": None}
         self._engine_cache: dict[str, tuple[tuple[Any, ...], Any]] = {}
+        self._current_task_by_channel: dict[str, _TtsTask | None] = {"local": None, "remote": None}
         self._stop_event = Event()
         self._worker: Thread | None = None
 
@@ -139,6 +143,7 @@ class TTSManager:
             self._passthrough_pending["remote"].clear()
             self._queue_changed.notify_all()
         self._engine_cache.clear()
+        self._current_task_by_channel = {"local": None, "remote": None}
         return stopped
 
     def enqueue(
@@ -149,14 +154,20 @@ class TTSManager:
         utterance_id: str | None = None,
         revision: int = 0,
         is_final: bool = True,
+        is_stable_partial: bool = False,
+        is_early_final: bool = False,
     ) -> None:
         key = channel if channel in ("local", "remote") else "local"
         if self._output_mode.get(key) != "tts":
             return
-        if not is_final:
+        accept_stable_partial = bool(getattr(self._config.runtime, "tts_accept_stable_partial", True))
+        if not is_final and not (accept_stable_partial and is_stable_partial):
             return
         cleaned = text.strip()
         if not cleaned:
+            return
+        partial_min_chars = max(1, int(getattr(self._config.runtime, "tts_partial_min_chars", 12)))
+        if not is_final and len(cleaned) < partial_min_chars:
             return
         chunks = self._split_text(cleaned, self._max_chars)
         now = time.time()
@@ -168,6 +179,9 @@ class TTSManager:
                 utterance_id=utterance_id,
                 revision=base_revision + idx,
                 created_at=now,
+                is_final=is_final,
+                is_stable_partial=bool(is_stable_partial and not is_final),
+                is_early_final=bool(is_early_final),
             )
             for idx, chunk in enumerate(chunks)
             if chunk.strip()
@@ -176,7 +190,7 @@ class TTSManager:
             return
         dropped = 0
         with self._queue_changed:
-            if self._cancel_pending_on_new_final:
+            if self._cancel_pending_on_new_final or is_early_final or is_stable_partial:
                 if self._cancel_policy == "older_only":
                     dropped += self._drop_older_for_channel_locked(key, utterance_id, base_revision)
                 else:
@@ -285,6 +299,7 @@ class TTSManager:
             playback = self._playbacks[channel]
             output_device = self._output_getters[channel]()
             try:
+                self._current_task_by_channel[channel] = task
                 if self._on_play_start:
                     self._on_play_start(channel)
                 engine = self._resolve_engine(channel, tts_cfg)
@@ -309,6 +324,7 @@ class TTSManager:
                         )
                     )
             finally:
+                self._current_task_by_channel[channel] = None
                 if self._on_play_end:
                     self._on_play_end(channel)
 
@@ -341,6 +357,22 @@ class TTSManager:
                 "passthrough_drop_count_remote": self._passthrough_drop_count["remote"],
                 "oldest_age_ms": oldest_age_ms,
             }
+
+    def current_task(self, channel: str) -> dict[str, object] | None:
+        key = channel if channel in ("local", "remote") else "local"
+        task = self._current_task_by_channel.get(key)
+        if task is None:
+            return None
+        return {
+            "channel": task.channel,
+            "text": task.text,
+            "utterance_id": task.utterance_id,
+            "revision": task.revision,
+            "created_at": task.created_at,
+            "is_final": task.is_final,
+            "is_stable_partial": task.is_stable_partial,
+            "is_early_final": task.is_early_final,
+        }
 
     def _run_passthrough(self, channel: str) -> None:
         while not self._passthrough_stop.is_set():

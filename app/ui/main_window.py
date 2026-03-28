@@ -119,6 +119,7 @@ class MainWindow(QMainWindow):
             on_start_clicked=self.start_session,
             on_test_local_tts_clicked=self.test_local_tts_output,
             on_settings_changed=self._on_live_caption_settings_changed,
+            on_gain_changed=self._on_live_caption_gain_changed,
             on_output_mode_changed=self._on_output_mode_changed,
         )
         self.local_ai_page = LocalAiPage(
@@ -269,6 +270,13 @@ class MainWindow(QMainWindow):
 
     def _on_live_caption_settings_changed(self) -> None:
         self._schedule_live_apply()
+
+    def _on_live_caption_gain_changed(self) -> None:
+        gain = self.live_caption_page.selected_output_gain()
+        self.config.runtime.passthrough_gain = gain
+        self.config.runtime.tts_gain = gain
+        self._apply_audio_route_levels()
+        self.statusBar().showMessage(f"輸出音量已套用：{gain:.1f}x")
 
     def _schedule_live_apply(self) -> None:
         if not self._live_apply_ready or self._suspend_live_apply:
@@ -964,6 +972,18 @@ class MainWindow(QMainWindow):
             f"drop_local={tts['drop_count_local']} drop_remote={tts['drop_count_remote']} "
             f"oldest_age_ms={tts['oldest_age_ms']:.1f}"
         )
+        if router_stats.latency:
+            latest = router_stats.latency[0]
+            lines.append(
+                "latency: "
+                f"source={latest.get('source', '-')} "
+                f"first_asr_partial_ms={latest.get('first_asr_partial_ms', '-')} "
+                f"first_display_partial_ms={latest.get('first_display_partial_ms', '-')} "
+                f"speech_end_to_asr_final_ms={latest.get('speech_end_to_asr_final_ms', '-')} "
+                f"asr_final_to_llm_final_ms={latest.get('asr_final_to_llm_final_ms', '-')} "
+                f"tts_enqueue_to_playback_start_ms={latest.get('tts_enqueue_to_playback_start_ms', '-')} "
+                f"tts_enqueue_kind={latest.get('tts_enqueue_kind', '-')}"
+            )
         return "\n".join(lines)
 
     def _sync_ui_to_config(self) -> None:

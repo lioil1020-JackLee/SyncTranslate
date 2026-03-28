@@ -16,6 +16,9 @@ from app.infra.config.schema import TranslationProfileConfig
 class StitchResult:
     text: str
     is_final: bool
+    is_stable_partial: bool
+    is_early_final: bool
+    should_display: bool
     should_speak: bool
 
 
@@ -31,6 +34,7 @@ class TranslationStitcher:
         trigger_tokens: int = 20,
         max_context_items: int = 6,
         min_partial_interval_ms: int = 600,
+        partial_interval_floor_ms: int = 320,
         exact_cache_size: int = 256,
         prefix_min_delta_chars: int = 6,
     ) -> None:
@@ -42,13 +46,14 @@ class TranslationStitcher:
         self._trigger_tokens = max(8, int(trigger_tokens))
         self._context: deque[str] = deque(maxlen=max(2, int(max_context_items)))
         self._last_partial_call_ms = 0
-        self._min_partial_interval_ms = max(900, int(min_partial_interval_ms))
+        self._min_partial_interval_ms = max(int(partial_interval_floor_ms), int(min_partial_interval_ms))
         self._last_spoken = ""
         self._exact_cache_size = max(32, int(exact_cache_size))
         self._prefix_min_delta_chars = max(1, int(prefix_min_delta_chars))
         self._exact_cache: OrderedDict[str, str] = OrderedDict()
         self._last_partial_source = ""
         self._last_partial_translation = ""
+        self._last_skip_reason = ""
 
     def set_languages(self, *, source_lang: str, target_lang: str) -> None:
         new_source = (source_lang or "").strip()
@@ -74,8 +79,10 @@ class TranslationStitcher:
     def process(self, event: AsrEvent) -> StitchResult | None:
         text = event.text.strip()
         if not text:
+            self._last_skip_reason = "empty_source_text"
             return None
         if text.startswith("[asr-error]"):
+            self._last_skip_reason = "asr_error_marker"
             return None
 
         now_ms = int(time.monotonic() * 1000)
@@ -91,15 +98,32 @@ class TranslationStitcher:
             and (now_ms - self._last_partial_call_ms >= self._min_partial_interval_ms)
         )
         if not event.is_final and not can_translate_partial:
+            self._last_skip_reason = (
+                f"partial_gate units={units} segment_ms={segment_ms} min_interval_ms={self._min_partial_interval_ms}"
+            )
             return None
 
         if not event.is_final and self._last_partial_source:
             if text == self._last_partial_source and self._last_partial_translation:
-                return StitchResult(text=self._last_partial_translation, is_final=False, should_speak=False)
+                return StitchResult(
+                    text=self._last_partial_translation,
+                    is_final=False,
+                    is_stable_partial=True,
+                    is_early_final=False,
+                    should_display=True,
+                    should_speak=False,
+                )
             if text.startswith(self._last_partial_source):
                 delta = len(text) - len(self._last_partial_source)
                 if delta < self._prefix_min_delta_chars and self._last_partial_translation:
-                    return StitchResult(text=self._last_partial_translation, is_final=False, should_speak=False)
+                    return StitchResult(
+                        text=self._last_partial_translation,
+                        is_final=False,
+                        is_stable_partial=True,
+                        is_early_final=False,
+                        should_display=True,
+                        should_speak=False,
+                    )
 
         context = list(self._context) if self._enabled else []
         cache_key = self._cache_key(text, context)
@@ -115,14 +139,18 @@ class TranslationStitcher:
             if translated:
                 self._write_exact_cache(cache_key, translated)
         if not translated:
+            self._last_skip_reason = self._build_skip_reason("empty_translation")
             return None
         if _looks_like_format_contamination(translated):
             if event.is_final:
                 self._last_partial_source = ""
                 self._last_partial_translation = ""
+            self._last_skip_reason = self._build_skip_reason("format_contamination", translated=translated)
             return None
         if self._target_lang.lower().startswith("zh") and not _looks_like_displayable_zh_translation(translated):
+            self._last_skip_reason = self._build_skip_reason("non_displayable_zh", translated=translated)
             return None
+        self._last_skip_reason = ""
         if self._enabled:
             self._context.append(text)
         if not event.is_final:
@@ -133,10 +161,22 @@ class TranslationStitcher:
             self._last_partial_source = ""
             self._last_partial_translation = ""
 
+        is_early_final = bool(getattr(event, "is_early_final", False))
+        is_stable_partial = (not event.is_final) and translated == self._last_partial_translation
         should_speak = event.is_final and translated != self._last_spoken
         if should_speak:
             self._last_spoken = translated
-        return StitchResult(text=translated, is_final=event.is_final, should_speak=should_speak)
+        return StitchResult(
+            text=translated,
+            is_final=event.is_final,
+            is_stable_partial=is_stable_partial,
+            is_early_final=is_early_final,
+            should_display=True,
+            should_speak=should_speak,
+        )
+
+    def last_skip_reason(self) -> str:
+        return self._last_skip_reason
 
     def _cache_key(self, text: str, context: list[str] | None = None) -> str:
         profile_name = (self._profile.name.strip() if self._profile else "default") or "default"
@@ -163,6 +203,22 @@ class TranslationStitcher:
         self._exact_cache.move_to_end(key)
         while len(self._exact_cache) > self._exact_cache_size:
             self._exact_cache.popitem(last=False)
+
+    def _build_skip_reason(self, reason: str, *, translated: str = "") -> str:
+        debug_snapshot = getattr(self._translator, "debug_snapshot", lambda: {})()
+        details: list[str] = [reason]
+        cleaned = str(debug_snapshot.get("cleaned_response", "") or "")
+        raw = str(debug_snapshot.get("raw_response", "") or "")
+        last_error = str(debug_snapshot.get("last_error", "") or "")
+        if translated:
+            details.append(f"translated={translated[:120]!r}")
+        if cleaned:
+            details.append(f"cleaned={cleaned!r}")
+        if raw:
+            details.append(f"raw={raw!r}")
+        if last_error:
+            details.append(f"error={last_error!r}")
+        return " | ".join(details)
 
 
 def _looks_like_displayable_zh_translation(text: str) -> bool:

@@ -32,7 +32,7 @@ class LiveCaptionLabelTests(_QtTestCase):
         self.assertIn("手動：日文", page.remote_original_label.text())
         self.assertIn("手動：泰文", page.local_original_label.text())
 
-    def test_tts_voice_labels_appear_on_translated_panels_when_tts_enabled(self) -> None:
+    def test_tts_mode_keeps_translated_panel_labels(self) -> None:
         page = LiveCaptionPage()
         config = AppConfig()
         config.runtime.remote_translation_target = "ja"
@@ -46,7 +46,7 @@ class LiveCaptionLabelTests(_QtTestCase):
         self.assertEqual(page.remote_translated_label.text(), "遠端翻譯")
         self.assertEqual(page.local_translated_label.text(), "本地翻譯")
 
-    def test_asr_output_labels_show_voice_when_translation_disabled_and_tts_enabled(self) -> None:
+    def test_voice_choice_alone_no_longer_switches_panel_into_translation_mode(self) -> None:
         page = LiveCaptionPage()
         config = AppConfig()
         config.runtime.remote_translation_target = "none"
@@ -55,10 +55,31 @@ class LiveCaptionLabelTests(_QtTestCase):
         config.runtime.local_tts_voice = "th-TH-PremwadeeNeural"
 
         page.apply_config(config)
+        page.remote_output_mode_combo.setCurrentIndex(page.remote_output_mode_combo.findData("passthrough"))
+        page.local_output_mode_combo.setCurrentIndex(page.local_output_mode_combo.findData("passthrough"))
         page.update_translation_voice_labels(config)
 
-        self.assertEqual(page.remote_translated_label.text(), "原音直通")
+        self.assertEqual(page.remote_translated_label.text(), "遠端輸出")
         self.assertEqual(page.local_translated_label.text(), "本地輸出")
+
+    def test_passthrough_mode_survives_config_round_trip(self) -> None:
+        page = LiveCaptionPage()
+        config = AppConfig()
+        config.runtime.remote_translation_target = "zh-TW"
+        config.runtime.remote_tts_voice = "zh-TW-HsiaoChenNeural"
+        config.runtime.remote_translation_enabled = True
+
+        page.apply_config(config)
+        page.remote_output_mode_combo.setCurrentIndex(page.remote_output_mode_combo.findData("passthrough"))
+
+        updated = AppConfig()
+        page.update_config(updated)
+
+        reloaded = LiveCaptionPage()
+        reloaded.apply_config(updated)
+
+        self.assertEqual(updated.runtime.remote_translation_enabled, False)
+        self.assertEqual(reloaded.selected_tts_output_mode_for_channel("remote"), "passthrough")
 
 
 if __name__ == "__main__":

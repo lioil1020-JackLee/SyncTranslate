@@ -36,6 +36,31 @@ class _FakeProvider:
     def capabilities(self):
         return None
 
+    def debug_snapshot(self):
+        return {"raw_response": "", "cleaned_response": "", "last_error": ""}
+
+
+class _EmptyProvider(_FakeProvider):
+    def translate(
+        self,
+        text: str,
+        *,
+        source_lang: str,
+        target_lang: str,
+        context=None,
+        profile=None,
+    ) -> str:
+        profile_name = getattr(profile, "name", "default")
+        self.calls.append((text, source_lang, target_lang, profile_name))
+        return ""
+
+    def debug_snapshot(self):
+        return {
+            "raw_response": '{"translation":""}',
+            "cleaned_response": "",
+            "last_error": "",
+        }
+
 
 class TranslatorManagerProfileTests(unittest.TestCase):
     @patch("app.infra.translation.engine.create_translation_provider")
@@ -46,6 +71,7 @@ class TranslatorManagerProfileTests(unittest.TestCase):
         config = AppConfig()
         config.llm.caption_profile = "live_caption_fast"
         config.llm.speech_profile = "speech_output_natural"
+        config.runtime.tts_use_speech_profile = True
         config.language.meeting_target = "en"
 
         manager = TranslatorManager(config)
@@ -58,6 +84,7 @@ class TranslatorManagerProfileTests(unittest.TestCase):
             created_at=0.0,
             text="hello world",
             is_final=True,
+            is_early_final=False,
             start_ms=0,
             end_ms=1200,
             latency_ms=80,
@@ -79,6 +106,7 @@ class TranslatorManagerProfileTests(unittest.TestCase):
         config = AppConfig()
         config.llm.caption_profile = "live_caption_fast"
         config.llm.speech_profile = "live_caption_fast"
+        config.runtime.tts_use_speech_profile = True
 
         manager = TranslatorManager(config)
         event = ASREventWithSource(
@@ -90,6 +118,7 @@ class TranslatorManagerProfileTests(unittest.TestCase):
             created_at=0.0,
             text="你好",
             is_final=True,
+            is_early_final=False,
             start_ms=0,
             end_ms=1200,
             latency_ms=80,
@@ -103,6 +132,35 @@ class TranslatorManagerProfileTests(unittest.TestCase):
         self.assertEqual(translated.text, "caption:你好")
         self.assertEqual(translated.speak_text, "caption:你好")
         self.assertEqual(len(providers[0].calls), 1)
+
+    @patch("app.infra.translation.engine.create_translation_provider")
+    def test_last_skip_reason_includes_provider_debug_when_translation_is_empty(self, mock_factory) -> None:
+        providers = [_EmptyProvider(), _EmptyProvider()]
+        mock_factory.side_effect = providers
+
+        manager = TranslatorManager(AppConfig())
+        event = ASREventWithSource(
+            source="local",
+            utterance_id="u3",
+            revision=1,
+            pipeline_revision=1,
+            config_fingerprint="fp",
+            created_at=0.0,
+            text="你想睡覺喔",
+            is_final=True,
+            is_early_final=False,
+            start_ms=0,
+            end_ms=1500,
+            latency_ms=60,
+            detected_language="zh-TW",
+        )
+
+        translated = manager.process(event)
+
+        self.assertIsNone(translated)
+        reason = manager.last_skip_reason("local")
+        self.assertIn("empty_translation", reason)
+        self.assertIn("raw=", reason)
 
 
 if __name__ == "__main__":

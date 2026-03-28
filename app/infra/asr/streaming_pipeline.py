@@ -27,6 +27,7 @@ class ASREventWithSource:
     created_at: float
     text: str
     is_final: bool
+    is_early_final: bool
     start_ms: int
     end_ms: int
     latency_ms: int
@@ -88,6 +89,7 @@ class ASRManager:
                     created_at=time.time(),
                     text=event.text,
                     is_final=event.is_final,
+                    is_early_final=event.is_early_final,
                     start_ms=event.start_ms,
                     end_ms=event.end_ms,
                     latency_ms=event.latency_ms,
@@ -205,6 +207,9 @@ class ASRManager:
             final_history_seconds=stream_cfg.final_history_seconds,
             soft_final_audio_ms=stream_cfg.soft_final_audio_ms,
             pre_roll_ms=pre_roll_ms,
+            min_partial_audio_ms=int(getattr(runtime_cfg, "asr_partial_min_audio_ms", 280)),
+            partial_interval_floor_ms=int(getattr(runtime_cfg, "asr_partial_interval_floor_ms", 280)),
+            early_final_enabled=bool(getattr(runtime_cfg, "early_final_enabled", True)),
             queue_maxsize=queue_maxsize,
             on_debug=self._on_error,
         )
@@ -343,6 +348,9 @@ class ASRManager:
                 "asr_queue_maxsize_local": self._config.runtime.asr_queue_maxsize_local,
                 "asr_queue_maxsize_remote": self._config.runtime.asr_queue_maxsize_remote,
                 "asr_pre_roll_ms": int(getattr(self._config.runtime, "asr_pre_roll_ms", 500)),
+                "asr_partial_min_audio_ms": int(getattr(self._config.runtime, "asr_partial_min_audio_ms", 280)),
+                "asr_partial_interval_floor_ms": int(getattr(self._config.runtime, "asr_partial_interval_floor_ms", 280)),
+                "early_final_enabled": bool(getattr(self._config.runtime, "early_final_enabled", True)),
             },
         }
         raw = json.dumps(payload, sort_keys=True, ensure_ascii=True)

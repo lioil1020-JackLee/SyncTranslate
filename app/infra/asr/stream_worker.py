@@ -18,6 +18,7 @@ from app.infra.asr.language_policy import VadSegmenter
 class AsrEvent:
     text: str
     is_final: bool
+    is_early_final: bool
     start_ms: int
     end_ms: int
     latency_ms: int
@@ -46,6 +47,9 @@ class StreamingAsr:
         final_history_seconds: int = 6,
         soft_final_audio_ms: int = 4200,
         pre_roll_ms: int = 500,
+        min_partial_audio_ms: int = 280,
+        partial_interval_floor_ms: int = 280,
+        early_final_enabled: bool = True,
         queue_maxsize: int = 128,
         on_event: Callable[[AsrEvent], None] | None = None,
         on_debug: Callable[[str], None] | None = None,
@@ -53,7 +57,7 @@ class StreamingAsr:
         self._engine = engine
         self._vad = vad
         # Keep partial decode conservative to avoid native decoder overload.
-        self._partial_interval_ms = max(700, int(partial_interval_ms))
+        self._partial_interval_ms = max(int(partial_interval_floor_ms), int(partial_interval_ms))
         self._partial_history_seconds = max(1, int(partial_history_seconds))
         self._final_history_seconds = max(1, int(final_history_seconds))
         self._pre_roll_ms = max(0, int(pre_roll_ms))
@@ -67,10 +71,11 @@ class StreamingAsr:
         self._segment_end_ms = 0
         self._last_partial_ms = 0
         self._segment_sample_rate = 16000
-        self._min_partial_audio_ms = 600
+        self._min_partial_audio_ms = max(120, int(min_partial_audio_ms))
         self._force_final_queue_size = max(8, self._queue.maxsize // 4)
         self._force_final_audio_ms = 1800
         self._soft_final_audio_ms = max(self._force_final_audio_ms, int(soft_final_audio_ms))
+        self._early_final_enabled = bool(early_final_enabled)
         self._overflow_count = 0
         self._last_overflow_report_ms = 0
         self._drop_partial_until_final = False
@@ -214,12 +219,12 @@ class StreamingAsr:
                     "asr backlog: force final "
                     f"queue={self._queue.qsize()} audio_ms={segment_audio_ms}"
                 )
-                self._emit_final(now_ms=now_ms)
+                self._emit_final(now_ms=now_ms, is_early_final=False)
                 self._reset_segment()
                 return
             if should_soft_split:
                 self._debug(f"asr long speech: soft final audio_ms={segment_audio_ms}")
-                self._emit_final(now_ms=now_ms)
+                self._emit_final(now_ms=now_ms, is_early_final=False)
                 self._reset_segment()
                 return
             should_emit_partial = (
@@ -237,7 +242,16 @@ class StreamingAsr:
             # words are not silently dropped before final transcription.
             if (not decision.speech_active) and chunk.size > 0:
                 self._segment_chunks.append(chunk)
-            self._emit_final(now_ms=now_ms)
+            self._emit_final(now_ms=now_ms, is_early_final=False)
+            self._reset_segment()
+            return
+
+        if self._should_emit_early_final(decision):
+            self._debug(
+                "asr early final "
+                f"speech_ms={int(decision.speech_ms)} silence_ms={int(decision.silence_ms)}"
+            )
+            self._emit_final(now_ms=now_ms, is_early_final=True)
             self._reset_segment()
 
     def _emit_partial(self) -> None:
@@ -272,6 +286,7 @@ class StreamingAsr:
             AsrEvent(
                 text=text.strip(),
                 is_final=False,
+                is_early_final=False,
                 start_ms=self._segment_start_ms,
                 end_ms=self._segment_end_ms,
                 latency_ms=latency_ms,
@@ -282,7 +297,7 @@ class StreamingAsr:
             self._partial_count += 1
         self._debug(f"asr partial latency={latency_ms}ms text={text.strip()[:80]}")
 
-    def _emit_final(self, *, now_ms: int) -> None:
+    def _emit_final(self, *, now_ms: int, is_early_final: bool) -> None:
         if not self._on_event or not self._segment_chunks:
             return
         audio = np.concatenate(self._segment_chunks, axis=0)
@@ -296,6 +311,7 @@ class StreamingAsr:
                 AsrEvent(
                     text=f"[asr-error] {exc}",
                     is_final=True,
+                    is_early_final=is_early_final,
                     start_ms=self._segment_start_ms,
                     end_ms=now_ms,
                     latency_ms=0,
@@ -317,6 +333,7 @@ class StreamingAsr:
             AsrEvent(
                 text=text.strip(),
                 is_final=True,
+                is_early_final=is_early_final,
                 start_ms=self._segment_start_ms,
                 end_ms=now_ms,
                 latency_ms=latency_ms,
@@ -326,6 +343,24 @@ class StreamingAsr:
         with self._stats_lock:
             self._final_count += 1
         self._debug(f"asr final latency={latency_ms}ms text={text.strip()[:80]}")
+
+    def _should_emit_early_final(self, decision) -> bool:
+        if not self._early_final_enabled:
+            return False
+        if decision.speech_active:
+            return False
+        if not self._segment_chunks:
+            return False
+        speech_ms = float(getattr(decision, "speech_ms", 0.0))
+        silence_ms = float(getattr(decision, "silence_ms", 0.0))
+        if speech_ms <= 0 or silence_ms <= 0:
+            return False
+        segment_audio_ms = self._segment_audio_ms()
+        if segment_audio_ms < 300 or segment_audio_ms > 2600:
+            return False
+        configured_silence_ms = float(getattr(getattr(self._vad, "_config", None), "min_silence_duration_ms", 240))
+        early_silence_ms = max(120.0, min(220.0, configured_silence_ms * 0.7))
+        return silence_ms >= early_silence_ms
 
     def _debug(self, message: str) -> None:
         with self._stats_lock:

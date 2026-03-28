@@ -6,22 +6,21 @@ from typing import Callable
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QFileDialog,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSlider,
     QSizePolicy,
     QTextEdit,
     QVBoxLayout,
     QWidget,
-    QSplitter,
 )
 
-from app.infra.config.schema import AppConfig
-from app.infra.tts.voice_policy import resolve_edge_voice_for_target
+from app.infra.config.schema import AppConfig, translation_enabled_for_source
+from app.infra.tts.voice_policy import default_voice_for_language
 
 _STATUS_TEXT = {
     "idle": "未啟動",
@@ -34,14 +33,6 @@ _STATUS_DOT = {
     "preparing": "#f59e0b",
     "running": "#16a34a",
 }
-
-_SUPPORTED_LANGUAGES: list[tuple[str, str]] = [
-    ("zh-TW", "中文"),
-    ("en", "英文"),
-    ("ja", "日文"),
-    ("ko", "韓文"),
-    ("th", "泰文"),
-]
 
 _LANG_LABELS: dict[str, str] = {
     "en": "英文",
@@ -61,13 +52,38 @@ _ASR_CHOICES: list[tuple[str, str]] = [
 ]
 
 _TRANSLATION_TARGET_CHOICES: list[tuple[str, str]] = [
-    ("none", "無"),
     ("zh-TW", "中文"),
     ("en", "英文"),
     ("ja", "日文"),
     ("ko", "韓文"),
     ("th", "泰文"),
 ]
+
+_OUTPUT_MODE_CHOICES: list[tuple[str, str]] = [
+    ("passthrough", "直通"),
+    ("tts", "翻譯"),
+]
+
+_CHANNELS: tuple[str, str] = ("remote", "local")
+
+_CHANNEL_DEFAULTS: dict[str, dict[str, str]] = {
+    "remote": {
+        "asr_default": "zh-TW",
+        "target_default": "zh-TW",
+        "source_default": "zh-TW",
+        "original_label": "遠端原文",
+        "translated_label": "遠端翻譯",
+        "output_label": "遠端輸出",
+    },
+    "local": {
+        "asr_default": "en",
+        "target_default": "en",
+        "source_default": "en",
+        "original_label": "本地原文",
+        "translated_label": "本地翻譯",
+        "output_label": "本地輸出",
+    },
+}
 
 _TTS_VOICE_OPTIONS: dict[str, list[tuple[str, str]]] = {
     "zh-TW": [
@@ -94,12 +110,6 @@ _TTS_VOICE_OPTIONS: dict[str, list[tuple[str, str]]] = {
         ("th-TH-NiwatNeural", "泰文-男（Niwat）"),
     ],
 }
-
-
-def _build_target_choices() -> list[tuple[str, str]]:
-    return [(code, label) for code, label in _SUPPORTED_LANGUAGES]
-
-
 class LiveCaptionPage(QWidget):
     def __init__(
         self,
@@ -107,6 +117,7 @@ class LiveCaptionPage(QWidget):
         on_start_clicked: Callable[[], None] | None = None,
         on_test_local_tts_clicked: Callable[[], None] | None = None,
         on_settings_changed: Callable[[], None] | None = None,
+        on_gain_changed: Callable[[], None] | None = None,
         on_output_mode_changed: Callable[[str], None] | None = None,
     ) -> None:
         super().__init__()
@@ -114,6 +125,7 @@ class LiveCaptionPage(QWidget):
         self._on_start_clicked = on_start_clicked
         self._on_test_local_tts_clicked = on_test_local_tts_clicked
         self._on_settings_changed = on_settings_changed
+        self._on_gain_changed = on_gain_changed
         self._on_output_mode_changed = on_output_mode_changed
         self._suspend_notify = False
         self._direction_controls_enabled = True
@@ -135,14 +147,28 @@ class LiveCaptionPage(QWidget):
         self._configure_combo_popup(self.remote_lang_combo)
         self._configure_combo_popup(self.local_lang_combo)
 
+        self.remote_output_mode_combo = QComboBox()
+        self.local_output_mode_combo = QComboBox()
+        for code, label in _OUTPUT_MODE_CHOICES:
+            self.remote_output_mode_combo.addItem(label, code)
+            self.local_output_mode_combo.addItem(label, code)
+        self._configure_combo_popup(self.remote_output_mode_combo)
+        self._configure_combo_popup(self.local_output_mode_combo)
+
         self.remote_tts_voice_combo = QComboBox()
         self.local_tts_voice_combo = QComboBox()
+        self.output_gain_slider = QSlider(Qt.Orientation.Horizontal)
+        self.output_gain_value_label = QLabel()
         self.remote_tts_voice_combo.setMinimumWidth(220)
         self.local_tts_voice_combo.setMinimumWidth(220)
         self.remote_tts_voice_combo.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.local_tts_voice_combo.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self._configure_combo_popup(self.remote_tts_voice_combo)
         self._configure_combo_popup(self.local_tts_voice_combo)
+        self._configure_gain_slider(self.output_gain_slider)
+        self.output_gain_slider.valueChanged.connect(
+            lambda value: self._handle_gain_slider_changed(self.output_gain_value_label, value)
+        )
 
         self.start_btn = QPushButton("開始")
         self.start_btn.clicked.connect(self._handle_start_clicked)
@@ -210,6 +236,8 @@ class LiveCaptionPage(QWidget):
         for combo in (
             self.remote_asr_combo,
             self.local_asr_combo,
+            self.remote_output_mode_combo,
+            self.local_output_mode_combo,
             self.remote_lang_combo,
             self.local_lang_combo,
             self.remote_tts_voice_combo,
@@ -218,42 +246,18 @@ class LiveCaptionPage(QWidget):
             combo.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             if combo in (self.remote_tts_voice_combo, self.local_tts_voice_combo):
                 combo.setFixedWidth(120)
+            elif combo in (self.remote_output_mode_combo, self.local_output_mode_combo):
+                combo.setFixedWidth(78)
             elif combo in (self.remote_lang_combo, self.local_lang_combo):
                 combo.setFixedWidth(70)
             else:
                 combo.setFixedWidth(90)
-            combo.currentIndexChanged.connect(self._notify_settings_changed)
+            if combo in (self.remote_output_mode_combo, self.local_output_mode_combo):
+                combo.currentIndexChanged.connect(self._handle_output_mode_changed)
+            else:
+                combo.currentIndexChanged.connect(self._notify_settings_changed)
         self.remote_lang_combo.currentIndexChanged.connect(self._on_translation_target_changed)
         self.local_lang_combo.currentIndexChanged.connect(self._on_translation_target_changed)
-
-        # 用 Splitter 保證四個區域等分 (2x2) ，避免右邊被額外控件寬度擠大
-        top_left_widget = QWidget()
-        tl_layout = QVBoxLayout(top_left_widget)
-        tl_layout.setContentsMargins(0, 0, 0, 0)
-        tl_layout.setSpacing(2)
-        tl_layout.addLayout(self._make_panel_header(self.remote_original_label, self.remote_original_status, self.export_remote_original_btn, controls=[QLabel("ASR語言"), self.remote_asr_combo]))
-        tl_layout.addWidget(self.remote_original)
-
-        top_right_widget = QWidget()
-        tr_layout = QVBoxLayout(top_right_widget)
-        tr_layout.setContentsMargins(0, 0, 0, 0)
-        tr_layout.setSpacing(2)
-        tr_layout.addLayout(self._make_panel_header(self.remote_translated_label, self.remote_translated_status, self.export_remote_translated_btn, controls=[QLabel("目標"), self.remote_lang_combo, QLabel("TTS語音"), self.remote_tts_voice_combo]))
-        tr_layout.addWidget(self.remote_translated)
-
-        bottom_left_widget = QWidget()
-        bl_layout = QVBoxLayout(bottom_left_widget)
-        bl_layout.setContentsMargins(0, 0, 0, 0)
-        bl_layout.setSpacing(2)
-        bl_layout.addLayout(self._make_panel_header(self.local_original_label, self.local_original_status, self.export_local_original_btn, controls=[QLabel("ASR語言"), self.local_asr_combo]))
-        bl_layout.addWidget(self.local_original)
-
-        bottom_right_widget = QWidget()
-        br_layout = QVBoxLayout(bottom_right_widget)
-        br_layout.setContentsMargins(0, 0, 0, 0)
-        br_layout.setSpacing(2)
-        br_layout.addLayout(self._make_panel_header(self.local_translated_label, self.local_translated_status, self.export_local_translated_btn, controls=[QLabel("目標"), self.local_lang_combo, QLabel("TTS語音"), self.local_tts_voice_combo, self.test_local_tts_btn]))
-        br_layout.addWidget(self.local_translated)
 
         # 直接用 grid 布局, 由 resizeEvent 做等分固定尺寸即可
         grid = QGridLayout()
@@ -283,11 +287,12 @@ class LiveCaptionPage(QWidget):
                 self.remote_translated_status,
                 self.export_remote_translated_btn,
                 controls=[
+                    QLabel("模式"),
+                    self.remote_output_mode_combo,
                     QLabel("翻譯目標"),
                     self.remote_lang_combo,
                     QLabel("TTS語音"),
                     self.remote_tts_voice_combo,
-                    self.test_local_tts_btn,
                 ],
             ),
             0,
@@ -311,10 +316,13 @@ class LiveCaptionPage(QWidget):
                 self.local_translated_status,
                 self.export_local_translated_btn,
                 controls=[
+                    QLabel("模式"),
+                    self.local_output_mode_combo,
                     QLabel("翻譯目標"),
                     self.local_lang_combo,
                     QLabel("TTS語音"),
                     self.local_tts_voice_combo,
+                    self.test_local_tts_btn,
                 ],
             ),
             2,
@@ -326,6 +334,9 @@ class LiveCaptionPage(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
+        layout.addLayout(
+            self._make_single_gain_row("輸出音量", self.output_gain_slider, self.output_gain_value_label)
+        )
         layout.addLayout(grid)
 
         # 初始正確化 TTS 選項和標籤
@@ -348,70 +359,80 @@ class LiveCaptionPage(QWidget):
     def apply_config(self, config: AppConfig) -> None:
         self._suspend_notify = True
         try:
-            self._set_target_combo(
-                self.remote_asr_combo,
-                self._normalize_asr_language(
-                    str(getattr(config.runtime, "remote_asr_language", "")),
-                    str(getattr(config.language, "meeting_source", "zh-TW") or "zh-TW"),
-                ),
-            )
-            self._set_target_combo(
-                self.local_asr_combo,
-                self._normalize_asr_language(
-                    str(getattr(config.runtime, "local_asr_language", "")),
-                    str(getattr(config.language, "local_source", "en") or "en"),
-                ),
-            )
-            self._set_target_combo(
-                self.remote_lang_combo,
-                str(getattr(config.runtime, "remote_translation_target", config.language.meeting_target or "zh-TW") or "none"),
-            )
-            self._set_target_combo(
-                self.local_lang_combo,
-                str(getattr(config.runtime, "local_translation_target", config.language.local_target or "en") or "none"),
-            )
+            for channel in _CHANNELS:
+                target_value = self._config_translation_target(config, channel)
+                voice_value = self._config_tts_voice(config, channel)
+                translate_enabled = (
+                    False
+                    if (target_value == "none" and voice_value == "none")
+                    else translation_enabled_for_source(config.runtime, channel)
+                )
+                self._set_target_combo(
+                    self._channel_combo(channel, "asr"),
+                    self._normalize_asr_language(
+                        self._config_asr_language(config, channel),
+                        self._config_source_language(config, channel),
+                    ),
+                )
+                self._set_target_combo(self._channel_combo(channel, "target"), target_value)
             self._on_translation_target_changed()
-            self._select_combo_data(
-                self.remote_tts_voice_combo,
-                str(getattr(config.runtime, "remote_tts_voice", "none") or "none"),
+            for channel in _CHANNELS:
+                target_value = self._config_translation_target(config, channel)
+                voice_value = self._config_tts_voice(config, channel)
+                translate_enabled = (
+                    False
+                    if (target_value == "none" and voice_value == "none")
+                    else translation_enabled_for_source(config.runtime, channel)
+                )
+                self._select_combo_data(self._channel_combo(channel, "voice"), voice_value)
+                self._select_combo_data(
+                    self._channel_combo(channel, "mode"),
+                    "tts" if translate_enabled else "passthrough",
+                )
+                self._ensure_translation_defaults(channel)
+            unified_gain = float(
+                getattr(config.runtime, "tts_gain", getattr(config.runtime, "passthrough_gain", 1.6))
             )
-            self._select_combo_data(
-                self.local_tts_voice_combo,
-                str(getattr(config.runtime, "local_tts_voice", "none") or "none"),
-            )
+            self.output_gain_slider.setValue(self._gain_to_slider_value(unified_gain))
         finally:
             self._suspend_notify = False
+        self._update_gain_value_label(
+            self.output_gain_value_label,
+            self._slider_value_to_gain(self.output_gain_slider.value()),
+        )
         self._update_source_language_controls()
         self._refresh_panel_labels()
 
     def update_config(self, config: AppConfig) -> None:
         config.direction.mode = "bidirectional"
+        enabled_channels: list[str] = []
+        for channel in _CHANNELS:
+            mode = self.selected_tts_output_mode_for_channel(channel)
+            target = self._resolved_translation_target(channel)
+            self._set_runtime_translation_target(config, channel, target)
+            self._set_runtime_translation_enabled(config, channel, mode == "tts")
+            if mode == "tts":
+                enabled_channels.append(channel)
+                self._set_language_target(config, channel, target)
+            self._set_runtime_asr_language(
+                config,
+                channel,
+                self._get_target_language(
+                    self._channel_combo(channel, "asr"),
+                    default=_CHANNEL_DEFAULTS[channel]["asr_default"],
+                ),
+            )
+            self._set_runtime_tts_voice(config, channel, self._resolved_tts_voice(channel))
+            self._set_runtime_tts_enabled(config, channel, mode == "tts")
 
-        remote_translation_target = self._get_target_language(self.remote_lang_combo, default="none")
-        local_translation_target = self._get_target_language(self.local_lang_combo, default="none")
-        config.runtime.remote_translation_target = remote_translation_target
-        config.runtime.local_translation_target = local_translation_target
-        config.runtime.remote_translation_enabled = remote_translation_target != "none"
-        config.runtime.local_translation_enabled = local_translation_target != "none"
-        config.runtime.translation_enabled = config.runtime.remote_translation_enabled or config.runtime.local_translation_enabled
-
-        if config.runtime.remote_translation_enabled:
-            config.language.meeting_target = remote_translation_target
-        if config.runtime.local_translation_enabled:
-            config.language.local_target = local_translation_target
-
-        config.runtime.remote_asr_language = self._get_target_language(self.remote_asr_combo, default="zh-TW")
-        config.runtime.local_asr_language = self._get_target_language(self.local_asr_combo, default="en")
-
-        config.runtime.remote_tts_voice = self._get_target_language(self.remote_tts_voice_combo, default="none")
-        config.runtime.local_tts_voice = self._get_target_language(self.local_tts_voice_combo, default="none")
-
-        config.runtime.remote_tts_enabled = config.runtime.remote_tts_voice != "none" and config.runtime.remote_translation_enabled
-        config.runtime.local_tts_enabled = config.runtime.local_tts_voice != "none" and config.runtime.local_translation_enabled
-
-        if not config.runtime.remote_translation_enabled and not config.runtime.local_translation_enabled:
+        config.runtime.translation_enabled = bool(enabled_channels)
+        gain = self.selected_output_gain()
+        config.runtime.passthrough_gain = gain
+        config.runtime.tts_gain = gain
+        modes = {channel: self.selected_tts_output_mode_for_channel(channel) for channel in _CHANNELS}
+        if all(mode == "passthrough" for mode in modes.values()):
             config.runtime.tts_output_mode = "passthrough"
-        elif config.runtime.remote_tts_enabled or config.runtime.local_tts_enabled:
+        elif any(mode == "tts" for mode in modes.values()):
             config.runtime.tts_output_mode = "tts"
         else:
             config.runtime.tts_output_mode = "subtitle_only"
@@ -419,41 +440,34 @@ class LiveCaptionPage(QWidget):
     def selected_mode(self) -> str:
         return "bidirectional"
 
+    def selected_passthrough_gain(self) -> float:
+        return self.selected_output_gain()
+
+    def selected_tts_gain(self) -> float:
+        return self.selected_output_gain()
+
+    def selected_output_gain(self) -> float:
+        return self._slider_value_to_gain(self.output_gain_slider.value())
+
     def selected_asr_language_mode(self) -> str:
-        return self._get_target_language(self.remote_asr_combo, default="auto")
+        return self._get_target_language(self._channel_combo("remote", "asr"), default="auto")
 
     def selected_tts_output_mode_for_channel(self, channel: str) -> str:
-        if channel == "remote":
-            target = self._get_target_language(self.remote_lang_combo, default="none")
-            voice = self._get_target_language(self.remote_tts_voice_combo, default="none")
-        else:
-            target = self._get_target_language(self.local_lang_combo, default="none")
-            voice = self._get_target_language(self.local_tts_voice_combo, default="none")
-
-        if target == "none":
-            return "passthrough"
-        if voice == "none":
-            return "subtitle_only"
-        return "tts"
+        selected = self._get_target_language(self._channel_combo(channel, "mode"), default="passthrough")
+        return "tts" if selected == "tts" else "passthrough"
 
     def selected_tts_output_mode(self) -> str:
-        remote_mode = self.selected_tts_output_mode_for_channel("remote")
-        local_mode = self.selected_tts_output_mode_for_channel("local")
-        if remote_mode == "tts" or local_mode == "tts":
+        modes = [self.selected_tts_output_mode_for_channel(channel) for channel in _CHANNELS]
+        if any(mode == "tts" for mode in modes):
             return "tts"
-        if remote_mode == "passthrough" and local_mode == "passthrough":
+        if all(mode == "passthrough" for mode in modes):
             return "passthrough"
         return "subtitle_only"
 
     def translation_enabled(self, source: str | None = None) -> bool:
-        if source == "remote":
-            return self._get_target_language(self.remote_lang_combo, default="none") != "none"
-        if source == "local":
-            return self._get_target_language(self.local_lang_combo, default="none") != "none"
-        return (
-            self._get_target_language(self.remote_lang_combo, default="none") != "none"
-            or self._get_target_language(self.local_lang_combo, default="none") != "none"
-        )
+        if source in _CHANNELS:
+            return self.selected_tts_output_mode_for_channel(source) == "tts"
+        return any(self.selected_tts_output_mode_for_channel(channel) == "tts" for channel in _CHANNELS)
 
     def set_start_enabled(self, enabled: bool) -> None:
         self.start_btn.setEnabled(enabled)
@@ -463,15 +477,10 @@ class LiveCaptionPage(QWidget):
 
     def set_direction_controls_enabled(self, enabled: bool) -> None:
         self._direction_controls_enabled = bool(enabled)
-        for widget in (
-            self.remote_asr_combo,
-            self.local_asr_combo,
-            self.remote_lang_combo,
-            self.local_lang_combo,
-            self.remote_tts_voice_combo,
-            self.local_tts_voice_combo,
-        ):
-            widget.setEnabled(self._direction_controls_enabled)
+        for channel in _CHANNELS:
+            self._channel_combo(channel, "asr").setEnabled(self._direction_controls_enabled)
+            self._channel_combo(channel, "mode").setEnabled(self._direction_controls_enabled)
+        self.output_gain_slider.setEnabled(True)
         self._update_source_language_controls()
 
     def set_panel_statuses(
@@ -482,10 +491,14 @@ class LiveCaptionPage(QWidget):
         local_original: str,
         local_translated: str,
     ) -> None:
-        self._apply_status(self.remote_original_status, remote_original)
-        self._apply_status(self.remote_translated_status, remote_translated)
-        self._apply_status(self.local_original_status, local_original)
-        self._apply_status(self.local_translated_status, local_translated)
+        state_map = {
+            ("remote", "original"): remote_original,
+            ("remote", "translated"): remote_translated,
+            ("local", "original"): local_original,
+            ("local", "translated"): local_translated,
+        }
+        for (channel, kind), state in state_map.items():
+            self._apply_status(self._channel_status_label(channel, kind), state)
 
     def set_detected_asr_language(self, source: str, language: str) -> None:
         key = source if source in {"local", "remote"} else "local"
@@ -517,10 +530,10 @@ class LiveCaptionPage(QWidget):
             self._on_test_local_tts_clicked()
 
     def _on_translation_target_changed(self, *_args) -> None:
-        remote_target = self._get_target_language(self.remote_lang_combo, default="none")
-        local_target = self._get_target_language(self.local_lang_combo, default="none")
-        self._populate_tts_voice_combo(self.remote_tts_voice_combo, remote_target)
-        self._populate_tts_voice_combo(self.local_tts_voice_combo, local_target)
+        for channel in _CHANNELS:
+            target = self._get_target_language(self._channel_combo(channel, "target"), default="none")
+            self._populate_tts_voice_combo(self._channel_combo(channel, "voice"), target)
+            self._ensure_translation_defaults(channel)
         self._notify_settings_changed()
 
     def _populate_tts_voice_combo(self, combo: QComboBox, target: str) -> None:
@@ -574,26 +587,37 @@ class LiveCaptionPage(QWidget):
             combo.blockSignals(False)
 
     def _handle_output_mode_changed(self, *_args) -> None:
+        self._ensure_translation_defaults("remote")
+        self._ensure_translation_defaults("local")
+        self._update_source_language_controls()
+        self._refresh_panel_labels()
         if self._on_output_mode_changed:
             self._on_output_mode_changed(self.selected_tts_output_mode())
+        if self._on_settings_changed and not self._suspend_notify:
+            self._on_settings_changed()
 
     def clear(self) -> None:
-        for editor in (self.remote_original, self.remote_translated, self.local_original, self.local_translated):
-            editor.clear()
-            self._editor_committed[editor] = []
-            self._editor_has_partial[editor] = False
+        for channel in _CHANNELS:
+            for kind in ("original", "translated"):
+                editor = self._channel_editor(channel, kind)
+                editor.clear()
+                self._editor_committed[editor] = []
+                self._editor_has_partial[editor] = False
 
     def set_remote_original_lines(self, lines: list[str]) -> None:
-        self._set_editor_lines(self.remote_original, lines)
+        self._set_channel_lines("remote", "original", lines)
 
     def set_remote_translated_lines(self, lines: list[str]) -> None:
-        self._set_editor_lines(self.remote_translated, lines)
+        self._set_channel_lines("remote", "translated", lines)
 
     def set_local_original_lines(self, lines: list[str]) -> None:
-        self._set_editor_lines(self.local_original, lines)
+        self._set_channel_lines("local", "original", lines)
 
     def set_local_translated_lines(self, lines: list[str]) -> None:
-        self._set_editor_lines(self.local_translated, lines)
+        self._set_channel_lines("local", "translated", lines)
+
+    def _set_channel_lines(self, channel: str, kind: str, lines: list[str]) -> None:
+        self._set_editor_lines(self._channel_editor(channel, kind), lines)
 
     def _set_editor_lines(self, editor: QTextEdit, lines: list[str]) -> None:
         # 新訊息先顯示，舊訊息保留不刪除
@@ -669,57 +693,55 @@ class LiveCaptionPage(QWidget):
         if idx >= 0:
             combo.setCurrentIndex(idx)
 
+    def _resolved_translation_target(self, channel: str) -> str:
+        selected = self._get_target_language(self._channel_combo(channel, "target"), default="none")
+        if selected != "none":
+            return selected
+        return _CHANNEL_DEFAULTS[channel]["target_default"]
+
+    def _resolved_tts_voice(self, channel: str) -> str:
+        selected = self._get_target_language(self._channel_combo(channel, "voice"), default="none")
+        if selected != "none":
+            return selected
+        return default_voice_for_language(self._resolved_translation_target(channel)) or "none"
+
+    def _ensure_translation_defaults(self, channel: str) -> None:
+        if self.selected_tts_output_mode_for_channel(channel) != "tts":
+            return
+        target_combo = self._channel_combo(channel, "target")
+        voice_combo = self._channel_combo(channel, "voice")
+        target = self._get_target_language(target_combo, default="none")
+        if target == "none":
+            target = self._resolved_translation_target(channel)
+            self._set_target_combo(target_combo, target)
+            self._populate_tts_voice_combo(voice_combo, target)
+        if self._get_target_language(voice_combo, default="none") == "none":
+            self._select_combo_data(voice_combo, self._resolved_tts_voice(channel))
+
     def _update_source_language_controls(self) -> None:
         enabled = self._direction_controls_enabled
-        self.remote_asr_combo.setEnabled(enabled)
-        self.local_asr_combo.setEnabled(enabled)
-        self.remote_lang_combo.setEnabled(enabled)
-        self.local_lang_combo.setEnabled(enabled)
-        self.remote_tts_voice_combo.setEnabled(enabled)
-        self.local_tts_voice_combo.setEnabled(enabled)
-
-        self.remote_asr_combo.setToolTip("ASR辨識語言，可選 auto 或指定語言")
-        self.local_asr_combo.setToolTip("ASR辨識語言，可選 auto 或指定語言")
-        self.remote_lang_combo.setToolTip("LLM翻譯目標：無 = 原音直通")
-        self.local_lang_combo.setToolTip("LLM翻譯目標：無 = 原音直通")
-        self.remote_tts_voice_combo.setToolTip("TTS輸出聲線：無 = 失聲")
-        self.local_tts_voice_combo.setToolTip("TTS輸出聲線：無 = 失聲")
+        for channel in _CHANNELS:
+            translate_enabled = enabled and self.selected_tts_output_mode_for_channel(channel) == "tts"
+            self._channel_combo(channel, "asr").setEnabled(enabled)
+            self._channel_combo(channel, "mode").setEnabled(enabled)
+            self._channel_combo(channel, "target").setEnabled(translate_enabled)
+            self._channel_combo(channel, "voice").setEnabled(translate_enabled)
+            self._channel_combo(channel, "asr").setToolTip("ASR辨識語言，可選 auto 或指定語言")
+            self._channel_combo(channel, "target").setToolTip("翻譯模式下使用的目標語言")
+            self._channel_combo(channel, "voice").setToolTip("翻譯模式下使用的 TTS 聲線")
+        self.output_gain_slider.setToolTip("共用輸出音量，會同時影響原音直通與 TTS")
 
     def _refresh_panel_labels(self) -> None:
-        remote_target = self._get_target_language(self.remote_lang_combo, default="zh-TW")
-        local_target = self._get_target_language(self.local_lang_combo, default="en")
-        remote_detected = self._detected_asr_language.get("remote", "")
-        local_detected = self._detected_asr_language.get("local", "")
-
-        remote_asr = self._get_target_language(self.remote_asr_combo, default="auto")
-        local_asr = self._get_target_language(self.local_asr_combo, default="auto")
-
-        if remote_asr != "auto":
-            remote_source_text = f"手動：{self._language_label(remote_asr)}"
-        elif remote_detected:
-            remote_source_text = f"自動偵測：{self._language_label(remote_detected)}"
-        else:
-            remote_source_text = "自動偵測"
-
-        if local_asr != "auto":
-            local_source_text = f"手動：{self._language_label(local_asr)}"
-        elif local_detected:
-            local_source_text = f"自動偵測：{self._language_label(local_detected)}"
-        else:
-            local_source_text = "自動偵測"
-
-        self.remote_original_label.setText(f"遠端原文（{remote_source_text} ASR）")
-        self.local_original_label.setText(f"本地原文（{local_source_text} ASR）")
-
-        if self.translation_enabled("remote"):
-            self.remote_translated_label.setText("遠端翻譯")
-        else:
-            self.remote_translated_label.setText("遠端輸出")
-
-        if self.translation_enabled("local"):
-            self.local_translated_label.setText("本地翻譯")
-        else:
-            self.local_translated_label.setText("本地輸出")
+        for channel in _CHANNELS:
+            self._channel_text_label(channel, "original").setText(
+                f"{_CHANNEL_DEFAULTS[channel]['original_label']}（{self._channel_source_label(channel)} ASR）"
+            )
+            translated_text = (
+                _CHANNEL_DEFAULTS[channel]["translated_label"]
+                if self.translation_enabled(channel)
+                else _CHANNEL_DEFAULTS[channel]["output_label"]
+            )
+            self._channel_text_label(channel, "translated").setText(translated_text)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -727,7 +749,7 @@ class LiveCaptionPage(QWidget):
         totalh = max(1, self.height())
 
         # 上方控件高度大約 55（可視），留空再分配給 4 個區域
-        header_height = 80
+        header_height = 120
         content_w = totalw - 12
         content_h = max(1, totalh - header_height)
 
@@ -738,30 +760,100 @@ class LiveCaptionPage(QWidget):
             editor.setMinimumSize(cell_w, cell_h)
             editor.setMaximumSize(cell_w, cell_h)
 
-        if self.translation_enabled("local"):
-            self.local_translated_label.setText("本地翻譯")
-        else:
-            self.local_translated_label.setText("本地輸出")
-
-    def update_translation_voice_labels(self, config: AppConfig) -> None:
         self._refresh_panel_labels()
 
-        remote_voice = str(getattr(config.runtime, "remote_tts_voice", "none") or "none")
-        local_voice = str(getattr(config.runtime, "local_tts_voice", "none") or "none")
+    def update_translation_voice_labels(self, config: AppConfig) -> None:
+        _ = config
+        self._refresh_panel_labels()
 
-        if self.translation_enabled("remote"):
-            self.remote_translated_label.setText("遠端翻譯")
-        elif remote_voice != "none":
-            self.remote_translated_label.setText("原音直通")
+    def _channel_combo(self, channel: str, kind: str) -> QComboBox:
+        if channel == "remote":
+            mapping = {
+                "asr": self.remote_asr_combo,
+                "mode": self.remote_output_mode_combo,
+                "target": self.remote_lang_combo,
+                "voice": self.remote_tts_voice_combo,
+            }
         else:
-            self.remote_translated_label.setText("遠端輸出")
+            mapping = {
+                "asr": self.local_asr_combo,
+                "mode": self.local_output_mode_combo,
+                "target": self.local_lang_combo,
+                "voice": self.local_tts_voice_combo,
+            }
+        return mapping[kind]
 
-        if self.translation_enabled("local"):
-            self.local_translated_label.setText("本地翻譯")
-        elif local_voice != "none":
-            self.local_translated_label.setText("本地輸出")
-        else:
-            self.local_translated_label.setText("本地輸出")
+    def _channel_editor(self, channel: str, kind: str) -> QTextEdit:
+        if channel == "remote":
+            return self.remote_original if kind == "original" else self.remote_translated
+        return self.local_original if kind == "original" else self.local_translated
+
+    def _channel_text_label(self, channel: str, kind: str) -> QLabel:
+        if channel == "remote":
+            return self.remote_original_label if kind == "original" else self.remote_translated_label
+        return self.local_original_label if kind == "original" else self.local_translated_label
+
+    def _channel_status_label(self, channel: str, kind: str) -> QLabel:
+        if channel == "remote":
+            return self.remote_original_status if kind == "original" else self.remote_translated_status
+        return self.local_original_status if kind == "original" else self.local_translated_status
+
+    def _channel_source_label(self, channel: str) -> str:
+        detected = self._detected_asr_language.get(channel, "")
+        asr_value = self._get_target_language(self._channel_combo(channel, "asr"), default="auto")
+        if asr_value != "auto":
+            return f"手動：{self._language_label(asr_value)}"
+        if detected:
+            return f"自動偵測：{self._language_label(detected)}"
+        return "自動偵測"
+
+    @staticmethod
+    def _config_source_language(config: AppConfig, channel: str) -> str:
+        if channel == "remote":
+            return str(getattr(config.language, "meeting_source", _CHANNEL_DEFAULTS[channel]["source_default"]) or _CHANNEL_DEFAULTS[channel]["source_default"])
+        return str(getattr(config.language, "local_source", _CHANNEL_DEFAULTS[channel]["source_default"]) or _CHANNEL_DEFAULTS[channel]["source_default"])
+
+    @staticmethod
+    def _config_asr_language(config: AppConfig, channel: str) -> str:
+        attr = "remote_asr_language" if channel == "remote" else "local_asr_language"
+        return str(getattr(config.runtime, attr, "") or "")
+
+    @staticmethod
+    def _config_translation_target(config: AppConfig, channel: str) -> str:
+        runtime_attr = "remote_translation_target" if channel == "remote" else "local_translation_target"
+        language_attr = "meeting_target" if channel == "remote" else "local_target"
+        fallback = _CHANNEL_DEFAULTS[channel]["target_default"]
+        return str(getattr(config.runtime, runtime_attr, getattr(config.language, language_attr, fallback) or fallback) or "none")
+
+    @staticmethod
+    def _config_tts_voice(config: AppConfig, channel: str) -> str:
+        attr = "remote_tts_voice" if channel == "remote" else "local_tts_voice"
+        return str(getattr(config.runtime, attr, "none") or "none")
+
+    @staticmethod
+    def _set_runtime_translation_target(config: AppConfig, channel: str, value: str) -> None:
+        setattr(config.runtime, f"{channel}_translation_target", value)
+
+    @staticmethod
+    def _set_runtime_translation_enabled(config: AppConfig, channel: str, enabled: bool) -> None:
+        setattr(config.runtime, f"{channel}_translation_enabled", enabled)
+
+    @staticmethod
+    def _set_runtime_asr_language(config: AppConfig, channel: str, value: str) -> None:
+        setattr(config.runtime, f"{channel}_asr_language", value)
+
+    @staticmethod
+    def _set_runtime_tts_voice(config: AppConfig, channel: str, value: str) -> None:
+        setattr(config.runtime, f"{channel}_tts_voice", value)
+
+    @staticmethod
+    def _set_runtime_tts_enabled(config: AppConfig, channel: str, enabled: bool) -> None:
+        setattr(config.runtime, f"{channel}_tts_enabled", enabled)
+
+    @staticmethod
+    def _set_language_target(config: AppConfig, channel: str, value: str) -> None:
+        attr = "meeting_target" if channel == "remote" else "local_target"
+        setattr(config.language, attr, value)
 
     def _make_panel_header(
         self,
@@ -782,6 +874,31 @@ class LiveCaptionPage(QWidget):
         if export_btn is not None:
             row.addWidget(export_btn)
         return row
+
+    def _make_single_gain_row(
+        self,
+        title: str,
+        slider: QSlider,
+        value_label: QLabel,
+    ) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 8)
+        row.setSpacing(12)
+        row.addWidget(self._build_gain_control(title, slider, value_label), 1)
+        return row
+
+    def _build_gain_control(self, title: str, slider: QSlider, value_label: QLabel) -> QWidget:
+        container = QWidget()
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        title_label = QLabel(title)
+        title_label.setMinimumWidth(68)
+        value_label.setMinimumWidth(48)
+        layout.addWidget(title_label)
+        layout.addWidget(slider, 1)
+        layout.addWidget(value_label)
+        return container
 
     @staticmethod
     def _apply_status(label: QLabel, state: str) -> None:
@@ -811,6 +928,65 @@ class LiveCaptionPage(QWidget):
             return
         view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+    @staticmethod
+    def _configure_gain_slider(slider: QSlider) -> None:
+        slider.setRange(50, 300)
+        slider.setSingleStep(10)
+        slider.setPageStep(10)
+        slider.setTickInterval(10)
+        slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        slider.setFixedHeight(30)
+        slider.setStyleSheet(
+            """
+            QSlider::groove:horizontal {
+                height: 4px;
+                margin: 0 10px;
+                border-radius: 2px;
+                background: #d1d5db;
+            }
+            QSlider::sub-page:horizontal {
+                background: #d8b36a;
+                border-radius: 2px;
+            }
+            QSlider::add-page:horizontal {
+                background: #d1d5db;
+                border-radius: 2px;
+            }
+            QSlider::handle:horizontal {
+                width: 18px;
+                height: 18px;
+                margin: -8px -9px;
+                border-radius: 9px;
+                border: 2px solid #4b5563;
+                background: #d8b36a;
+            }
+            QSlider::handle:horizontal:hover {
+                background: #e2bf79;
+            }
+            """
+        )
+
+    def _handle_gain_slider_changed(self, label: QLabel, value: int) -> None:
+        self._update_gain_value_label(label, self._slider_value_to_gain(value))
+        if self._suspend_notify:
+            return
+        if self._on_gain_changed:
+            self._on_gain_changed()
+
+    @staticmethod
+    def _slider_value_to_gain(value: int) -> float:
+        snapped = int(round(max(50, min(300, int(value))) / 10.0) * 10)
+        return round(snapped / 100.0, 1)
+
+    @staticmethod
+    def _gain_to_slider_value(value: float) -> int:
+        scaled = int(round(max(0.5, min(3.0, float(value))) * 10.0) * 10)
+        return max(50, min(300, scaled))
+
+    @staticmethod
+    def _update_gain_value_label(label: QLabel, gain: float) -> None:
+        label.setText(f"{gain:.1f}x")
 
     @staticmethod
     def _display_voice_label(voice_name: str) -> str:

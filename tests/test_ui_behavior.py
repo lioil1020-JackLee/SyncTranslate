@@ -40,15 +40,15 @@ class LiveCaptionPageUiTests(_QtTestCase):
         self.assertFalse(page.translation_enabled("remote"))
         self.assertTrue(page.translation_enabled("local"))
         self.assertEqual(page.selected_asr_language_mode(), "zh-TW")
-        self.assertEqual(page.selected_tts_output_mode(), "subtitle_only")
-        self.assertTrue(page.remote_lang_combo.isEnabled())
+        self.assertEqual(page.selected_tts_output_mode(), "tts")
+        self.assertFalse(page.remote_lang_combo.isEnabled())
         self.assertTrue(page.local_lang_combo.isEnabled())
-        self.assertIn("LLM翻譯目標", page.remote_lang_combo.toolTip())
-        self.assertIn("遠端輸出", page.remote_translated_label.text())
+        self.assertIn("翻譯模式下使用的目標語言", page.remote_lang_combo.toolTip())
+        self.assertEqual(page.remote_translated_label.text(), "遠端輸出")
         self.assertEqual(page.local_translated_label.text(), "本地翻譯")
         self.assertEqual(page.selected_tts_output_mode_for_channel("remote"), "passthrough")
-        self.assertEqual(page.selected_tts_output_mode_for_channel("local"), "subtitle_only")
-        self.assertEqual(page.selected_tts_output_mode(), "subtitle_only")
+        self.assertEqual(page.selected_tts_output_mode_for_channel("local"), "tts")
+        self.assertEqual(page.selected_tts_output_mode(), "tts")
         self.assertFalse(hasattr(page, "asr_language_mode_combo"))
 
     def test_translation_labels_do_not_include_edge_in_status(self) -> None:
@@ -87,6 +87,35 @@ class LiveCaptionPageUiTests(_QtTestCase):
         self.assertEqual(page.remote_tts_voice_combo.itemData(0), "none")
         self.assertNotEqual(page.remote_tts_voice_combo.itemData(0), page.remote_tts_voice_combo.itemData(1))
 
+    def test_output_gain_slider_round_trips_with_config(self) -> None:
+        page = LiveCaptionPage()
+        config = AppConfig()
+        config.runtime.passthrough_gain = 1.8
+        config.runtime.tts_gain = 1.6
+
+        page.apply_config(config)
+
+        self.assertAlmostEqual(page.selected_output_gain(), 1.6, places=2)
+        self.assertAlmostEqual(page.selected_passthrough_gain(), 1.6, places=2)
+        self.assertAlmostEqual(page.selected_tts_gain(), 1.6, places=2)
+        self.assertEqual(page.output_gain_value_label.text(), "1.6x")
+
+        page.output_gain_slider.setValue(210)
+
+        updated = AppConfig()
+        page.update_config(updated)
+        self.assertAlmostEqual(updated.runtime.passthrough_gain, 2.10, places=2)
+        self.assertAlmostEqual(updated.runtime.tts_gain, 2.10, places=2)
+
+    def test_output_gain_slider_remains_enabled_when_direction_controls_are_locked(self) -> None:
+        page = LiveCaptionPage()
+
+        page.set_direction_controls_enabled(False)
+
+        self.assertFalse(page.remote_asr_combo.isEnabled())
+        self.assertFalse(page.local_tts_voice_combo.isEnabled())
+        self.assertTrue(page.output_gain_slider.isEnabled())
+
     def test_four_panels_have_same_size(self) -> None:
         page = LiveCaptionPage()
         self.assertEqual(page.remote_original.size(), page.remote_translated.size())
@@ -106,48 +135,130 @@ class LiveCaptionPageUiTests(_QtTestCase):
         router = _Router()
         window.audio_router = router  # type: ignore[assignment]
 
-        remote_none_index = window.live_caption_page.remote_lang_combo.findData("none")
-        local_none_index = window.live_caption_page.local_lang_combo.findData("none")
         remote_zh_index = window.live_caption_page.remote_lang_combo.findData("zh-TW")
         local_en_index = window.live_caption_page.local_lang_combo.findData("en")
 
         window.live_caption_page.remote_lang_combo.setCurrentIndex(remote_zh_index)
-        window.live_caption_page.local_lang_combo.setCurrentIndex(local_none_index)
+        window.live_caption_page.local_lang_combo.setCurrentIndex(local_en_index)
         window.live_caption_page._on_translation_target_changed()
-        window.live_caption_page.remote_tts_voice_combo.setCurrentIndex(
-            window.live_caption_page.remote_tts_voice_combo.findData("none")
+        window.live_caption_page.remote_output_mode_combo.setCurrentIndex(
+            window.live_caption_page.remote_output_mode_combo.findData("tts")
         )
-        window.live_caption_page.local_tts_voice_combo.setCurrentIndex(
-            window.live_caption_page.local_tts_voice_combo.findData("none")
+        window.live_caption_page.local_output_mode_combo.setCurrentIndex(
+            window.live_caption_page.local_output_mode_combo.findData("passthrough")
         )
 
         window._apply_output_switches_to_router()
 
-        self.assertIn(("local", "subtitle_only"), router.calls)
+        self.assertIn(("local", "tts"), router.calls)
         self.assertIn(("remote", "passthrough"), router.calls)
+
+    def test_main_window_applies_output_gain_to_playback_outputs(self) -> None:
+        window = MainWindow("config.yaml")
+        window.live_caption_page.output_gain_slider.setValue(175)
+
+        window._sync_ui_to_config()
+
+        self.assertAlmostEqual(window.config.runtime.tts_gain, 1.8, places=2)
+        self.assertAlmostEqual(window.config.runtime.passthrough_gain, 1.8, places=2)
+        self.assertAlmostEqual(window.speaker_playback._volume, 1.8, places=2)
+        self.assertAlmostEqual(window.meeting_playback._volume, 1.8, places=2)
+
+    def test_main_window_applies_gain_changes_even_while_session_running(self) -> None:
+        window = MainWindow("config.yaml")
+
+        class _RunningSession:
+            def is_running(self) -> bool:
+                return True
+
+        window.session_controller = _RunningSession()  # type: ignore[assignment]
+        window.validate_current_routes()
+        window.live_caption_page.output_gain_slider.setValue(185)
+
+        self.assertAlmostEqual(window.config.runtime.passthrough_gain, 1.8, places=2)
+        self.assertAlmostEqual(window.config.runtime.tts_gain, 1.8, places=2)
+        self.assertAlmostEqual(window.speaker_playback._volume, 1.8, places=2)
+        self.assertAlmostEqual(window.meeting_playback._volume, 1.8, places=2)
 
 
 class LocalAiPageUiTests(_QtTestCase):
-    def test_tts_style_combo_round_trips_with_config(self) -> None:
+    def test_local_ai_page_hides_quick_tuning_combos(self) -> None:
         page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
         page._model_poll_timer.stop()
-        page._reload_llm_models = lambda: None
 
-        config = AppConfig()
-        config.tts.style_preset = "fast_response"
+        self.assertFalse(hasattr(page, "experience_preset_combo"))
+        self.assertFalse(hasattr(page, "translation_style_combo"))
+        self.assertFalse(hasattr(page, "tts_style_combo"))
+        self.assertIn("已內建高準確 + 低延遲", page.channel_strategy_label.text())
 
-        page.apply_config(config)
-        self.assertEqual(page.tts_style_combo.currentData(), "fast_response")
+    def test_local_ai_page_uses_built_in_optimized_defaults(self) -> None:
+        page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
+        page._model_poll_timer.stop()
 
-        index = page.tts_style_combo.findData("broadcast_clear")
-        self.assertGreaterEqual(index, 0)
-        page.tts_style_combo.setCurrentIndex(index)
+        self.assertEqual(page.asr_model_combo.currentText(), "large-v3")
+        self.assertEqual(page.remote_asr_model_combo.currentText(), "large-v3")
+        self.assertEqual(page.asr_beam_spin.value(), 3)
+        self.assertEqual(page.runtime_sample_rate_spin.currentData(), 48000)
+        self.assertEqual(page.runtime_chunk_spin.value(), 40)
+        self.assertEqual(page.runtime_tts_max_wait_spin.value(), 2200)
+        self.assertEqual(page.runtime_tts_cancel_policy_combo.currentData(), "older_only")
 
         updated = AppConfig()
         page.update_config(updated)
         self.assertEqual(updated.tts.style_preset, "broadcast_clear")
-        self.assertEqual(updated.meeting_tts.style_preset, "broadcast_clear")
-        self.assertEqual(updated.local_tts.style_preset, "broadcast_clear")
+        self.assertEqual(updated.llm.caption_profile, "live_caption_fast")
+        self.assertEqual(updated.llm.speech_profile, "speech_output_natural")
+
+    def test_local_ai_page_round_trips_advanced_runtime_and_profile_controls(self) -> None:
+        page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
+        page._model_poll_timer.stop()
+        cfg = AppConfig()
+        cfg.runtime.latency_mode = "low_latency"
+        cfg.runtime.display_partial_strategy = "all"
+        cfg.runtime.stable_partial_min_repeats = 3
+        cfg.runtime.partial_stability_max_delta_chars = 11
+        cfg.runtime.asr_partial_min_audio_ms = 310
+        cfg.runtime.asr_partial_interval_floor_ms = 260
+        cfg.runtime.llm_partial_interval_floor_ms = 290
+        cfg.runtime.early_final_enabled = False
+        cfg.runtime.tts_accept_stable_partial = False
+        cfg.runtime.tts_partial_min_chars = 18
+        cfg.runtime.tts_use_speech_profile = True
+        cfg.runtime.local_echo_guard_enabled = True
+        cfg.runtime.local_echo_guard_resume_delay_ms = 450
+        cfg.runtime.remote_echo_guard_resume_delay_ms = 550
+        cfg.llm.caption_profile = "technical_meeting"
+        cfg.llm.speech_profile = "speech_output_natural"
+        cfg.tts.style_preset = "conversational"
+
+        page.apply_config(cfg)
+
+        self.assertEqual(page.runtime_latency_mode_combo.currentData(), "low_latency")
+        self.assertEqual(page.runtime_display_partial_strategy_combo.currentData(), "all")
+        self.assertEqual(page.llm_caption_profile_combo.currentData(), "technical_meeting")
+        self.assertEqual(page.base_tts.style_preset_combo.currentData(), "conversational")
+        self.assertTrue(page.runtime_tts_use_speech_profile_check.isChecked())
+
+        updated = AppConfig()
+        page.update_config(updated)
+
+        self.assertEqual(updated.runtime.latency_mode, "low_latency")
+        self.assertEqual(updated.runtime.display_partial_strategy, "all")
+        self.assertEqual(updated.runtime.stable_partial_min_repeats, 3)
+        self.assertEqual(updated.runtime.partial_stability_max_delta_chars, 11)
+        self.assertEqual(updated.runtime.asr_partial_min_audio_ms, 310)
+        self.assertEqual(updated.runtime.asr_partial_interval_floor_ms, 260)
+        self.assertEqual(updated.runtime.llm_partial_interval_floor_ms, 290)
+        self.assertFalse(updated.runtime.early_final_enabled)
+        self.assertFalse(updated.runtime.tts_accept_stable_partial)
+        self.assertEqual(updated.runtime.tts_partial_min_chars, 18)
+        self.assertTrue(updated.runtime.tts_use_speech_profile)
+        self.assertTrue(updated.runtime.local_echo_guard_enabled)
+        self.assertEqual(updated.runtime.local_echo_guard_resume_delay_ms, 450)
+        self.assertEqual(updated.runtime.remote_echo_guard_resume_delay_ms, 550)
+        self.assertEqual(updated.llm.caption_profile, "technical_meeting")
+        self.assertEqual(updated.llm.speech_profile, "speech_output_natural")
+        self.assertEqual(updated.tts.style_preset, "conversational")
 
     def test_llm_models_loaded_from_lm_studio_can_be_selected_per_direction(self) -> None:
         page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
@@ -185,15 +296,16 @@ class LocalAiPageUiTests(_QtTestCase):
         window.live_caption_page.remote_tts_voice_combo.setCurrentIndex(remote_voice_index)
 
         called = {}
+
         def fake_build_output_test_audio(*, primary_tts, text):
-            called['voice'] = primary_tts.voice_name
+            called["voice"] = primary_tts.voice_name
             return (b"", 22050, "edge_tts")
 
         window._build_output_test_audio = fake_build_output_test_audio
         window.speaker_playback.play = lambda audio, sample_rate, output_device_name, blocking: None
 
         window.test_local_tts_output()
-        self.assertEqual(called.get('voice'), "en-US-GuyNeural")
+        self.assertEqual(called.get("voice"), "en-US-GuyNeural")
 
     def test_local_ai_page_exposes_quick_save_button(self) -> None:
         page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
@@ -202,33 +314,12 @@ class LocalAiPageUiTests(_QtTestCase):
         self.assertTrue(hasattr(page, "quick_save_btn"))
         self.assertIn(page.quick_save_btn, page.experience_group.findChildren(type(page.quick_save_btn)))
 
-    def test_experience_fast_preset_updates_runtime_and_queue_defaults(self) -> None:
+    def test_quick_save_and_advanced_toggle_still_exist(self) -> None:
         page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
         page._model_poll_timer.stop()
-        index = page.experience_preset_combo.findData("fast")
-        self.assertGreaterEqual(index, 0)
 
-        page.experience_preset_combo.setCurrentIndex(index)
-
-        self.assertEqual(page.asr_model_combo.currentText(), "large-v3-turbo")
-        self.assertEqual(page.remote_asr_model_combo.currentText(), "large-v3-turbo")
-        self.assertEqual(page.asr_queue_local_spin.value(), 64)
-        self.assertEqual(page.llm_queue_local_spin.value(), 16)
-        self.assertEqual(page.runtime_chunk_spin.value(), 30)
-        self.assertEqual(page.runtime_tts_max_wait_spin.value(), 1500)
-
-    def test_tts_style_updates_runtime_tts_controls(self) -> None:
-        page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
-        page._model_poll_timer.stop()
-        index = page.tts_style_combo.findData("fast_response")
-        self.assertGreaterEqual(index, 0)
-
-        page.tts_style_combo.setCurrentIndex(index)
-
-        self.assertEqual(page.runtime_tts_max_wait_spin.value(), 1400)
-        self.assertEqual(page.runtime_tts_max_chars_spin.value(), 120)
-        self.assertEqual(page.runtime_tts_drop_threshold_spin.value(), 3)
-        self.assertEqual(page.runtime_tts_cancel_policy_combo.currentData(), "older_only")
+        self.assertTrue(hasattr(page, "quick_save_btn"))
+        self.assertTrue(hasattr(page, "show_advanced_check"))
 
 
 if __name__ == "__main__":

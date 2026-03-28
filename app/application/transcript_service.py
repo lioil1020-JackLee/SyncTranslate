@@ -22,6 +22,7 @@ class TranscriptService:
         *,
         utterance_id: str | None = None,
         revision: int = 0,
+        is_stable_partial: bool = False,
         latency_ms: int | None = None,
         created_at: datetime | None = None,
     ) -> None:
@@ -33,6 +34,7 @@ class TranscriptService:
             revision=max(0, int(revision)),
             text=text,
             is_final=is_final,
+            is_stable_partial=bool(is_stable_partial and not is_final),
             latency_ms=None if latency_ms is None else int(latency_ms),
             created_at=created_at or datetime.now(),
         )
@@ -51,6 +53,7 @@ class TranscriptService:
         *,
         utterance_id: str | None = None,
         revision: int = 0,
+        is_stable_partial: bool = False,
         created_at: datetime | None = None,
     ) -> None:
         # Backward-compatible helper for existing call sites.
@@ -62,6 +65,7 @@ class TranscriptService:
             is_final=is_final,
             utterance_id=utterance_id,
             revision=revision,
+            is_stable_partial=is_stable_partial,
             created_at=created_at,
         )
 
