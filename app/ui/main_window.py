@@ -10,7 +10,6 @@ from threading import Thread
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QCloseEvent, QGuiApplication, QIcon, QShowEvent
 from PySide6.QtWidgets import QPushButton, QHBoxLayout, QMainWindow, QMessageBox, QScrollArea, QSizePolicy, QTabWidget, QWidget
-import numpy as np
 
 try:
     from opencc import OpenCC  # type: ignore
@@ -29,9 +28,7 @@ from app.domain.events import ErrorEvent
 from app.infra.audio.capture import AudioCapture
 from app.infra.audio.device_registry import DeviceManager, canonical_device_name
 from app.infra.audio.playback import AudioPlayback
-from app.infra.tts.engine import create_tts_engine
-from app.infra.tts.voice_policy import resolve_tts_config_for_target
-from app.infra.config.schema import AppConfig, TtsConfig, translation_enabled_for_source
+from app.infra.config.schema import AppConfig, translation_enabled_for_source
 from app.application.transcript_service import TranscriptBuffer
 from app.ui.pages.audio_routing_page import AudioRoutingPage
 from app.ui.pages.diagnostics_page import DiagnosticsPage
@@ -76,6 +73,7 @@ class MainWindow(QMainWindow):
         self._session_action_name = ""
         self._session_action_queue: Queue[tuple[str, bool, object]] = Queue()
         self._pending_live_apply = False
+        self._pending_live_caption_apply = False
         self._live_apply_ready = False
 
         self.setWindowTitle("SyncTranslate - Local AI Runtime")
@@ -118,7 +116,6 @@ class MainWindow(QMainWindow):
         self.live_caption_page = LiveCaptionPage(
             on_clear_clicked=self.clear_live_caption,
             on_start_clicked=self.start_session,
-            on_test_local_tts_clicked=self.test_local_tts_output,
             on_settings_changed=self._on_live_caption_settings_changed,
             on_gain_changed=self._on_live_caption_gain_changed,
             on_output_mode_changed=self._on_output_mode_changed,
@@ -190,6 +187,10 @@ class MainWindow(QMainWindow):
         self._live_apply_timer.setSingleShot(True)
         self._live_apply_timer.setInterval(150)
         self._live_apply_timer.timeout.connect(self._apply_live_config_now)
+        self._live_caption_apply_timer = QTimer(self)
+        self._live_caption_apply_timer.setSingleShot(True)
+        self._live_caption_apply_timer.setInterval(120)
+        self._live_caption_apply_timer.timeout.connect(self._apply_live_caption_config_now)
 
         self.caption_timer = QTimer(self)
         self.caption_timer.setInterval(300)
@@ -251,7 +252,7 @@ class MainWindow(QMainWindow):
         label = "停止" if is_running else "開始"
         self.live_caption_page.set_start_label(label)
         self._start_session_btn.setText(label)
-        self.live_caption_page.set_direction_controls_enabled(not is_running and not self._session_action_running)
+        self.live_caption_page.set_direction_controls_enabled(not self._session_action_running)
         route_message, route_has_error = self._current_route_validation_message()
         self.audio_routing_page.set_validation_message(route_message, is_error=route_has_error)
         self._update_live_panel_statuses(
@@ -270,7 +271,7 @@ class MainWindow(QMainWindow):
         self._schedule_live_apply()
 
     def _on_live_caption_settings_changed(self) -> None:
-        self._schedule_live_apply()
+        self._schedule_live_caption_apply()
 
     def _on_live_caption_gain_changed(self) -> None:
         gain = self.live_caption_page.selected_output_gain()
@@ -325,6 +326,85 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self._report_error(f"auto_apply_config failed: {exc}")
             self.statusBar().showMessage(f"設定套用失敗: {exc}")
+
+    def _schedule_live_apply(self) -> None:
+        if not self._live_apply_ready or self._suspend_live_apply:
+            return
+        if self._session_action_running:
+            self._pending_live_apply = True
+            self.statusBar().showMessage("設定已變更，待開始或停止完成後套用")
+            return
+        if self.session_controller and self.session_controller.is_running():
+            self._pending_live_apply = True
+            self.statusBar().showMessage("設定已變更，將在停止 session 後套用")
+            return
+        self._live_apply_timer.start()
+
+    def _schedule_live_caption_apply(self) -> None:
+        if not self._live_apply_ready or self._suspend_live_apply:
+            return
+        if self._session_action_running:
+            self._pending_live_caption_apply = True
+            self.statusBar().showMessage("即時字幕設定已變更，待開始或停止完成後立即套用")
+            return
+        if self.session_controller and self.session_controller.is_running():
+            self._live_caption_apply_timer.start()
+            return
+        self._schedule_live_apply()
+
+    def _apply_live_config_now(self) -> None:
+        if not self._live_apply_ready:
+            return
+        if self._session_action_running:
+            self._pending_live_apply = True
+            return
+        if self._live_apply_timer.isActive():
+            self._live_apply_timer.stop()
+
+        was_running = self.session_controller.is_running() if self.session_controller else False
+        if was_running:
+            self._pending_live_apply = True
+            self.statusBar().showMessage("設定已變更，將在停止 session 後套用")
+            return
+        try:
+            self._pending_live_apply = False
+            self._sync_ui_to_config()
+            self.live_caption_page.apply_config(self.config)
+            self._runtime_facade.mark_dirty()
+            path = Path(self.config_path)
+            self._ensure_pipelines_ready()
+            self.statusBar().showMessage(f"設定已更新: {path}")
+            self.validate_current_routes()
+        except Exception as exc:
+            self._report_error(f"auto_apply_config failed: {exc}")
+            self.statusBar().showMessage(f"設定套用失敗: {exc}")
+
+    def _apply_live_caption_config_now(self) -> None:
+        if not self._live_apply_ready:
+            return
+        if self._session_action_running:
+            self._pending_live_caption_apply = True
+            return
+        if self._live_caption_apply_timer.isActive():
+            self._live_caption_apply_timer.stop()
+
+        is_running = self.session_controller.is_running() if self.session_controller else False
+        if not is_running:
+            self._apply_live_config_now()
+            return
+
+        try:
+            self._pending_live_caption_apply = False
+            self._config_apply_service.sync_live_caption_to_config(self.config)
+            self.live_caption_page.apply_config(self.config)
+            if self.audio_router:
+                self.audio_router.refresh_runtime_config(self.config)
+            self._apply_output_switches_to_router()
+            self.validate_current_routes()
+            self.statusBar().showMessage("即時字幕設定已熱切換")
+        except Exception as exc:
+            self._report_error(f"live_caption_hot_apply failed: {exc}")
+            self.statusBar().showMessage(f"即時字幕熱切換失敗: {exc}")
 
     def start_session(self) -> None:
         if self._session_action_running:
@@ -664,38 +744,6 @@ class MainWindow(QMainWindow):
     def _on_output_mode_changed(self, mode: str) -> None:
         self._apply_output_switches_to_router()
 
-    def test_local_tts_output(self) -> None:
-        device_name = self._get_speaker_output_device()
-        try:
-            # 優先保留當前配置中設定的遠端 TTS 聲線，避免 UI sync 清空後遺失
-            pre_sync_remote_voice = str(getattr(self.config.runtime, "remote_tts_voice", "none") or "none")
-
-            self._sync_ui_to_config()
-            self.live_caption_page.apply_config(self.config)
-            # 針對放在遠端翻譯區的測試按鈕，使用遠端語言/聲線設定
-            target_lang = str(getattr(self.config.language, "meeting_target", "zh-TW") or "zh-TW")
-            test_tts = resolve_tts_config_for_target(self.config, target_lang)
-            preferred_voice = str(getattr(self.config.runtime, "remote_tts_voice", "none") or "none")
-            if preferred_voice == "none" and pre_sync_remote_voice != "none":
-                preferred_voice = pre_sync_remote_voice
-            if preferred_voice != "none":
-                test_tts.voice_name = preferred_voice
-
-            audio, sample_rate, engine_label = self._build_output_test_audio(
-                primary_tts=test_tts,
-                text=self._tts_test_text(target_lang),
-            )
-            self.speaker_playback.play(
-                audio=audio,
-                sample_rate=sample_rate,
-                output_device_name=device_name,
-                blocking=True,
-            )
-            self.statusBar().showMessage(f"本地輸出TTS測試完成: {device_name} ({engine_label})")
-        except Exception as exc:
-            self._report_error(f"test_local_tts_output failed: {exc}")
-            QMessageBox.critical(self, "測試失敗", self._format_playback_error(exc))
-
     @staticmethod
     def _format_transcript_line(text: str, is_final: bool) -> str:
         if _S2T_CONVERTER is not None:
@@ -923,6 +971,8 @@ class MainWindow(QMainWindow):
         if action == "stop" and result.payload is not None:
             self._export_session_report(result.payload)
         self.validate_current_routes()
+        if self._pending_live_caption_apply:
+            QTimer.singleShot(0, self._apply_live_caption_config_now)
         if action == "stop" and self._pending_live_apply:
             QTimer.singleShot(0, self._apply_live_config_now)
 
@@ -1022,42 +1072,5 @@ class MainWindow(QMainWindow):
     def _save_config_to_disk(self) -> Path:
         return self._settings_service.save(self.config)
 
-    def _build_output_test_audio(self, *, primary_tts: TtsConfig, text: str) -> tuple[np.ndarray, int, str]:
-        try:
-            tts = create_tts_engine(primary_tts)
-            audio = tts.synthesize(text, sample_rate=primary_tts.sample_rate)
-            if audio.size == 0:
-                raise ValueError("tts returned empty audio")
-            return audio, primary_tts.sample_rate, "configured tts"
-        except Exception as exc:
-            engine = (primary_tts.engine or "").strip() or "unknown"
-            voice = (primary_tts.voice_name or "").strip() or primary_tts.model_path
-            raise ValueError(f"Configured TTS failed ({engine}, {voice}): {exc}") from exc
-
-    @staticmethod
-    def _format_playback_error(exc: Exception) -> str:
-        text = str(exc).strip()
-        if "Unable to play TTS audio" in text:
-            return "無法在選定的喇叭輸出播放測試音。請改選可用的喇叭或耳機裝置。\n\n詳細資訊:\n" + text
-        if "No audio was received" in text:
-            return "TTS 沒有回傳音訊。若你使用 Edge TTS，常見原因是聲線語系和測試文字語言不相容。\n\n詳細資訊:\n" + text
-        return text
-
-    @staticmethod
-    def _tts_test_text(language: str) -> str:
-        normalized = (language or "").lower()
-        if normalized.startswith("zh"):
-            return "這是翻譯語音測試。"
-        if normalized.startswith("ja"):
-            return "これは音声テストです。"
-        if normalized.startswith("ko"):
-            return "음성 출력 테스트입니다."
-        if normalized.startswith("th"):
-            return "นี่คือการทดสอบเสียงพูด"
-        return "This is a translated speech test."
-
-    @staticmethod
-    def _local_output_test_language(config: AppConfig) -> str:
-        return str(getattr(config.language, "meeting_target", "zh-TW") or "zh-TW")
 
 

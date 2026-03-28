@@ -115,7 +115,6 @@ class LiveCaptionPage(QWidget):
         self,
         on_clear_clicked: Callable[[], None] | None = None,
         on_start_clicked: Callable[[], None] | None = None,
-        on_test_local_tts_clicked: Callable[[], None] | None = None,
         on_settings_changed: Callable[[], None] | None = None,
         on_gain_changed: Callable[[], None] | None = None,
         on_output_mode_changed: Callable[[str], None] | None = None,
@@ -123,7 +122,6 @@ class LiveCaptionPage(QWidget):
         super().__init__()
         self._on_clear_clicked = on_clear_clicked
         self._on_start_clicked = on_start_clicked
-        self._on_test_local_tts_clicked = on_test_local_tts_clicked
         self._on_settings_changed = on_settings_changed
         self._on_gain_changed = on_gain_changed
         self._on_output_mode_changed = on_output_mode_changed
@@ -174,10 +172,6 @@ class LiveCaptionPage(QWidget):
         self.start_btn.clicked.connect(self._handle_start_clicked)
         self.clear_btn = QPushButton("清空字幕")
         self.clear_btn.clicked.connect(self._handle_clear_clicked)
-        self.test_local_tts_btn = QPushButton("測試TTS")
-        self.test_local_tts_btn.setToolTip("會用本地輸出語言產生測試語音，播放到本地輸出裝置。")
-        self.test_local_tts_btn.clicked.connect(self._handle_test_local_tts_clicked)
-
         # 清空/開始按鈕已移到主頁面 tab 長條同列, 在此隱藏避免畫面重覆
         self.start_btn.hide()
         self.clear_btn.hide()
@@ -322,7 +316,6 @@ class LiveCaptionPage(QWidget):
                     self.local_lang_combo,
                     QLabel("TTS語音"),
                     self.local_tts_voice_combo,
-                    self.test_local_tts_btn,
                 ],
             ),
             2,
@@ -524,10 +517,6 @@ class LiveCaptionPage(QWidget):
         self.clear()
         if self._on_clear_clicked:
             self._on_clear_clicked()
-
-    def _handle_test_local_tts_clicked(self) -> None:
-        if self._on_test_local_tts_clicked:
-            self._on_test_local_tts_clicked()
 
     def _on_translation_target_changed(self, *_args) -> None:
         for channel in _CHANNELS:

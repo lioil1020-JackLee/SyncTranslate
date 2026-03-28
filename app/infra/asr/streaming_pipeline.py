@@ -47,6 +47,8 @@ class ASRManager:
         self._streams: dict[str, StreamingAsr] = {}
         self._stream_fingerprints: dict[str, str] = {}
         self._enabled = {"local": True, "remote": True}
+        self._callbacks: dict[str, Callable[[ASREventWithSource], None] | None] = {"local": None, "remote": None}
+        self._retired_streams: list[StreamingAsr] = []
         self._lock = Lock()
         self._active_utterance: dict[str, str | None] = {"local": None, "remote": None}
         self._revision: dict[str, int] = {"local": 0, "remote": 0}
@@ -60,14 +62,20 @@ class ASRManager:
         if new_fingerprint == self._runtime_fingerprint:
             return
         self._runtime_fingerprint = new_fingerprint
-        for stream in self._streams.values():
-            stream.stop()
+        previous_streams = list(self._streams.items())
         self._streams.clear()
         self._stream_fingerprints.clear()
+        for source, stream in previous_streams:
+            self._retire_stream(stream)
+            callback = self._callbacks.get(source)
+            if callback is not None:
+                self._stream_of(source).start(callback)
+        self._prune_retired_streams()
+
+    def refresh_runtime(self) -> None:
+        self.configure_pipeline(self._config, self._pipeline_revision)
 
     def start(self, source: str, on_event: Callable[[ASREventWithSource], None]) -> None:
-        stream = self._stream_of(source)
-
         def _wrapped(event: AsrEvent) -> None:
             key = source if source in ("local", "remote") else "local"
             with self._lock:
@@ -102,16 +110,30 @@ class ASRManager:
                     self._active_utterance[key] = None
                     self._revision[key] = 0
 
+        key = source if source in ("local", "remote") else "local"
+        self._callbacks[key] = _wrapped
+        self._prune_retired_streams()
+        stream = self._stream_of(key)
         stream.start(_wrapped)
 
     def stop(self, source: str) -> None:
-        stream = self._streams.get(source)
+        key = source if source in ("local", "remote") else "local"
+        self._callbacks[key] = None
+        stream = self._streams.get(key)
         if stream:
             stream.stop()
+        self._prune_retired_streams()
 
     def stop_all(self) -> None:
         for stream in self._streams.values():
             stream.stop()
+        for stream in self._retired_streams:
+            try:
+                stream.stop()
+            except Exception:
+                pass
+        self._retired_streams.clear()
+        self._callbacks = {"local": None, "remote": None}
         with self._lock:
             self._active_utterance = {"local": None, "remote": None}
             self._revision = {"local": 0, "remote": 0}
@@ -119,6 +141,7 @@ class ASRManager:
     def submit(self, source: str, chunk: np.ndarray, sample_rate: float) -> None:
         if not self.is_enabled(source):
             return
+        self._prune_retired_streams()
         payload = chunk
         if payload.ndim == 2 and payload.shape[1] > 1:
             # Keep ASR behavior stable for virtual stereo devices: pick the
@@ -175,7 +198,7 @@ class ASRManager:
         if existing and self._stream_fingerprints.get(key) == fingerprint:
             return existing
         if existing:
-            existing.stop()
+            self._retire_stream(existing)
             self._streams.pop(key, None)
             self._stream_fingerprints.pop(key, None)
 
@@ -216,6 +239,20 @@ class ASRManager:
         self._streams[key] = stream
         self._stream_fingerprints[key] = fingerprint
         return stream
+
+    def _retire_stream(self, stream: StreamingAsr) -> None:
+        stream.request_stop()
+        self._retired_streams.append(stream)
+
+    def _prune_retired_streams(self) -> None:
+        if not self._retired_streams:
+            return
+        still_running: list[StreamingAsr] = []
+        for stream in self._retired_streams:
+            if stream.cleanup_if_stopped():
+                continue
+            still_running.append(stream)
+        self._retired_streams = still_running
 
     def _asr_profile_for_source(self, source: str):
         key = source if source in ("local", "remote") else "local"

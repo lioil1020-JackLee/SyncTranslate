@@ -12,7 +12,7 @@ import numpy as np
 from app.domain.events import ErrorEvent
 from app.infra.audio.routing import AudioInputManager
 from app.infra.asr.streaming_pipeline import ASREventWithSource, ASRManager
-from app.infra.config.schema import AudioRouteConfig
+from app.infra.config.schema import AppConfig, AudioRouteConfig
 from app.domain.runtime_state import StateManager
 from app.application.transcript_service import TranscriptBuffer
 from app.infra.translation.engine import TranslatorManager
@@ -344,6 +344,16 @@ class AudioRouter:
     def set_output_mode(self, channel: str, mode: str) -> None:
         self._tts_manager.set_output_mode(channel, mode)
         self._reconcile_runtime_sources()
+
+    def refresh_runtime_config(self, config: AppConfig) -> None:
+        refresh_runtime = getattr(self._asr_manager, "refresh_runtime", None)
+        if callable(refresh_runtime):
+            refresh_runtime()
+        else:
+            self._asr_manager.configure_pipeline(
+                config,
+                getattr(self._asr_manager, "_pipeline_revision", 1),
+            )
 
     def _reconcile_runtime_sources(self) -> None:
         if not self.running or self._routes is None or self._sample_rate <= 0:

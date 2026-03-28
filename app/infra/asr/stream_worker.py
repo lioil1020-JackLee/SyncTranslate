@@ -96,15 +96,15 @@ class StreamingAsr:
         self._thread = Thread(target=self._run, daemon=True)
         self._thread.start()
 
-    def stop(self) -> None:
+    def request_stop(self) -> None:
         self._stop_event.set()
+
+    def is_running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def cleanup_if_stopped(self) -> bool:
         if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=8.0)
-            if self._thread.is_alive():
-                # Do not clear/reset the shared stop event if old worker is still alive,
-                # otherwise a subsequent start() can revive the previous worker thread.
-                self._debug("asr worker stop timeout; skip reset to avoid concurrent workers")
-                raise RuntimeError("ASR worker did not stop in time")
+            return False
         self._thread = None
         self._vad.reset()
         self._segment_chunks = []
@@ -128,6 +128,18 @@ class StreamingAsr:
                 self._queue.get_nowait()
             except Empty:
                 break
+        return True
+
+    def stop(self) -> None:
+        self.request_stop()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=8.0)
+            if self._thread.is_alive():
+                # Do not clear/reset the shared stop event if old worker is still alive,
+                # otherwise a subsequent start() can revive the previous worker thread.
+                self._debug("asr worker stop timeout; skip reset to avoid concurrent workers")
+                raise RuntimeError("ASR worker did not stop in time")
+        self.cleanup_if_stopped()
 
     def stats(self) -> StreamingAsrStats:
         with self._stats_lock:
@@ -274,6 +286,8 @@ class StreamingAsr:
             return
         if not text.strip():
             return
+        if self._stop_event.is_set():
+            return
         if _looks_like_silence_hallucination(text, audio_ms=audio_ms, vad_rms=self._vad.last_rms):
             self._debug(f"drop hallucinated partial text={text.strip()[:80]}")
             return
@@ -307,6 +321,8 @@ class StreamingAsr:
             result = self._engine.transcribe_final_result(audio=audio, sample_rate=self._segment_sample_rate)
             text = result.text or ""
         except Exception as exc:
+            if self._stop_event.is_set():
+                return
             self._on_event(
                 AsrEvent(
                     text=f"[asr-error] {exc}",
@@ -328,6 +344,8 @@ class StreamingAsr:
             self._partial_cooldown_until_ms = max(self._partial_cooldown_until_ms, now_ms + 6000)
             self._debug(f"asr partial backoff: latency={latency_ms}ms")
         if not text.strip():
+            return
+        if self._stop_event.is_set():
             return
         self._on_event(
             AsrEvent(

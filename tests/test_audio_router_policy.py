@@ -58,6 +58,7 @@ class _FakeAsrManager:
         self.start_calls: list[str] = []
         self.stop_calls: list[str] = []
         self.submit_calls: list[tuple[str, float]] = []
+        self.configure_calls: list[tuple[object, int]] = []
 
     def set_enabled(self, source: str, enabled: bool) -> None:
         self.enabled[source] = enabled
@@ -70,6 +71,9 @@ class _FakeAsrManager:
 
     def stop_all(self) -> None:
         pass
+
+    def configure_pipeline(self, config, pipeline_revision: int) -> None:
+        self.configure_calls.append((config, pipeline_revision))
 
     def submit(self, source: str, chunk, sample_rate: float) -> None:
         self.submit_calls.append((source, sample_rate))
@@ -227,6 +231,16 @@ class AudioRouterPolicyTests(unittest.TestCase):
         self.assertIn("local", input_manager.start_calls)
         router.set_output_mode("remote", "subtitle_only")
         self.assertTrue(asr_manager.enabled["local"])
+
+    def test_refresh_runtime_config_reconfigures_asr_pipeline(self) -> None:
+        router, _, asr_manager, _, _ = _build_router()
+        routes = AudioRouteConfig(meeting_in="remote-dev", microphone_in="local-dev", speaker_out="spk", meeting_out="mtg")
+        router.start("bidirectional", routes, sample_rate=24000, chunk_ms=40)
+
+        config = object()
+        router.refresh_runtime_config(config)  # type: ignore[arg-type]
+
+        self.assertEqual(asr_manager.configure_calls[-1], (config, 1))
 
     def test_translation_disabled_skips_llm_and_updates_translated_panel(self) -> None:
         router, _, _, translator, tts = _build_router(translation_enabled=False)

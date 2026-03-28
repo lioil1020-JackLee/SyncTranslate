@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
+import shutil
 import sys
 
 from PySide6.QtGui import QIcon
@@ -14,9 +15,33 @@ from app.infra.config.settings_store import load_config
 from app.ui.main_window import MainWindow
 
 
+def _default_config_path() -> str:
+    if getattr(sys, "frozen", False):
+        base_dir = Path(sys.executable).resolve().parent
+        target = (base_dir / "config.yaml").resolve()
+        if target.exists():
+            return str(target)
+        bundled_candidates = []
+        meipass = getattr(sys, "_MEIPASS", "")
+        if meipass:
+            bundled_candidates.append((Path(meipass) / "config.yaml").resolve())
+        bundled_candidates.append((base_dir / "_internal" / "config.yaml").resolve())
+        for candidate in bundled_candidates:
+            if not candidate.exists():
+                continue
+            try:
+                shutil.copyfile(candidate, target)
+                return str(target)
+            except Exception:
+                return str(candidate)
+    else:
+        base_dir = Path(__file__).resolve().parents[2]
+    return str((base_dir / "config.yaml").resolve())
+
+
 def create_cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="config.yaml")
+    parser.add_argument("--config", default=_default_config_path())
     parser.add_argument("--check", action="store_true", help="Run config + device checks without opening the UI")
     parser.add_argument("--healthcheck-worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--healthcheck-config", default="", help=argparse.SUPPRESS)

@@ -116,6 +116,17 @@ class LiveCaptionPageUiTests(_QtTestCase):
         self.assertFalse(page.local_tts_voice_combo.isEnabled())
         self.assertTrue(page.output_gain_slider.isEnabled())
 
+    def test_direction_controls_can_stay_enabled_while_session_running(self) -> None:
+        page = LiveCaptionPage()
+        page.remote_output_mode_combo.setCurrentIndex(page.remote_output_mode_combo.findData("tts"))
+        page.local_output_mode_combo.setCurrentIndex(page.local_output_mode_combo.findData("tts"))
+
+        page.set_direction_controls_enabled(True)
+
+        self.assertTrue(page.remote_asr_combo.isEnabled())
+        self.assertTrue(page.remote_output_mode_combo.isEnabled())
+        self.assertTrue(page.local_tts_voice_combo.isEnabled())
+
     def test_four_panels_have_same_size(self) -> None:
         page = LiveCaptionPage()
         self.assertEqual(page.remote_original.size(), page.remote_translated.size())
@@ -179,6 +190,71 @@ class LiveCaptionPageUiTests(_QtTestCase):
         self.assertAlmostEqual(window.config.runtime.tts_gain, 1.8, places=2)
         self.assertAlmostEqual(window.speaker_playback._volume, 1.8, places=2)
         self.assertAlmostEqual(window.meeting_playback._volume, 1.8, places=2)
+
+    def test_main_window_keeps_live_caption_controls_enabled_while_session_running(self) -> None:
+        window = MainWindow("config.yaml")
+
+        class _RunningSession:
+            def is_running(self) -> bool:
+                return True
+
+        window.session_controller = _RunningSession()  # type: ignore[assignment]
+        window.live_caption_page.remote_output_mode_combo.setCurrentIndex(
+            window.live_caption_page.remote_output_mode_combo.findData("tts")
+        )
+        window.live_caption_page.local_output_mode_combo.setCurrentIndex(
+            window.live_caption_page.local_output_mode_combo.findData("tts")
+        )
+        window.validate_current_routes()
+
+        self.assertTrue(window.live_caption_page.remote_asr_combo.isEnabled())
+        self.assertTrue(window.live_caption_page.remote_output_mode_combo.isEnabled())
+        self.assertTrue(window.live_caption_page.local_tts_voice_combo.isEnabled())
+
+    def test_main_window_hot_applies_live_caption_settings_while_session_running(self) -> None:
+        window = MainWindow("config.yaml")
+
+        class _RunningSession:
+            def is_running(self) -> bool:
+                return True
+
+        class _Router:
+            def __init__(self) -> None:
+                self.set_output_calls: list[tuple[str, str]] = []
+                self.refresh_calls: list[object] = []
+
+            def set_output_mode(self, channel: str, mode: str) -> None:
+                self.set_output_calls.append((channel, mode))
+
+            def refresh_runtime_config(self, config) -> None:
+                self.refresh_calls.append(config)
+
+        router = _Router()
+        window.session_controller = _RunningSession()  # type: ignore[assignment]
+        window.audio_router = router  # type: ignore[assignment]
+        window.validate_current_routes()
+
+        window.live_caption_page.remote_output_mode_combo.setCurrentIndex(
+            window.live_caption_page.remote_output_mode_combo.findData("tts")
+        )
+        window.live_caption_page.remote_lang_combo.setCurrentIndex(
+            window.live_caption_page.remote_lang_combo.findData("en")
+        )
+        window.live_caption_page.remote_tts_voice_combo.setCurrentIndex(
+            window.live_caption_page.remote_tts_voice_combo.findData("en-US-GuyNeural")
+        )
+        window.live_caption_page.remote_asr_combo.setCurrentIndex(
+            window.live_caption_page.remote_asr_combo.findData("ja")
+        )
+
+        window._apply_live_caption_config_now()
+
+        self.assertEqual(window.config.runtime.remote_translation_target, "en")
+        self.assertEqual(window.config.language.meeting_target, "en")
+        self.assertEqual(window.config.runtime.remote_tts_voice, "en-US-GuyNeural")
+        self.assertEqual(window.config.runtime.remote_asr_language, "ja")
+        self.assertIn(("local", "tts"), router.set_output_calls)
+        self.assertIs(router.refresh_calls[-1], window.config)
 
 
 class LocalAiPageUiTests(_QtTestCase):
@@ -277,35 +353,6 @@ class LocalAiPageUiTests(_QtTestCase):
         self.assertEqual(updated.llm_channels.local.model, "qwen-local")
         self.assertEqual(updated.llm_channels.remote.model, "qwen-remote")
         self.assertFalse(hasattr(page, "use_channel_specific_llm_check"))
-
-    def test_local_output_tts_test_uses_remote_translation_target(self) -> None:
-        config = AppConfig()
-        config.language.meeting_target = "ja"
-        config.language.local_target = "en"
-
-        self.assertEqual(MainWindow._local_output_test_language(config), "ja")
-
-    def test_local_output_tts_uses_selected_remote_voice(self) -> None:
-        window = MainWindow("config.yaml")
-        window.config.language.meeting_target = "en"
-        window.live_caption_page.apply_config(window.config)
-        remote_target_index = window.live_caption_page.remote_lang_combo.findData("en")
-        window.live_caption_page.remote_lang_combo.setCurrentIndex(remote_target_index)
-        window.live_caption_page._on_translation_target_changed()
-        remote_voice_index = window.live_caption_page.remote_tts_voice_combo.findData("en-US-GuyNeural")
-        window.live_caption_page.remote_tts_voice_combo.setCurrentIndex(remote_voice_index)
-
-        called = {}
-
-        def fake_build_output_test_audio(*, primary_tts, text):
-            called["voice"] = primary_tts.voice_name
-            return (b"", 22050, "edge_tts")
-
-        window._build_output_test_audio = fake_build_output_test_audio
-        window.speaker_playback.play = lambda audio, sample_rate, output_device_name, blocking: None
-
-        window.test_local_tts_output()
-        self.assertEqual(called.get("voice"), "en-US-GuyNeural")
 
     def test_local_ai_page_exposes_quick_save_button(self) -> None:
         page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)

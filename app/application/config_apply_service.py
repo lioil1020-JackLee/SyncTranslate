@@ -32,6 +32,11 @@ class ConfigApplyService:
         self._local_ai_page.update_config(config)
         self.apply_audio_route_levels(config)
 
+    def sync_live_caption_to_config(self, config: AppConfig) -> None:
+        config.direction.mode = "bidirectional"
+        self._live_caption_page.update_config(config)
+        self.apply_audio_route_levels(config)
+
     def apply_audio_route_levels(self, config: AppConfig | AudioRouteConfig) -> None:
         if isinstance(config, AppConfig):
             audio = config.audio
