@@ -85,7 +85,7 @@ asr_channels:
 llm:
   backend: lm_studio
   base_url: http://127.0.0.1:1234
-  model: qwen/qwen3.5-9b
+  model: hy-mt1.5-7b
   temperature: 0.0
   top_p: 0.8
   max_output_tokens: 112
@@ -141,7 +141,7 @@ llm_channels:
   local:
     backend: lm_studio
     base_url: http://127.0.0.1:1234
-    model: qwen/qwen3.5-9b
+    model: hy-mt1.5-7b
     temperature: 0.0
     top_p: 0.8
     max_output_tokens: 112
@@ -196,7 +196,7 @@ llm_channels:
   remote:
     backend: lm_studio
     base_url: http://127.0.0.1:1234
-    model: qwen/qwen3.5-9b
+    model: hy-mt1.5-7b
     temperature: 0.0
     top_p: 0.8
     max_output_tokens: 144

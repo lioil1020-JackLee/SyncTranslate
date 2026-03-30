@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from app.infra.translation.lm_studio_adapter import LmStudioClient
-from app.infra.config.schema import LlmConfig, TranslationProfileConfig
+from app.infra.config.schema import DEFAULT_FIXED_LLM_MODEL, LlmConfig, TranslationProfileConfig
 
 
 @dataclass(slots=True)
@@ -41,7 +41,7 @@ class LmStudioTranslationProvider:
     def __init__(self, config: LlmConfig) -> None:
         self._client = LmStudioClient(
             base_url=config.base_url,
-            model=config.model,
+            model=DEFAULT_FIXED_LLM_MODEL,
             temperature=config.temperature,
             top_p=config.top_p,
             max_output_tokens=config.max_output_tokens,

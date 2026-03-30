@@ -619,7 +619,7 @@ class LiveCaptionPage(QWidget):
         path, _ = QFileDialog.getSaveFileName(self, "匯出字幕", default_name, "文字檔 (*.txt)")
         if not path:
             return
-        text = editor.toPlainText()
+        text = self._export_text_for_editor(editor)
         try:
             with open(path, "w", encoding="utf-8") as fp:
                 fp.write(text)
@@ -627,6 +627,17 @@ class LiveCaptionPage(QWidget):
             from PySide6.QtWidgets import QMessageBox
 
             QMessageBox.critical(self, "匯出失敗", str(exc))
+
+    @staticmethod
+    def _export_text_for_editor(editor: QTextEdit) -> str:
+        lines = editor.toPlainText().splitlines()
+        exported: list[str] = []
+        for line in reversed(lines):
+            if line.startswith("[final]"):
+                exported.append(line[len("[final]"):].lstrip())
+            else:
+                exported.append(line)
+        return "\n".join(exported)
 
     @staticmethod
     def _get_target_language(combo: QComboBox, default: str) -> str:

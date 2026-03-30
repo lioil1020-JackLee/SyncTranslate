@@ -25,7 +25,7 @@ class _QtTestCase(unittest.TestCase):
 class LiveCaptionExportTests(_QtTestCase):
     def test_export_editor_writes_panel_text_to_selected_file(self) -> None:
         page = LiveCaptionPage()
-        page.remote_original.setPlainText("line one\nline two")
+        page.remote_original.setPlainText("[final] line two\n[final] line one")
 
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "remote_original.txt"
@@ -88,11 +88,11 @@ class LiveCaptionExportTests(_QtTestCase):
 
             self.assertEqual(
                 paths["remote_original"].read_text(encoding="utf-8"),
-                "[partial] remote next\n[final] remote hello",
+                "remote hello\n[partial] remote next",
             )
             self.assertEqual(
                 paths["remote_translated"].read_text(encoding="utf-8"),
-                "[final] 遠端翻譯一\n[final] 遠端翻譯二",
+                "遠端翻譯二\n遠端翻譯一",
             )
             self.assertEqual(
                 paths["local_original"].read_text(encoding="utf-8"),
@@ -100,7 +100,7 @@ class LiveCaptionExportTests(_QtTestCase):
             )
             self.assertEqual(
                 paths["local_translated"].read_text(encoding="utf-8"),
-                "[final] 本地翻譯完成",
+                "本地翻譯完成",
             )
 
 

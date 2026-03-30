@@ -333,7 +333,6 @@ class AudioRoutingPageUiTests(_QtTestCase):
 class LocalAiPageUiTests(_QtTestCase):
     def test_local_ai_page_hides_quick_tuning_combos(self) -> None:
         page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
-        page._model_poll_timer.stop()
 
         self.assertFalse(hasattr(page, "experience_preset_combo"))
         self.assertFalse(hasattr(page, "translation_style_combo"))
@@ -342,10 +341,11 @@ class LocalAiPageUiTests(_QtTestCase):
 
     def test_local_ai_page_uses_built_in_optimized_defaults(self) -> None:
         page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
-        page._model_poll_timer.stop()
 
         self.assertEqual(page.asr_model_combo.currentText(), "large-v3")
         self.assertEqual(page.remote_asr_model_combo.currentText(), "large-v3")
+        self.assertEqual(page.llm_model_label.text(), "hy-mt1.5-7b")
+        self.assertEqual(page.remote_llm_model_label.text(), "hy-mt1.5-7b")
         self.assertEqual(page.asr_beam_spin.value(), 3)
         self.assertFalse(page.asr_condition_prev_check.isChecked())
         self.assertFalse(page.remote_asr_condition_prev_check.isChecked())
@@ -367,7 +367,6 @@ class LocalAiPageUiTests(_QtTestCase):
 
     def test_local_ai_page_round_trips_advanced_runtime_and_profile_controls(self) -> None:
         page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
-        page._model_poll_timer.stop()
         cfg = AppConfig()
         cfg.runtime.latency_mode = "low_latency"
         cfg.runtime.display_partial_strategy = "all"
@@ -416,34 +415,26 @@ class LocalAiPageUiTests(_QtTestCase):
         self.assertEqual(updated.llm.speech_profile, "speech_output_natural")
         self.assertEqual(updated.tts.style_preset, "conversational")
 
-    def test_llm_models_loaded_from_lm_studio_can_be_selected_per_direction(self) -> None:
+    def test_llm_model_is_fixed_for_both_directions(self) -> None:
         page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
-        page._model_poll_timer.stop()
-        page._model_loading = True
-        page._model_load_queue.put((True, ["qwen-local", "qwen-remote"]))
-
-        page._drain_model_load_queue()
-        page.llm_model_combo.setCurrentText("qwen-local")
-        page.remote_llm_model_combo.setCurrentText("qwen-remote")
 
         updated = AppConfig()
         page.update_config(updated)
 
         self.assertTrue(updated.runtime.use_channel_specific_llm)
-        self.assertEqual(updated.llm_channels.local.model, "qwen-local")
-        self.assertEqual(updated.llm_channels.remote.model, "qwen-remote")
-        self.assertFalse(hasattr(page, "use_channel_specific_llm_check"))
+        self.assertEqual(page.llm_model_label.text(), "hy-mt1.5-7b")
+        self.assertEqual(page.remote_llm_model_label.text(), "hy-mt1.5-7b")
+        self.assertEqual(updated.llm_channels.local.model, "hy-mt1.5-7b")
+        self.assertEqual(updated.llm_channels.remote.model, "hy-mt1.5-7b")
 
     def test_local_ai_page_exposes_quick_save_button(self) -> None:
         page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
-        page._model_poll_timer.stop()
 
         self.assertTrue(hasattr(page, "quick_save_btn"))
         self.assertIn(page.quick_save_btn, page.experience_group.findChildren(type(page.quick_save_btn)))
 
     def test_quick_save_and_advanced_toggle_still_exist(self) -> None:
         page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
-        page._model_poll_timer.stop()
 
         self.assertTrue(hasattr(page, "quick_save_btn"))
         self.assertTrue(hasattr(page, "show_advanced_check"))

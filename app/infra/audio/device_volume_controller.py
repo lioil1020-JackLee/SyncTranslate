@@ -51,6 +51,7 @@ class SystemDeviceVolumeController:
             capture_output=True,
             text=True,
             encoding="utf-8",
+            **self._hidden_subprocess_kwargs(),
         )
         if completed.returncode == 0:
             return
@@ -65,6 +66,19 @@ class SystemDeviceVolumeController:
             base = Path(getattr(sys, "_MEIPASS", Path.cwd()))
             return base / "app" / "infra" / "audio" / "windows_endpoint_volume.ps1"
         return Path(__file__).with_name("windows_endpoint_volume.ps1")
+
+    @staticmethod
+    def _hidden_subprocess_kwargs() -> dict[str, object]:
+        if sys.platform != "win32":
+            return {}
+        kwargs: dict[str, object] = {
+            "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        }
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = 0
+        kwargs["startupinfo"] = startupinfo
+        return kwargs
 
 
 __all__ = ["SystemDeviceVolumeController"]

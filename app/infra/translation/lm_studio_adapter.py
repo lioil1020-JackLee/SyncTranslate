@@ -6,13 +6,13 @@ import re
 from dataclasses import dataclass
 from urllib import error, request
 
-from app.infra.config.schema import TranslationProfileConfig
+from app.infra.config.schema import DEFAULT_FIXED_LLM_MODEL, TranslationProfileConfig
 
 
 @dataclass(slots=True)
 class LmStudioClient:
     base_url: str = "http://127.0.0.1:1234"
-    model: str = "qwen/qwen3.5-9b"
+    model: str = DEFAULT_FIXED_LLM_MODEL
     temperature: float = 0.2
     top_p: float = 0.9
     max_output_tokens: int = 128

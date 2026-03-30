@@ -4,6 +4,9 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
+DEFAULT_FIXED_LLM_MODEL = "hy-mt1.5-7b"
+
+
 @dataclass(slots=True)
 class AudioRouteConfig:
     meeting_in: str = ""
@@ -144,7 +147,7 @@ class TranslationProfilesConfig:
 class LlmConfig:
     backend: str = "lm_studio"
     base_url: str = "http://127.0.0.1:1234"
-    model: str = "qwen/qwen3.5-9b"
+    model: str = DEFAULT_FIXED_LLM_MODEL
     temperature: float = 0.2
     top_p: float = 0.9
     max_output_tokens: int = 128

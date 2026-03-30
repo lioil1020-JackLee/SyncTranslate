@@ -3,11 +3,9 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from queue import Empty, Queue
-from threading import Thread
 from typing import Callable
 
-from PySide6.QtCore import QEvent, Qt, QTimer
+from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
@@ -28,8 +26,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.infra.translation.lm_studio_adapter import LmStudioClient
-from app.infra.config.schema import AppConfig, TtsChannelOverride, TtsConfig, merge_tts_configs
+from app.infra.config.schema import (
+    AppConfig,
+    DEFAULT_FIXED_LLM_MODEL,
+    TtsChannelOverride,
+    TtsConfig,
+    merge_tts_configs,
+)
 
 _OFFICIAL_FASTER_WHISPER_MODELS = [
     # 多語言模型（由大到小）
@@ -103,6 +106,7 @@ _GROUP_EXTRA_HEIGHT = 18
 _GROUP_ROW_SPACING = 8
 # reduce page padding to allow slightly more content
 _PAGE_MIN_PADDING = 6
+_FIXED_LLM_MODEL = DEFAULT_FIXED_LLM_MODEL
 
 
 class PathPickerLineEdit(QLineEdit):
@@ -158,9 +162,6 @@ class LocalAiPage(QWidget):
         self._on_health_check = on_health_check
         self._on_save_config = on_save_config
         self._suspend_notify = False
-        self._model_load_queue: Queue[tuple[bool, list[str] | str]] = Queue()
-        self._model_loading = False
-        self._preferred_llm_model = ""
         self._advanced_visibility_initialized = False
         self.setStyleSheet("QWidget { font-size: 10pt; }")
 
@@ -204,11 +205,6 @@ class LocalAiPage(QWidget):
         # Let layout use natural heights to avoid visual compression and large empty blocks.
 
         self._wire_events()
-
-        self._model_poll_timer = QTimer(self)
-        self._model_poll_timer.setInterval(150)
-        self._model_poll_timer.timeout.connect(self._drain_model_load_queue)
-        self._model_poll_timer.start()
 
         self._reload_tts_speaker_options(self.base_tts)
         self._apply_channel_strategy_controls()
@@ -263,9 +259,8 @@ class LocalAiPage(QWidget):
             en_zh_llm = config.llm_channels.remote
             self._select_combo_data(self.llm_backend_combo, zh_en_llm.backend)
             self._apply_backend_url(zh_en_llm.backend, self.llm_url_label)
-            self._preferred_llm_model = zh_en_llm.model.strip()
-            self._set_combo_text(self.llm_model_combo, zh_en_llm.model)
-            self._set_combo_text(self.remote_llm_model_combo, en_zh_llm.model)
+            self.llm_model_label.setText(_FIXED_LLM_MODEL)
+            self.remote_llm_model_label.setText(_FIXED_LLM_MODEL)
             self.llm_timeout_spin.setValue(zh_en_llm.request_timeout_sec)
             self.remote_llm_timeout_spin.setValue(en_zh_llm.request_timeout_sec)
             self.llm_temperature_spin.setValue(zh_en_llm.temperature)
@@ -355,7 +350,6 @@ class LocalAiPage(QWidget):
                 self._advanced_visibility_initialized = True
         finally:
             self._suspend_notify = False
-        self._reload_llm_models()
 
     def update_config(self, config: AppConfig) -> None:
         zh_asr = config.asr_channels.local
@@ -411,13 +405,10 @@ class LocalAiPage(QWidget):
         zh_en_llm = config.llm_channels.local
         en_zh_llm = config.llm_channels.remote
         shared_url = self._backend_url(backend)
-        for llm_cfg, model_text in (
-            (zh_en_llm, self.llm_model_combo.currentText().strip()),
-            (en_zh_llm, self.remote_llm_model_combo.currentText().strip()),
-        ):
+        for llm_cfg in (zh_en_llm, en_zh_llm):
             llm_cfg.backend = backend
             llm_cfg.base_url = shared_url
-            llm_cfg.model = model_text or "qwen/qwen3.5-9b"
+            llm_cfg.model = _FIXED_LLM_MODEL
         zh_en_llm.request_timeout_sec = self.llm_timeout_spin.value()
         en_zh_llm.request_timeout_sec = self.remote_llm_timeout_spin.value()
         zh_en_llm.temperature = float(self.llm_temperature_spin.value())
@@ -440,16 +431,8 @@ class LocalAiPage(QWidget):
         config.runtime.llm_queue_maxsize_remote = self.llm_queue_remote_spin.value()
         caption_profile = str(self.llm_caption_profile_combo.currentData() or "live_caption_fast")
         speech_profile = str(self.llm_speech_profile_combo.currentData() or "speech_output_natural")
-
-        chosen_model = self.llm_model_combo.currentText().strip()
-        if not chosen_model:
-            chosen_model = (self._preferred_llm_model or "").strip()
-        if not chosen_model:
-            chosen_model = (zh_en_llm.model or "").strip()
-        zh_en_llm.model = chosen_model or "qwen/qwen3.5-9b"
-        if not (en_zh_llm.model or "").strip():
-            en_zh_llm.model = zh_en_llm.model
-        self._preferred_llm_model = zh_en_llm.model
+        zh_en_llm.model = _FIXED_LLM_MODEL
+        en_zh_llm.model = _FIXED_LLM_MODEL
         config.llm = zh_en_llm
         config.runtime.use_channel_specific_llm = True
 
@@ -641,7 +624,7 @@ class LocalAiPage(QWidget):
         ):
             widget.setEnabled(True)
         for widget in (
-            self.remote_llm_model_combo,
+            self.remote_llm_model_label,
             self.remote_llm_timeout_spin,
             self.remote_llm_temperature_spin,
             self.remote_llm_top_p_spin,
@@ -816,21 +799,15 @@ class LocalAiPage(QWidget):
         self.llm_backend_combo.addItem("LM Studio", "lm_studio")
         self._configure_combo_popup(self.llm_backend_combo)
         self.llm_backend_combo.setEnabled(False)
-        self.llm_backend_combo.setToolTip("目前翻譯引擎固定使用 LM Studio；本地方向與遠端方向可分別選擇已載入模型。")
+        self.llm_backend_combo.setToolTip("目前翻譯引擎固定使用 LM Studio，模型固定為 hy-mt1.5-7b。")
         self.llm_url_label = QLabel("http://127.0.0.1:1234")
         self.llm_url_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.llm_model_combo = QComboBox()
-        # 本地方向翻譯模型
-        self.llm_model_combo.setEditable(False)
-        self._configure_combo_popup(self.llm_model_combo)
-        self.llm_model_combo.setToolTip("模型清單來自 LM Studio 已載入模型，可單獨指定本地方向翻譯模型。")
-        self.remote_llm_model_combo = QComboBox()
-        # 遠端方向翻譯模型
-        self.remote_llm_model_combo.setEditable(False)
-        self._configure_combo_popup(self.remote_llm_model_combo)
-        self.remote_llm_model_combo.setToolTip("模型清單來自 LM Studio 已載入模型，可單獨指定遠端方向翻譯模型。")
-        self.llm_reload_models_btn = QPushButton("重新載入模型")
-        self.llm_reload_models_btn.setToolTip("重新從 LM Studio /v1/models 讀取目前已載入模型。")
+        self.llm_model_label = QLabel(_FIXED_LLM_MODEL)
+        self.remote_llm_model_label = QLabel(_FIXED_LLM_MODEL)
+        self.llm_model_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.remote_llm_model_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.llm_model_label.setToolTip("本地方向翻譯模型固定為 hy-mt1.5-7b。")
+        self.remote_llm_model_label.setToolTip("遠端方向翻譯模型固定為 hy-mt1.5-7b。")
         self.llm_timeout_spin = QSpinBox()
         self.llm_timeout_spin.setRange(5, 120)
         self.remote_llm_timeout_spin = QSpinBox()
@@ -891,8 +868,6 @@ class LocalAiPage(QWidget):
         self._configure_combo_popup(self.llm_caption_profile_combo)
         self._configure_combo_popup(self.llm_speech_profile_combo)
         self._set_dual_field_style(
-            self.llm_model_combo,
-            self.remote_llm_model_combo,
             self.llm_timeout_spin,
             self.remote_llm_timeout_spin,
             self.llm_temperature_spin,
@@ -912,14 +887,15 @@ class LocalAiPage(QWidget):
             self.llm_sliding_window_enabled,
             self.remote_llm_sliding_window_enabled,
         )
+        self._set_dual_field_style(self.llm_model_label, self.remote_llm_model_label)
         self._set_uniform_field_style(self.llm_caption_profile_combo, minimum_width=180)
         self._set_uniform_field_style(self.llm_speech_profile_combo, minimum_width=180)
-        llm_service_row = self._build_inline_row(self.llm_url_label, self.llm_reload_models_btn)
+        llm_service_row = self._build_inline_row(self.llm_url_label)
 
         form = QFormLayout()
         self._configure_form_layout(form)
         form.addRow("", self._build_dual_header_row("本地方向", "遠端方向"))
-        form.addRow("模型", self._build_dual_field_row(self.llm_model_combo, self.remote_llm_model_combo))
+        form.addRow("模型", self._build_dual_field_row(self.llm_model_label, self.remote_llm_model_label))
         form.addRow("後端(共用)", self.llm_backend_combo)
         form.addRow("服務位址(共用)", llm_service_row)
         form.addRow("字幕 Profile(共用)", self.llm_caption_profile_combo)
@@ -1252,14 +1228,12 @@ class LocalAiPage(QWidget):
         self.llm_url_label.setMinimumWidth(140)
         self.llm_url_label.setMinimumHeight(_CONTROL_HEIGHT)
         self.asr_compute_label.setMinimumHeight(_CONTROL_HEIGHT)
-        self.llm_reload_models_btn.setMinimumHeight(_CONTROL_HEIGHT)
         self.show_advanced_check.toggled.connect(self._set_advanced_settings_visible)
         self.show_advanced_check.toggled.connect(lambda *_: self._notify_settings_changed())
         self.quick_health_btn.clicked.connect(lambda *_: self._on_health_check())
         self.quick_save_btn.clicked.connect(lambda *_: self._on_save_config() if self._on_save_config else None)
         self.llm_backend_combo.currentIndexChanged.connect(self._on_backend_changed)
         self.asr_device_combo.currentIndexChanged.connect(self._on_asr_device_changed)
-        self.llm_reload_models_btn.clicked.connect(self._reload_llm_models)
 
         for widget in (
             self.asr_engine_combo,
@@ -1293,8 +1267,6 @@ class LocalAiPage(QWidget):
             self.asr_rms_threshold_spin,
             self.remote_asr_rms_threshold_spin,
             self.llm_backend_combo,
-            self.llm_model_combo,
-            self.remote_llm_model_combo,
             self.llm_timeout_spin,
             self.remote_llm_timeout_spin,
             self.llm_temperature_spin,
@@ -1489,73 +1461,17 @@ class LocalAiPage(QWidget):
         return []
 
     def _reload_llm_models(self) -> None:
-        if self._model_loading:
-            return
-        backend = str(self.llm_backend_combo.currentData() or "lm_studio")
-        url = self._backend_url(backend)
-        self._model_loading = True
-        self.llm_reload_models_btn.setEnabled(False)
-        self.llm_reload_models_btn.setText("載入中...")
-
-        def _worker() -> None:
-            try:
-                client = LmStudioClient(base_url=url, model="", request_timeout_sec=3.0)
-                raw_models = [model for model in client.list_models() if model.strip()]
-                self._model_load_queue.put((True, self._filter_llm_models(raw_models)))
-            except Exception as exc:
-                self._model_load_queue.put((False, str(exc)))
-
-        Thread(target=_worker, daemon=True).start()
+        self.llm_model_label.setText(_FIXED_LLM_MODEL)
+        self.remote_llm_model_label.setText(_FIXED_LLM_MODEL)
 
     def _drain_model_load_queue(self) -> None:
-        try:
-            ok, payload = self._model_load_queue.get_nowait()
-        except Empty:
-            return
-
-        self._model_loading = False
-        self.llm_reload_models_btn.setEnabled(True)
-        self.llm_reload_models_btn.setText("重新載入模型")
-
-        if not ok:
-            self.runtime_status_label.setText(f"LLM 模型載入失敗：{payload}")
-            return
-
-        current = (self._preferred_llm_model or self.llm_model_combo.currentText().strip()).strip()
-        remote_current_before = self.remote_llm_model_combo.currentText().strip()
-        models = payload if isinstance(payload, list) else []
-        if not models:
-            self.runtime_status_label.setText("找不到可用的 LLM 模型")
-            return
-
-        if current and current not in models:
-            models = [current, *models]
-
-        self.llm_model_combo.blockSignals(True)
-        self.remote_llm_model_combo.blockSignals(True)
-        self.llm_model_combo.clear()
-        self.remote_llm_model_combo.clear()
-        for model in models:
-            self.llm_model_combo.addItem(model)
-            self.remote_llm_model_combo.addItem(model)
-        self.llm_model_combo.blockSignals(False)
-        self.remote_llm_model_combo.blockSignals(False)
-        self._configure_combo_popup(self.llm_model_combo)
-        self._configure_combo_popup(self.remote_llm_model_combo)
-
-        if current:
-            self._set_combo_text(self.llm_model_combo, current)
-        else:
-            self._set_combo_text(self.llm_model_combo, models[0])
-        remote_current = remote_current_before or models[0]
-        if remote_current:
-            self._set_combo_text(self.remote_llm_model_combo, remote_current)
-        self._preferred_llm_model = self.llm_model_combo.currentText().strip()
+        return
 
     def _on_backend_changed(self) -> None:
         backend = str(self.llm_backend_combo.currentData() or "lm_studio")
         self._apply_backend_url(backend, self.llm_url_label)
-        self._reload_llm_models()
+        self.llm_model_label.setText(_FIXED_LLM_MODEL)
+        self.remote_llm_model_label.setText(_FIXED_LLM_MODEL)
         self._notify_settings_changed()
 
     def _on_asr_device_changed(self) -> None:

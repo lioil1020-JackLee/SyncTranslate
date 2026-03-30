@@ -108,7 +108,21 @@ class HealthCheckService:
         # app/application/healthcheck_service.py -> repo root
         return Path(__file__).resolve().parent.parent.parent
 
+    @staticmethod
+    def _hidden_subprocess_kwargs() -> dict[str, object]:
+        if sys.platform != "win32":
+            return {}
+        kwargs: dict[str, object] = {
+            "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        }
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = 0
+        kwargs["startupinfo"] = startupinfo
+        return kwargs
+
     def _run_subprocess(self, *, snapshot_path: str) -> subprocess.CompletedProcess[str]:
+        hidden_kwargs = self._hidden_subprocess_kwargs()
         if getattr(sys, "frozen", False):
             return subprocess.run(
                 [
@@ -120,6 +134,7 @@ class HealthCheckService:
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
+                **hidden_kwargs,
             )
         return subprocess.run(
             [
@@ -132,6 +147,7 @@ class HealthCheckService:
             text=True,
             encoding="utf-8",
             cwd=str(self._project_root()),
+            **hidden_kwargs,
         )
 
     def _clear_queue_locked(self) -> None:

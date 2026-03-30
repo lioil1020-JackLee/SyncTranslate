@@ -237,7 +237,12 @@ def _looks_like_displayable_zh_translation(text: str) -> bool:
         return False
     cjk = sum("\u4e00" <= ch <= "\u9fff" for ch in value)
     ascii_letters = sum(ch.isascii() and ch.isalpha() for ch in value)
-    return cjk > 0 and cjk >= max(2, ascii_letters // 2)
+    if cjk == 0:
+        return False
+    if ascii_letters == 0 and cjk <= 2:
+        # Accept short confirmations like "是。" / "不。" as valid subtitles.
+        return True
+    return cjk >= max(2, ascii_letters // 2)
 
 
 def _looks_like_format_contamination(text: str) -> bool:

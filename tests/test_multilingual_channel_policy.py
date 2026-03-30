@@ -66,8 +66,8 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
         local_provider = manager._providers["local"]
         remote_provider = manager._providers["remote"]
 
-        self.assertEqual(local_provider._client.model, "local-model")
-        self.assertEqual(remote_provider._client.model, "remote-model")
+        self.assertEqual(local_provider._client.model, "hy-mt1.5-7b")
+        self.assertEqual(remote_provider._client.model, "hy-mt1.5-7b")
 
     def test_shared_models_do_not_override_direction_specific_selection(self) -> None:
         cfg = AppConfig()
@@ -83,8 +83,8 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
 
         self.assertEqual(asr_manager._asr_profile_for_source("local").model, "local-asr-model")
         self.assertEqual(asr_manager._asr_profile_for_source("remote").model, "remote-asr-model")
-        self.assertEqual(translator_manager._providers["local"]._client.model, "local-model")
-        self.assertEqual(translator_manager._providers["remote"]._client.model, "remote-model")
+        self.assertEqual(translator_manager._providers["local"]._client.model, "hy-mt1.5-7b")
+        self.assertEqual(translator_manager._providers["remote"]._client.model, "hy-mt1.5-7b")
 
     def test_asr_auto_mode_does_not_pin_language(self) -> None:
         cfg = AppConfig()
@@ -421,6 +421,13 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
             target_lang="zh-TW",
         )
         self.assertEqual(cleaned, "")
+
+
+    def test_short_zh_translation_is_still_displayable(self) -> None:
+        from app.infra.translation.stitcher import _looks_like_displayable_zh_translation
+
+        self.assertTrue(_looks_like_displayable_zh_translation("不。"))
+        self.assertTrue(_looks_like_displayable_zh_translation("是。"))
 
 
 if __name__ == "__main__":
