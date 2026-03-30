@@ -144,15 +144,39 @@ class ASRManager:
         self._prune_retired_streams()
         payload = chunk
         if payload.ndim == 2 and payload.shape[1] > 1:
-            # Keep ASR behavior stable for virtual stereo devices: pick the
-            # strongest channel instead of summing, which can cancel signal when
-            # left/right carry different or phase-shifted content.
-            channels = payload.astype(np.float32, copy=False)
-            channel_energy = np.sqrt(np.mean(np.square(channels), axis=0, dtype=np.float32))
-            channel_index = int(np.argmax(channel_energy))
-            payload = channels[:, channel_index].astype(np.float32, copy=False)
+            payload = self._collapse_stereo_for_asr(payload)
         stream = self._stream_of(source)
         stream.submit_chunk(payload, sample_rate)
+
+    @staticmethod
+    def _collapse_stereo_for_asr(chunk: np.ndarray) -> np.ndarray:
+        channels = chunk.astype(np.float32, copy=False)
+        if channels.ndim != 2 or channels.shape[1] <= 1:
+            return channels.astype(np.float32, copy=False)
+
+        channel_energy = np.sqrt(np.mean(np.square(channels), axis=0, dtype=np.float32))
+        strongest = int(np.argmax(channel_energy))
+        strongest_energy = float(channel_energy[strongest]) if channel_energy.size else 0.0
+        weakest_energy = float(np.min(channel_energy)) if channel_energy.size else 0.0
+
+        # If one channel is effectively dominant, prefer it over averaging in noise.
+        if strongest_energy >= max(0.01, weakest_energy * 2.5):
+            return channels[:, strongest].astype(np.float32, copy=False)
+
+        # When stereo channels are broadly similar, average them so both local and
+        # remote sources produce identical mono input for ASR.
+        left = channels[:, 0].astype(np.float32, copy=False)
+        right = channels[:, 1].astype(np.float32, copy=False)
+        left_std = float(np.std(left))
+        right_std = float(np.std(right))
+        if left_std > 1e-6 and right_std > 1e-6:
+            corr = float(np.corrcoef(left, right)[0, 1])
+            if corr >= 0.3:
+                return ((left + right) * 0.5).astype(np.float32, copy=False)
+            if corr <= -0.3:
+                return channels[:, strongest].astype(np.float32, copy=False)
+
+        return channels[:, strongest].astype(np.float32, copy=False)
 
     def set_enabled(self, source: str, enabled: bool) -> None:
         key = source if source in ("local", "remote") else "local"

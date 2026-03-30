@@ -55,8 +55,8 @@ class LiveCaptionLabelTests(_QtTestCase):
         config.runtime.local_tts_voice = "th-TH-PremwadeeNeural"
 
         page.apply_config(config)
-        page.remote_output_mode_combo.setCurrentIndex(page.remote_output_mode_combo.findData("passthrough"))
-        page.local_output_mode_combo.setCurrentIndex(page.local_output_mode_combo.findData("passthrough"))
+        page.remote_tts_voice_combo.setCurrentIndex(page.remote_tts_voice_combo.findData("none"))
+        page.local_tts_voice_combo.setCurrentIndex(page.local_tts_voice_combo.findData("none"))
         page.update_translation_voice_labels(config)
 
         self.assertEqual(page.remote_translated_label.text(), "遠端輸出")
@@ -68,9 +68,10 @@ class LiveCaptionLabelTests(_QtTestCase):
         config.runtime.remote_translation_target = "zh-TW"
         config.runtime.remote_tts_voice = "zh-TW-HsiaoChenNeural"
         config.runtime.remote_translation_enabled = True
+        config.runtime.remote_tts_enabled = True
 
         page.apply_config(config)
-        page.remote_output_mode_combo.setCurrentIndex(page.remote_output_mode_combo.findData("passthrough"))
+        page.remote_tts_voice_combo.setCurrentIndex(page.remote_tts_voice_combo.findData("none"))
 
         updated = AppConfig()
         page.update_config(updated)
@@ -78,7 +79,8 @@ class LiveCaptionLabelTests(_QtTestCase):
         reloaded = LiveCaptionPage()
         reloaded.apply_config(updated)
 
-        self.assertEqual(updated.runtime.remote_translation_enabled, False)
+        self.assertEqual(updated.runtime.remote_translation_enabled, True)
+        self.assertEqual(updated.runtime.remote_tts_enabled, False)
         self.assertEqual(reloaded.selected_tts_output_mode_for_channel("remote"), "passthrough")
 
 

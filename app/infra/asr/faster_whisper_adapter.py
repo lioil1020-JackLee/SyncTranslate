@@ -8,7 +8,8 @@ from dataclasses import dataclass, field
 import numpy as np
 
 
-_TRANSCRIBE_LOCK = Lock()
+_MODEL_CACHE_LOCK = Lock()
+_MODEL_CACHE: dict[tuple[str, str, str], tuple[object, Lock]] = {}
 
 
 @dataclass(slots=True)
@@ -27,6 +28,7 @@ class FasterWhisperEngine:
     _runtime_device: str | None = field(default=None, init=False, repr=False)
     _runtime_compute_type: str | None = field(default=None, init=False, repr=False)
     _fallback_reason: str = field(default="", init=False, repr=False)
+    _transcribe_lock: Lock | None = field(default=None, init=False, repr=False)
 
     def transcribe_partial(self, audio: np.ndarray, sample_rate: int) -> str:
         return self.transcribe_partial_result(audio, sample_rate).text
@@ -113,8 +115,12 @@ class FasterWhisperEngine:
                 kwargs["language"] = normalized_language
             # Pass audio as an in-memory BinaryIO to avoid temp-file I/O while
             # still using the stable BinaryIO code path in faster_whisper.
-            # Serialize transcribe to prevent concurrent native decoder crashes.
-            with _TRANSCRIBE_LOCK:
+            # Engines with the same runtime share a model and lock so we avoid
+            # loading multiple large-v3 models onto the GPU while keeping access
+            # to that shared decoder serialized.
+            transcribe_lock = self._transcribe_lock or Lock()
+            self._transcribe_lock = transcribe_lock
+            with transcribe_lock:
                 segments, info = model.transcribe(audio_bio, **kwargs)
             detected_language = ""
             if isinstance(info, dict):
@@ -144,14 +150,15 @@ class FasterWhisperEngine:
             mono = mono[:, :1]
         mono = mono.reshape(-1).astype(np.float32, copy=False)
         if mono.size > 0:
-            # Remove DC offset and normalize low-volume input to improve ASR recall.
-            # Higher target_rms (0.12) and gain cap (8x) ensures quiet trailing
-            # words get sufficient amplitude for Whisper to recognise them.
+            # Remove DC offset and apply only mild gain compensation.
+            # Meeting audio from virtual devices often already contains codec noise
+            # and room reverb; aggressive normalization can turn that into fluent
+            # but incorrect Whisper output.
             mono = mono - float(np.mean(mono))
             rms = float(np.sqrt(np.mean(np.square(mono)))) if mono.size else 0.0
             if rms > 1e-6:
-                target_rms = 0.12
-                gain = min(8.0, target_rms / rms)
+                target_rms = 0.05
+                gain = min(3.0, target_rms / rms)
                 mono = np.clip(mono * gain, -1.0, 1.0)
         target_sample_rate = 16000
         if sample_rate <= 0 or sample_rate == target_sample_rate or mono.size <= 1:
@@ -190,11 +197,24 @@ class FasterWhisperEngine:
             ) from exc
         self._runtime_device = self._runtime_device or (self.device or "auto")
         self._runtime_compute_type = self._runtime_compute_type or self._resolve_compute_type(self._runtime_device)
-        self._model = WhisperModel(
+        cache_key = (
             self.model or "large-v3",
-            device=self._runtime_device,
-            compute_type=self._runtime_compute_type,
+            self._runtime_device,
+            self._runtime_compute_type,
         )
+        with _MODEL_CACHE_LOCK:
+            cached = _MODEL_CACHE.get(cache_key)
+            if cached is None:
+                cached = (
+                    WhisperModel(
+                        cache_key[0],
+                        device=cache_key[1],
+                        compute_type=cache_key[2],
+                    ),
+                    Lock(),
+                )
+                _MODEL_CACHE[cache_key] = cached
+        self._model, self._transcribe_lock = cached
         return self._model
 
     def _resolve_compute_type(self, runtime_device: str) -> str:
@@ -215,6 +235,11 @@ class FasterWhisperEngine:
         self._model = None
         self._runtime_device = "cpu"
         self._runtime_compute_type = "int8"
+
+
+def _clear_model_cache_for_tests() -> None:
+    with _MODEL_CACHE_LOCK:
+        _MODEL_CACHE.clear()
 
 
 def _normalize_lang(language: str) -> str:

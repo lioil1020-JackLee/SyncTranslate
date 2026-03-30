@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.infra.config.schema import AppConfig, translation_enabled_for_source
+from app.infra.config.schema import AppConfig
 from app.infra.tts.voice_policy import default_voice_for_language
 
 _STATUS_TEXT = {
@@ -44,6 +44,7 @@ _LANG_LABELS: dict[str, str] = {
 }
 
 _ASR_CHOICES: list[tuple[str, str]] = [
+    ("none", "無"),
     ("zh-TW", "中文"),
     ("en", "英文"),
     ("ja", "日文"),
@@ -52,6 +53,7 @@ _ASR_CHOICES: list[tuple[str, str]] = [
 ]
 
 _TRANSLATION_TARGET_CHOICES: list[tuple[str, str]] = [
+    ("none", "無"),
     ("zh-TW", "中文"),
     ("en", "英文"),
     ("ja", "日文"),
@@ -134,6 +136,8 @@ class LiveCaptionPage(QWidget):
         for code, label in _ASR_CHOICES:
             self.remote_asr_combo.addItem(label, code)
             self.local_asr_combo.addItem(label, code)
+        self.remote_asr_combo.setCurrentIndex(self.remote_asr_combo.findData(_CHANNEL_DEFAULTS["remote"]["asr_default"]))
+        self.local_asr_combo.setCurrentIndex(self.local_asr_combo.findData(_CHANNEL_DEFAULTS["local"]["asr_default"]))
         self._configure_combo_popup(self.remote_asr_combo)
         self._configure_combo_popup(self.local_asr_combo)
 
@@ -152,6 +156,8 @@ class LiveCaptionPage(QWidget):
             self.local_output_mode_combo.addItem(label, code)
         self._configure_combo_popup(self.remote_output_mode_combo)
         self._configure_combo_popup(self.local_output_mode_combo)
+        self.remote_output_mode_combo.hide()
+        self.local_output_mode_combo.hide()
 
         self.remote_tts_voice_combo = QComboBox()
         self.local_tts_voice_combo = QComboBox()
@@ -281,8 +287,6 @@ class LiveCaptionPage(QWidget):
                 self.remote_translated_status,
                 self.export_remote_translated_btn,
                 controls=[
-                    QLabel("模式"),
-                    self.remote_output_mode_combo,
                     QLabel("翻譯目標"),
                     self.remote_lang_combo,
                     QLabel("TTS語音"),
@@ -310,8 +314,6 @@ class LiveCaptionPage(QWidget):
                 self.local_translated_status,
                 self.export_local_translated_btn,
                 controls=[
-                    QLabel("模式"),
-                    self.local_output_mode_combo,
                     QLabel("翻譯目標"),
                     self.local_lang_combo,
                     QLabel("TTS語音"),
@@ -343,7 +345,7 @@ class LiveCaptionPage(QWidget):
 
     def _normalize_asr_language(self, value: str, default: str) -> str:
         normalized = (value or "").strip()
-        if normalized in {"zh-TW", "en", "ja", "ko", "th"}:
+        if normalized in {"none", "zh-TW", "en", "ja", "ko", "th"}:
             return normalized
         if normalized.lower() == "auto":
             return default
@@ -355,11 +357,6 @@ class LiveCaptionPage(QWidget):
             for channel in _CHANNELS:
                 target_value = self._config_translation_target(config, channel)
                 voice_value = self._config_tts_voice(config, channel)
-                translate_enabled = (
-                    False
-                    if (target_value == "none" and voice_value == "none")
-                    else translation_enabled_for_source(config.runtime, channel)
-                )
                 self._set_target_combo(
                     self._channel_combo(channel, "asr"),
                     self._normalize_asr_language(
@@ -370,17 +367,11 @@ class LiveCaptionPage(QWidget):
                 self._set_target_combo(self._channel_combo(channel, "target"), target_value)
             self._on_translation_target_changed()
             for channel in _CHANNELS:
-                target_value = self._config_translation_target(config, channel)
                 voice_value = self._config_tts_voice(config, channel)
-                translate_enabled = (
-                    False
-                    if (target_value == "none" and voice_value == "none")
-                    else translation_enabled_for_source(config.runtime, channel)
-                )
                 self._select_combo_data(self._channel_combo(channel, "voice"), voice_value)
                 self._select_combo_data(
                     self._channel_combo(channel, "mode"),
-                    "tts" if translate_enabled else "passthrough",
+                    "tts" if self._config_tts_enabled(config, channel) else "passthrough",
                 )
                 self._ensure_translation_defaults(channel)
             unified_gain = float(
@@ -401,10 +392,13 @@ class LiveCaptionPage(QWidget):
         enabled_channels: list[str] = []
         for channel in _CHANNELS:
             mode = self.selected_tts_output_mode_for_channel(channel)
+            asr_enabled = self._selected_asr_language(channel) != "none"
+            raw_target = self._selected_translation_target(channel)
+            translation_enabled = asr_enabled and raw_target != "none"
             target = self._resolved_translation_target(channel)
-            self._set_runtime_translation_target(config, channel, target)
-            self._set_runtime_translation_enabled(config, channel, mode == "tts")
-            if mode == "tts":
+            self._set_runtime_translation_target(config, channel, raw_target)
+            self._set_runtime_translation_enabled(config, channel, translation_enabled)
+            if translation_enabled:
                 enabled_channels.append(channel)
                 self._set_language_target(config, channel, target)
             self._set_runtime_asr_language(
@@ -415,20 +409,22 @@ class LiveCaptionPage(QWidget):
                     default=_CHANNEL_DEFAULTS[channel]["asr_default"],
                 ),
             )
-            self._set_runtime_tts_voice(config, channel, self._resolved_tts_voice(channel))
-            self._set_runtime_tts_enabled(config, channel, mode == "tts")
+            self._set_runtime_tts_voice(
+                config,
+                channel,
+                self._selected_tts_voice(channel),
+            )
+            self._set_runtime_tts_enabled(config, channel, asr_enabled and translation_enabled and mode == "tts")
 
         config.runtime.translation_enabled = bool(enabled_channels)
         gain = self.selected_output_gain()
         config.runtime.passthrough_gain = gain
         config.runtime.tts_gain = gain
         modes = {channel: self.selected_tts_output_mode_for_channel(channel) for channel in _CHANNELS}
-        if all(mode == "passthrough" for mode in modes.values()):
-            config.runtime.tts_output_mode = "passthrough"
-        elif any(mode == "tts" for mode in modes.values()):
+        if any(mode == "tts" for mode in modes.values()):
             config.runtime.tts_output_mode = "tts"
         else:
-            config.runtime.tts_output_mode = "subtitle_only"
+            config.runtime.tts_output_mode = "passthrough"
 
     def selected_mode(self) -> str:
         return "bidirectional"
@@ -446,21 +442,26 @@ class LiveCaptionPage(QWidget):
         return self._get_target_language(self._channel_combo("remote", "asr"), default="auto")
 
     def selected_tts_output_mode_for_channel(self, channel: str) -> str:
-        selected = self._get_target_language(self._channel_combo(channel, "mode"), default="passthrough")
-        return "tts" if selected == "tts" else "passthrough"
+        if self._selected_asr_language(channel) == "none":
+            return "subtitle_only"
+        if self._selected_translation_target(channel) == "none":
+            return "passthrough"
+        selected_voice = self._selected_tts_voice(channel)
+        return "tts" if selected_voice != "none" else "passthrough"
 
     def selected_tts_output_mode(self) -> str:
         modes = [self.selected_tts_output_mode_for_channel(channel) for channel in _CHANNELS]
         if any(mode == "tts" for mode in modes):
             return "tts"
-        if all(mode == "passthrough" for mode in modes):
-            return "passthrough"
-        return "subtitle_only"
+        return "passthrough"
 
     def translation_enabled(self, source: str | None = None) -> bool:
         if source in _CHANNELS:
-            return self.selected_tts_output_mode_for_channel(source) == "tts"
-        return any(self.selected_tts_output_mode_for_channel(channel) == "tts" for channel in _CHANNELS)
+            return self._selected_asr_language(source) != "none" and self._selected_translation_target(source) != "none"
+        return any(
+            self._selected_asr_language(channel) != "none" and self._selected_translation_target(channel) != "none"
+            for channel in _CHANNELS
+        )
 
     def set_start_enabled(self, enabled: bool) -> None:
         self.start_btn.setEnabled(enabled)
@@ -683,38 +684,47 @@ class LiveCaptionPage(QWidget):
             combo.setCurrentIndex(idx)
 
     def _resolved_translation_target(self, channel: str) -> str:
-        selected = self._get_target_language(self._channel_combo(channel, "target"), default="none")
+        selected = self._selected_translation_target(channel)
         if selected != "none":
             return selected
         return _CHANNEL_DEFAULTS[channel]["target_default"]
 
     def _resolved_tts_voice(self, channel: str) -> str:
-        selected = self._get_target_language(self._channel_combo(channel, "voice"), default="none")
-        if selected != "none":
+        selected = self._selected_tts_voice(channel)
+        if selected:
             return selected
         return default_voice_for_language(self._resolved_translation_target(channel)) or "none"
 
+    def _selected_translation_target(self, channel: str) -> str:
+        return self._get_target_language(self._channel_combo(channel, "target"), default="none")
+
+    def _selected_asr_language(self, channel: str) -> str:
+        return self._get_target_language(self._channel_combo(channel, "asr"), default="none")
+
+    def _selected_tts_voice(self, channel: str) -> str:
+        return self._get_target_language(self._channel_combo(channel, "voice"), default="none")
+
     def _ensure_translation_defaults(self, channel: str) -> None:
-        if self.selected_tts_output_mode_for_channel(channel) != "tts":
+        if self._selected_asr_language(channel) == "none" or self._selected_translation_target(channel) == "none":
             return
         target_combo = self._channel_combo(channel, "target")
         voice_combo = self._channel_combo(channel, "voice")
         target = self._get_target_language(target_combo, default="none")
         if target == "none":
-            target = self._resolved_translation_target(channel)
-            self._set_target_combo(target_combo, target)
             self._populate_tts_voice_combo(voice_combo, target)
-        if self._get_target_language(voice_combo, default="none") == "none":
+            return
+        if self._selected_tts_voice(channel) == "none":
             self._select_combo_data(voice_combo, self._resolved_tts_voice(channel))
 
     def _update_source_language_controls(self) -> None:
         enabled = self._direction_controls_enabled
         for channel in _CHANNELS:
-            translate_enabled = enabled and self.selected_tts_output_mode_for_channel(channel) == "tts"
+            asr_enabled = enabled and self._selected_asr_language(channel) != "none"
+            translation_enabled = asr_enabled and self._selected_translation_target(channel) != "none"
             self._channel_combo(channel, "asr").setEnabled(enabled)
-            self._channel_combo(channel, "mode").setEnabled(enabled)
-            self._channel_combo(channel, "target").setEnabled(translate_enabled)
-            self._channel_combo(channel, "voice").setEnabled(translate_enabled)
+            self._channel_combo(channel, "mode").setEnabled(False)
+            self._channel_combo(channel, "target").setEnabled(asr_enabled)
+            self._channel_combo(channel, "voice").setEnabled(translation_enabled)
             self._channel_combo(channel, "asr").setToolTip("ASR辨識語言，可選 auto 或指定語言")
             self._channel_combo(channel, "target").setToolTip("翻譯模式下使用的目標語言")
             self._channel_combo(channel, "voice").setToolTip("翻譯模式下使用的 TTS 聲線")
@@ -818,6 +828,11 @@ class LiveCaptionPage(QWidget):
     def _config_tts_voice(config: AppConfig, channel: str) -> str:
         attr = "remote_tts_voice" if channel == "remote" else "local_tts_voice"
         return str(getattr(config.runtime, attr, "none") or "none")
+
+    @staticmethod
+    def _config_tts_enabled(config: AppConfig, channel: str) -> bool:
+        attr = "remote_tts_enabled" if channel == "remote" else "local_tts_enabled"
+        return bool(getattr(config.runtime, attr, False))
 
     @staticmethod
     def _set_runtime_translation_target(config: AppConfig, channel: str, value: str) -> None:

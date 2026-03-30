@@ -96,7 +96,8 @@ class AudioRouter:
         self._routes = routes
         self._sample_rate = int(sample_rate)
         self._chunk_ms = int(chunk_ms)
-        self._active_sources = self._asr_sources_for_mode("bidirectional")
+        desired = self._desired_source_state()
+        self._active_sources = {source for source, state in desired.items() if state["capture"] or state["asr"]}
 
         if not self._active_sources and not self._has_passthrough_enabled():
             raise ValueError("No active sources configured")
@@ -181,12 +182,13 @@ class AudioRouter:
         sample_rate: float,
     ) -> None:
         self._state.tick()
+        # Submit audio to ASR before any optional passthrough/output work so the
+        # recognition path is not delayed by playback-device overhead.
+        if self._state.can_accept_asr(source):
+            self._asr_manager.submit(source, chunk, sample_rate)
         # Keep local/remote passthrough handling fully symmetric: the source-specific
         # difference is only which output channel receives the live audio.
         self._tts_manager.submit_passthrough(passthrough_channel, chunk, sample_rate)
-        if not self._state.can_accept_asr(source):
-            return
-        self._asr_manager.submit(source, chunk, sample_rate)
 
     def _on_asr_event(self, event: ASREventWithSource) -> None:
         try:
@@ -388,24 +390,25 @@ class AudioRouter:
                 self._capture_running[source] = False
 
     def _desired_source_state(self) -> dict[str, dict[str, bool]]:
-        asr_sources = self._asr_sources_for_mode(self._mode)
-        # local input drives remote output passthrough; remote input drives local output passthrough.
-        local_passthrough_needed = self._tts_manager.is_passthrough_enabled("remote")
-        remote_passthrough_needed = self._tts_manager.is_passthrough_enabled("local")
         return {
             "local": {
-                "asr": "local" in asr_sources,
-                "capture": ("local" in asr_sources) or local_passthrough_needed,
+                "asr": self._asr_needed_for_source("local"),
+                "capture": self._asr_needed_for_source("local") or self._tts_manager.is_passthrough_enabled("remote"),
             },
             "remote": {
-                "asr": "remote" in asr_sources,
-                "capture": ("remote" in asr_sources) or remote_passthrough_needed,
+                "asr": self._asr_needed_for_source("remote"),
+                "capture": self._asr_needed_for_source("remote") or self._tts_manager.is_passthrough_enabled("local"),
             },
         }
 
-    @staticmethod
-    def _asr_sources_for_mode(mode: str) -> set[str]:
-        return {"local", "remote"}
+    def _asr_needed_for_source(self, source: str) -> bool:
+        runtime = getattr(getattr(self._asr_manager, "_config", None), "runtime", None)
+        if runtime is None:
+            runtime = getattr(getattr(self._translator_manager, "_config", None), "runtime", None)
+        if runtime is None:
+            return True
+        attr = "remote_asr_language" if source == "remote" else "local_asr_language"
+        return str(getattr(runtime, attr, "auto") or "auto").strip().lower() != "none"
 
     def _has_passthrough_enabled(self) -> bool:
         return self._tts_manager.is_passthrough_enabled("local") or self._tts_manager.is_passthrough_enabled("remote")

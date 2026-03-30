@@ -36,7 +36,6 @@ _OFFICIAL_FASTER_WHISPER_MODELS = [
     "large-v3",
     "large-v3-turbo",
     "large-v2",
-    "large-v1",
     "medium",
     "small",
     "base",
@@ -517,20 +516,22 @@ class LocalAiPage(QWidget):
             self._set_combo_text(self.remote_asr_model_combo, "large-v3")
             self.asr_beam_spin.setValue(3)
             self.remote_asr_beam_spin.setValue(3)
-            self.asr_partial_interval_spin.setValue(320)
-            self.remote_asr_partial_interval_spin.setValue(320)
-            self.asr_partial_history_spin.setValue(3)
-            self.remote_asr_partial_history_spin.setValue(3)
+            self.asr_partial_interval_spin.setValue(800)
+            self.remote_asr_partial_interval_spin.setValue(800)
+            self.asr_partial_history_spin.setValue(2)
+            self.remote_asr_partial_history_spin.setValue(2)
             self.asr_final_history_spin.setValue(6)
             self.remote_asr_final_history_spin.setValue(6)
             self.asr_min_speech_spin.setValue(150)
             self.remote_asr_min_speech_spin.setValue(150)
-            self.asr_min_silence_spin.setValue(240)
-            self.remote_asr_min_silence_spin.setValue(240)
-            self.asr_speech_pad_spin.setValue(170)
-            self.remote_asr_speech_pad_spin.setValue(170)
+            self.asr_min_silence_spin.setValue(520)
+            self.remote_asr_min_silence_spin.setValue(520)
+            self.asr_speech_pad_spin.setValue(320)
+            self.remote_asr_speech_pad_spin.setValue(320)
             self.asr_max_speech_spin.setValue(16)
             self.remote_asr_max_speech_spin.setValue(16)
+            self.asr_condition_prev_check.setChecked(False)
+            self.remote_asr_condition_prev_check.setChecked(False)
             self.asr_rms_threshold_spin.setValue(0.02)
             self.remote_asr_rms_threshold_spin.setValue(0.02)
             self.asr_no_speech_threshold_spin.setValue(0.55)
@@ -574,8 +575,8 @@ class LocalAiPage(QWidget):
             self.runtime_asr_pre_roll_spin.setValue(220)
             self.runtime_stable_partial_min_repeats_spin.setValue(2)
             self.runtime_partial_stability_delta_spin.setValue(8)
-            self.runtime_asr_partial_min_audio_spin.setValue(280)
-            self.runtime_asr_partial_floor_spin.setValue(280)
+            self.runtime_asr_partial_min_audio_spin.setValue(520)
+            self.runtime_asr_partial_floor_spin.setValue(520)
             self.runtime_llm_partial_floor_spin.setValue(280)
             self.runtime_early_final_check.setChecked(True)
             self.runtime_tts_accept_stable_partial_check.setChecked(True)

@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import unittest
 import numpy as np
+import sys
+from types import ModuleType
 
 from app.infra.asr.streaming_pipeline import ASRManager
 from app.infra.config.schema import AppConfig
 from app.infra.asr.stream_worker import StreamingAsr, _looks_like_silence_hallucination
+from app.infra.asr.faster_whisper_adapter import FasterWhisperEngine, _clear_model_cache_for_tests
 from app.infra.translation.engine import TranslatorManager
 from app.infra.translation.lm_studio_adapter import LmStudioClient
 from app.infra.tts.playback_queue import TTSManager
@@ -30,6 +33,10 @@ class _DummyPlayback:
 
 
 class MultiLingualChannelPolicyTests(unittest.TestCase):
+    def tearDown(self) -> None:
+        _clear_model_cache_for_tests()
+        super().tearDown()
+
     def test_asr_profile_and_queue_always_follow_source_channel(self) -> None:
         cfg = AppConfig()
         # Swap away from previous zh/en assumptions.
@@ -188,6 +195,72 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
         self.assertIsNotNone(stream.last_chunk)
         self.assertEqual(stream.last_chunk.shape, (4,))
         self.assertAlmostEqual(float(stream.last_chunk[0]), 0.4, places=5)
+
+    def test_asr_submit_averages_similar_stereo_channels_for_stable_mono(self) -> None:
+        cfg = AppConfig()
+        manager = ASRManager(cfg)
+
+        class _Stream:
+            def __init__(self) -> None:
+                self.chunks: list[np.ndarray] = []
+
+            def submit_chunk(self, chunk, sample_rate):
+                self.chunks.append(chunk)
+
+            def stop(self) -> None:
+                pass
+
+        stream = _Stream()
+        manager._enabled["remote"] = True
+        manager._stream_of = lambda source: stream  # type: ignore[method-assign]
+
+        stereo = np.array(
+            [
+                [0.30, 0.20],
+                [0.26, 0.16],
+                [0.22, 0.12],
+                [0.18, 0.08],
+            ],
+            dtype=np.float32,
+        )
+
+        manager.submit("remote", stereo, 48000.0)
+
+        self.assertEqual(len(stream.chunks), 1)
+        self.assertAlmostEqual(float(stream.chunks[0][0]), 0.25, places=5)
+
+    def test_faster_whisper_engines_with_same_runtime_share_model_and_lock(self) -> None:
+        class _FakeWhisperModel:
+            init_count = 0
+
+            def __init__(self, model: str, device: str, compute_type: str) -> None:
+                type(self).init_count += 1
+                self.model = model
+                self.device = device
+                self.compute_type = compute_type
+
+            def transcribe(self, *_args, **_kwargs):
+                return [], {"language": "en"}
+
+        fake_module = ModuleType("faster_whisper")
+        fake_module.WhisperModel = _FakeWhisperModel  # type: ignore[attr-defined]
+        original = sys.modules.get("faster_whisper")
+        sys.modules["faster_whisper"] = fake_module
+        try:
+            first = FasterWhisperEngine(model="large-v3", device="cuda", compute_type="float16")
+            second = FasterWhisperEngine(model="large-v3", device="cuda", compute_type="float16")
+
+            model_a = first._get_model()
+            model_b = second._get_model()
+
+            self.assertIs(model_a, model_b)
+            self.assertIs(first._transcribe_lock, second._transcribe_lock)
+            self.assertEqual(_FakeWhisperModel.init_count, 1)
+        finally:
+            if original is None:
+                sys.modules.pop("faster_whisper", None)
+            else:
+                sys.modules["faster_whisper"] = original
 
     def test_asr_submit_avoids_phase_cancellation_from_stereo_sum(self) -> None:
         cfg = AppConfig()

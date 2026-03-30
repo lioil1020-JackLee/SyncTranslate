@@ -31,7 +31,8 @@ class LiveCaptionPageUiTests(_QtTestCase):
         config.runtime.remote_translation_target = "none"
         config.runtime.local_translation_target = "ko"
         config.runtime.remote_tts_voice = "none"
-        config.runtime.local_tts_voice = "none"
+        config.runtime.local_tts_voice = "ko-KR-SunHiNeural"
+        config.runtime.local_tts_enabled = True
         config.language.meeting_target = "ja"
         config.language.local_target = "ko"
 
@@ -41,7 +42,7 @@ class LiveCaptionPageUiTests(_QtTestCase):
         self.assertTrue(page.translation_enabled("local"))
         self.assertEqual(page.selected_asr_language_mode(), "zh-TW")
         self.assertEqual(page.selected_tts_output_mode(), "tts")
-        self.assertFalse(page.remote_lang_combo.isEnabled())
+        self.assertTrue(page.remote_lang_combo.isEnabled())
         self.assertTrue(page.local_lang_combo.isEnabled())
         self.assertIn("翻譯模式下使用的目標語言", page.remote_lang_combo.toolTip())
         self.assertEqual(page.remote_translated_label.text(), "遠端輸出")
@@ -85,7 +86,49 @@ class LiveCaptionPageUiTests(_QtTestCase):
 
         self.assertGreater(page.remote_tts_voice_combo.count(), 1)
         self.assertEqual(page.remote_tts_voice_combo.itemData(0), "none")
-        self.assertNotEqual(page.remote_tts_voice_combo.itemData(0), page.remote_tts_voice_combo.itemData(1))
+
+    def test_passthrough_mode_does_not_disable_translation(self) -> None:
+        page = LiveCaptionPage()
+        page.remote_lang_combo.setCurrentIndex(page.remote_lang_combo.findData("zh-TW"))
+        page.remote_tts_voice_combo.setCurrentIndex(page.remote_tts_voice_combo.findData("none"))
+
+        self.assertEqual(page.selected_tts_output_mode_for_channel("remote"), "passthrough")
+        self.assertTrue(page.translation_enabled("remote"))
+
+    def test_asr_none_disables_translation_chain_for_channel(self) -> None:
+        page = LiveCaptionPage()
+        page.local_asr_combo.setCurrentIndex(page.local_asr_combo.findData("none"))
+        page.local_lang_combo.setCurrentIndex(page.local_lang_combo.findData("en"))
+
+        self.assertFalse(page.translation_enabled("local"))
+        self.assertEqual(page.selected_tts_output_mode_for_channel("local"), "subtitle_only")
+        self.assertFalse(page.local_lang_combo.isEnabled())
+        self.assertFalse(page.local_tts_voice_combo.isEnabled())
+
+    def test_update_config_preserves_translation_when_passthrough_is_selected(self) -> None:
+        page = LiveCaptionPage()
+        page.remote_lang_combo.setCurrentIndex(page.remote_lang_combo.findData("zh-TW"))
+        page.remote_tts_voice_combo.setCurrentIndex(page.remote_tts_voice_combo.findData("none"))
+
+        updated = AppConfig()
+        page.update_config(updated)
+
+        self.assertTrue(updated.runtime.remote_translation_enabled)
+        self.assertFalse(updated.runtime.remote_tts_enabled)
+        self.assertEqual(updated.runtime.remote_translation_target, "zh-TW")
+        self.assertEqual(updated.runtime.tts_output_mode, "passthrough")
+
+    def test_update_config_with_asr_none_disables_channel_pipeline(self) -> None:
+        page = LiveCaptionPage()
+        page.local_asr_combo.setCurrentIndex(page.local_asr_combo.findData("none"))
+        page.local_lang_combo.setCurrentIndex(page.local_lang_combo.findData("en"))
+
+        updated = AppConfig()
+        page.update_config(updated)
+
+        self.assertEqual(updated.runtime.local_asr_language, "none")
+        self.assertFalse(updated.runtime.local_translation_enabled)
+        self.assertFalse(updated.runtime.local_tts_enabled)
 
     def test_output_gain_slider_round_trips_with_config(self) -> None:
         page = LiveCaptionPage()
@@ -118,13 +161,13 @@ class LiveCaptionPageUiTests(_QtTestCase):
 
     def test_direction_controls_can_stay_enabled_while_session_running(self) -> None:
         page = LiveCaptionPage()
-        page.remote_output_mode_combo.setCurrentIndex(page.remote_output_mode_combo.findData("tts"))
-        page.local_output_mode_combo.setCurrentIndex(page.local_output_mode_combo.findData("tts"))
+        page.remote_lang_combo.setCurrentIndex(page.remote_lang_combo.findData("zh-TW"))
+        page.local_lang_combo.setCurrentIndex(page.local_lang_combo.findData("en"))
 
         page.set_direction_controls_enabled(True)
 
         self.assertTrue(page.remote_asr_combo.isEnabled())
-        self.assertTrue(page.remote_output_mode_combo.isEnabled())
+        self.assertFalse(page.remote_output_mode_combo.isVisible())
         self.assertTrue(page.local_tts_voice_combo.isEnabled())
 
     def test_four_panels_have_same_size(self) -> None:
@@ -148,15 +191,17 @@ class LiveCaptionPageUiTests(_QtTestCase):
 
         remote_zh_index = window.live_caption_page.remote_lang_combo.findData("zh-TW")
         local_en_index = window.live_caption_page.local_lang_combo.findData("en")
+        local_asr_en_index = window.live_caption_page.local_asr_combo.findData("en")
 
         window.live_caption_page.remote_lang_combo.setCurrentIndex(remote_zh_index)
+        window.live_caption_page.local_asr_combo.setCurrentIndex(local_asr_en_index)
         window.live_caption_page.local_lang_combo.setCurrentIndex(local_en_index)
         window.live_caption_page._on_translation_target_changed()
-        window.live_caption_page.remote_output_mode_combo.setCurrentIndex(
-            window.live_caption_page.remote_output_mode_combo.findData("tts")
+        window.live_caption_page.remote_tts_voice_combo.setCurrentIndex(
+            window.live_caption_page.remote_tts_voice_combo.findData("zh-TW-HsiaoChenNeural")
         )
-        window.live_caption_page.local_output_mode_combo.setCurrentIndex(
-            window.live_caption_page.local_output_mode_combo.findData("passthrough")
+        window.live_caption_page.local_tts_voice_combo.setCurrentIndex(
+            window.live_caption_page.local_tts_voice_combo.findData("none")
         )
 
         window._apply_output_switches_to_router()
@@ -199,16 +244,19 @@ class LiveCaptionPageUiTests(_QtTestCase):
                 return True
 
         window.session_controller = _RunningSession()  # type: ignore[assignment]
-        window.live_caption_page.remote_output_mode_combo.setCurrentIndex(
-            window.live_caption_page.remote_output_mode_combo.findData("tts")
+        window.live_caption_page.remote_lang_combo.setCurrentIndex(
+            window.live_caption_page.remote_lang_combo.findData("zh-TW")
         )
-        window.live_caption_page.local_output_mode_combo.setCurrentIndex(
-            window.live_caption_page.local_output_mode_combo.findData("tts")
+        window.live_caption_page.local_asr_combo.setCurrentIndex(
+            window.live_caption_page.local_asr_combo.findData("en")
+        )
+        window.live_caption_page.local_lang_combo.setCurrentIndex(
+            window.live_caption_page.local_lang_combo.findData("en")
         )
         window.validate_current_routes()
 
         self.assertTrue(window.live_caption_page.remote_asr_combo.isEnabled())
-        self.assertTrue(window.live_caption_page.remote_output_mode_combo.isEnabled())
+        self.assertFalse(window.live_caption_page.remote_output_mode_combo.isVisible())
         self.assertTrue(window.live_caption_page.local_tts_voice_combo.isEnabled())
 
     def test_main_window_hot_applies_live_caption_settings_while_session_running(self) -> None:
@@ -234,9 +282,6 @@ class LiveCaptionPageUiTests(_QtTestCase):
         window.audio_router = router  # type: ignore[assignment]
         window.validate_current_routes()
 
-        window.live_caption_page.remote_output_mode_combo.setCurrentIndex(
-            window.live_caption_page.remote_output_mode_combo.findData("tts")
-        )
         window.live_caption_page.remote_lang_combo.setCurrentIndex(
             window.live_caption_page.remote_lang_combo.findData("en")
         )
@@ -274,8 +319,15 @@ class LocalAiPageUiTests(_QtTestCase):
         self.assertEqual(page.asr_model_combo.currentText(), "large-v3")
         self.assertEqual(page.remote_asr_model_combo.currentText(), "large-v3")
         self.assertEqual(page.asr_beam_spin.value(), 3)
+        self.assertFalse(page.asr_condition_prev_check.isChecked())
+        self.assertFalse(page.remote_asr_condition_prev_check.isChecked())
+        self.assertEqual(page.asr_partial_interval_spin.value(), 800)
+        self.assertEqual(page.remote_asr_partial_interval_spin.value(), 800)
+        self.assertAlmostEqual(page.asr_rms_threshold_spin.value(), 0.02, places=3)
+        self.assertAlmostEqual(page.remote_asr_rms_threshold_spin.value(), 0.02, places=3)
         self.assertEqual(page.runtime_sample_rate_spin.currentData(), 48000)
         self.assertEqual(page.runtime_chunk_spin.value(), 40)
+        self.assertEqual(page.runtime_asr_partial_min_audio_spin.value(), 520)
         self.assertEqual(page.runtime_tts_max_wait_spin.value(), 2200)
         self.assertEqual(page.runtime_tts_cancel_policy_combo.currentData(), "older_only")
 

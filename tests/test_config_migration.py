@@ -22,6 +22,13 @@ class ConfigMigrationTests(unittest.TestCase):
         cfg = AppConfig()
         self.assertEqual(cfg.runtime.asr_language_mode, "auto")
 
+    def test_default_remote_asr_profile_matches_local_asr_defaults(self) -> None:
+        cfg = AppConfig()
+        self.assertTrue(cfg.asr_channels.remote.condition_on_previous_text)
+        self.assertAlmostEqual(cfg.asr_channels.remote.vad.rms_threshold, 0.02, places=3)
+        self.assertTrue(cfg.asr_channels.local.condition_on_previous_text)
+        self.assertAlmostEqual(cfg.asr_channels.local.vad.rms_threshold, 0.02, places=3)
+
     def test_is_legacy_when_missing_required_sections(self) -> None:
         self.assertTrue(is_legacy_config({"audio": {}}))
 

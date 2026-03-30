@@ -263,6 +263,21 @@ class TTSManager:
             gain = max(0.1, float(getattr(self._config.runtime, "passthrough_gain", 1.6) or 1.6))
             if gain != 1.0:
                 passthrough_audio = np.clip(passthrough_audio * gain, -1.0, 1.0).astype(np.float32, copy=False)
+            worker = self._passthrough_workers.get(key)
+            if worker and worker.is_alive():
+                with self._queue_changed:
+                    self._passthrough_pending[key].append(
+                        _PassthroughTask(
+                            audio=passthrough_audio.copy(),
+                            sample_rate=float(sample_rate),
+                            created_at=now,
+                        )
+                    )
+                    while len(self._passthrough_pending[key]) > self._passthrough_queue_limit:
+                        self._passthrough_pending[key].popleft()
+                        self._passthrough_drop_count[key] += 1
+                    self._queue_changed.notify_all()
+                return
             self._playbacks[key].push_passthrough(
                 audio=passthrough_audio,
                 sample_rate=float(sample_rate),
@@ -384,9 +399,9 @@ class TTSManager:
             if self._output_mode.get(channel) != "passthrough":
                 continue
             try:
-                self._playbacks[channel].play(
+                self._playbacks[channel].push_passthrough(
                     audio=task.audio,
-                    sample_rate=int(round(task.sample_rate)),
+                    sample_rate=float(task.sample_rate),
                     output_device_name=self._output_getters[channel](),
                 )
             except Exception as exc:
