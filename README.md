@@ -21,7 +21,7 @@ SyncTranslate 是一個在 Windows 上運作的雙向即時翻譯桌面工具，
   - `ASR語言 = 無` 代表關閉該方向辨識
   - `翻譯目標 = 無` 代表只顯示原文，不送翻譯
   - `TTS語音 = 無` 代表只顯示文字，不播放譯文語音
-  - `輸出音量` 是共用主音量，會同時影響原音直通與 TTS
+  - 音量控制已移到 `設定 > 音訊裝置`，四個 slider 直接控制真實裝置音量
 - `設定`
   - 音訊裝置
   - 本地模型設定
@@ -35,7 +35,7 @@ SyncTranslate 是一個在 Windows 上運作的雙向即時翻譯桌面工具，
 - `TTS = 無` 時仍可保留字幕與翻譯文字，不會再被自動補回預設聲線。
 - passthrough 已改為非同步播放佇列，避免卡住 ASR callback。
 - ASR 預設調整為穩定優先，降低 partial 與 final hallucination。
-- `輸出音量` slider 已改成固定樣式，圓形 handle 會對齊 `0.1x` 刻度。
+- `設定 > 音訊裝置` 的四個音量 slider 以百分比 `0% ~ 100%` 顯示真實裝置音量。
 
 ## 核心概念
 
@@ -59,7 +59,7 @@ SyncTranslate 是一個在 Windows 上運作的雙向即時翻譯桌面工具，
 - 執行取樣率：`48000`
 - chunk：`40ms`
 - pre-roll：`220ms`
-- 預設輸出增益：`1.4x`
+- 內部播放增益：固定 `100%`
 - 字幕 profile：`live_caption_fast`
 - 語音 profile：`speech_output_natural`
 
@@ -94,3 +94,16 @@ uv run python -m pytest -q
 - [測試說明](./docs/測試說明.md)
 - [更新紀錄](./docs/更新紀錄.md)
 - [音訊裝置建議配置](./docs/音訊裝置建議配置.md)
+## 2026-03-30 音量控制更新
+
+- `即時字幕` 頁面的共用 `輸出音量` 已移除。
+- `設定 > 音訊裝置` 現在提供四個獨立的真實裝置音量控制：`遠端輸入`、`遠端輸出`、`本地輸入`、`本地輸出`。
+- 這四個 slider 直接控制 Windows endpoint volume，包含一般硬體裝置與 VoiceMeeter 虛擬裝置。
+- slider 顯示為百分比 `0% ~ 100%`，不是 SyncTranslate 內部倍數增益。
+- SyncTranslate 內部的 capture / playback gain 現在固定為 `100%`，不再模擬裝置音量。
+## 2026-03-30 TTS Queue Update
+
+- TTS queue now separates synthesis and playback, so the next sentence can be synthesized while the current sentence is still playing.
+- TTS now speaks the final LLM translation text directly and no longer generates a separate speech-profile rewrite.
+- Default behavior no longer speaks stable partial text; ASR, LLM, and TTS stay on a simple final-result pipeline.
+- `僅 partial 使用上下文` 開啟時，只有 partial 翻譯會參考前文；final 翻譯仍只看當句，避免同一句 ASR 出現不同譯文。

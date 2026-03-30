@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QApplication
 
 from app.infra.config.schema import AppConfig
 from app.ui.main_window import MainWindow
+from app.ui.pages.audio_routing_page import AudioRoutingPage
 from app.ui.pages.live_caption_page import LiveCaptionPage
 from app.ui.pages.local_ai_page import LocalAiPage
 
@@ -20,6 +21,23 @@ class _QtTestCase(unittest.TestCase):
     def setUpClass(cls) -> None:
         super().setUpClass()
         cls._app = QApplication.instance() or QApplication([])
+
+
+class _DummyDeviceVolumeController:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, float]] = []
+
+    def set_input_volume(self, selector: str, scalar: float) -> None:
+        self.calls.append(("input", selector, scalar))
+
+    def set_output_volume(self, selector: str, scalar: float) -> None:
+        self.calls.append(("output", selector, scalar))
+
+    def apply_audio_route_config(self, audio) -> None:
+        self.set_input_volume(audio.meeting_in, audio.meeting_in_gain)
+        self.set_input_volume(audio.microphone_in, audio.microphone_in_gain)
+        self.set_output_volume(audio.speaker_out, audio.speaker_out_volume)
+        self.set_output_volume(audio.meeting_out, audio.meeting_out_volume)
 
 
 class LiveCaptionPageUiTests(_QtTestCase):
@@ -130,34 +148,13 @@ class LiveCaptionPageUiTests(_QtTestCase):
         self.assertFalse(updated.runtime.local_translation_enabled)
         self.assertFalse(updated.runtime.local_tts_enabled)
 
-    def test_output_gain_slider_round_trips_with_config(self) -> None:
-        page = LiveCaptionPage()
-        config = AppConfig()
-        config.runtime.passthrough_gain = 1.8
-        config.runtime.tts_gain = 1.6
-
-        page.apply_config(config)
-
-        self.assertAlmostEqual(page.selected_output_gain(), 1.6, places=2)
-        self.assertAlmostEqual(page.selected_passthrough_gain(), 1.6, places=2)
-        self.assertAlmostEqual(page.selected_tts_gain(), 1.6, places=2)
-        self.assertEqual(page.output_gain_value_label.text(), "1.6x")
-
-        page.output_gain_slider.setValue(210)
-
-        updated = AppConfig()
-        page.update_config(updated)
-        self.assertAlmostEqual(updated.runtime.passthrough_gain, 2.10, places=2)
-        self.assertAlmostEqual(updated.runtime.tts_gain, 2.10, places=2)
-
-    def test_output_gain_slider_remains_enabled_when_direction_controls_are_locked(self) -> None:
+    def test_direction_controls_lock_only_language_and_voice_controls(self) -> None:
         page = LiveCaptionPage()
 
         page.set_direction_controls_enabled(False)
 
         self.assertFalse(page.remote_asr_combo.isEnabled())
         self.assertFalse(page.local_tts_voice_combo.isEnabled())
-        self.assertTrue(page.output_gain_slider.isEnabled())
 
     def test_direction_controls_can_stay_enabled_while_session_running(self) -> None:
         page = LiveCaptionPage()
@@ -177,7 +174,7 @@ class LiveCaptionPageUiTests(_QtTestCase):
         self.assertEqual(page.remote_original.size(), page.local_translated.size())
 
     def test_main_window_maps_remote_controls_to_local_output_and_local_controls_to_remote_output(self) -> None:
-        window = MainWindow("config.yaml")
+        window = MainWindow("config.yaml", device_volume_controller=_DummyDeviceVolumeController())
 
         class _Router:
             def __init__(self) -> None:
@@ -209,19 +206,29 @@ class LiveCaptionPageUiTests(_QtTestCase):
         self.assertIn(("local", "tts"), router.calls)
         self.assertIn(("remote", "passthrough"), router.calls)
 
-    def test_main_window_applies_output_gain_to_playback_outputs(self) -> None:
-        window = MainWindow("config.yaml")
-        window.live_caption_page.output_gain_slider.setValue(175)
+    def test_main_window_applies_audio_route_levels_to_inputs_and_outputs(self) -> None:
+        controller = _DummyDeviceVolumeController()
+        window = MainWindow("config.yaml", device_volume_controller=controller)
+        window.audio_routing_page.meeting_in_gain_slider.setValue(30)
+        window.audio_routing_page.microphone_in_gain_slider.setValue(40)
+        window.audio_routing_page.speaker_out_volume_slider.setValue(50)
+        window.audio_routing_page.meeting_out_volume_slider.setValue(60)
 
         window._sync_ui_to_config()
 
-        self.assertAlmostEqual(window.config.runtime.tts_gain, 1.8, places=2)
-        self.assertAlmostEqual(window.config.runtime.passthrough_gain, 1.8, places=2)
-        self.assertAlmostEqual(window.speaker_playback._volume, 1.8, places=2)
-        self.assertAlmostEqual(window.meeting_playback._volume, 1.8, places=2)
+        self.assertAlmostEqual(window.config.audio.meeting_in_gain, 0.3, places=2)
+        self.assertAlmostEqual(window.config.audio.microphone_in_gain, 0.4, places=2)
+        self.assertAlmostEqual(window.config.audio.speaker_out_volume, 0.5, places=2)
+        self.assertAlmostEqual(window.config.audio.meeting_out_volume, 0.6, places=2)
+        self.assertAlmostEqual(window.meeting_capture._gain, 1.0, places=2)
+        self.assertAlmostEqual(window.local_capture._gain, 1.0, places=2)
+        self.assertAlmostEqual(window.speaker_playback._volume, 1.0, places=2)
+        self.assertAlmostEqual(window.meeting_playback._volume, 1.0, places=2)
+        self.assertTrue(any(call[0] == "output" and abs(call[2] - 0.5) < 1e-6 for call in controller.calls))
 
-    def test_main_window_applies_gain_changes_even_while_session_running(self) -> None:
-        window = MainWindow("config.yaml")
+    def test_main_window_applies_audio_route_changes_even_while_session_running(self) -> None:
+        controller = _DummyDeviceVolumeController()
+        window = MainWindow("config.yaml", device_volume_controller=controller)
 
         class _RunningSession:
             def is_running(self) -> bool:
@@ -229,15 +236,17 @@ class LiveCaptionPageUiTests(_QtTestCase):
 
         window.session_controller = _RunningSession()  # type: ignore[assignment]
         window.validate_current_routes()
-        window.live_caption_page.output_gain_slider.setValue(185)
+        window.audio_routing_page.speaker_out_volume_slider.setValue(80)
+        window.audio_routing_page.meeting_out_volume_slider.setValue(90)
 
-        self.assertAlmostEqual(window.config.runtime.passthrough_gain, 1.8, places=2)
-        self.assertAlmostEqual(window.config.runtime.tts_gain, 1.8, places=2)
-        self.assertAlmostEqual(window.speaker_playback._volume, 1.8, places=2)
-        self.assertAlmostEqual(window.meeting_playback._volume, 1.8, places=2)
+        self.assertAlmostEqual(window.config.audio.speaker_out_volume, 0.8, places=2)
+        self.assertAlmostEqual(window.config.audio.meeting_out_volume, 0.9, places=2)
+        self.assertAlmostEqual(window.speaker_playback._volume, 1.0, places=2)
+        self.assertAlmostEqual(window.meeting_playback._volume, 1.0, places=2)
+        self.assertTrue(any(call[0] == "output" and abs(call[2] - 0.9) < 1e-6 for call in controller.calls))
 
     def test_main_window_keeps_live_caption_controls_enabled_while_session_running(self) -> None:
-        window = MainWindow("config.yaml")
+        window = MainWindow("config.yaml", device_volume_controller=_DummyDeviceVolumeController())
 
         class _RunningSession:
             def is_running(self) -> bool:
@@ -259,8 +268,27 @@ class LiveCaptionPageUiTests(_QtTestCase):
         self.assertFalse(window.live_caption_page.remote_output_mode_combo.isVisible())
         self.assertTrue(window.live_caption_page.local_tts_voice_combo.isEnabled())
 
+
+class AudioRoutingPageUiTests(_QtTestCase):
+    def test_audio_route_sliders_round_trip_with_config(self) -> None:
+        page = AudioRoutingPage(on_route_changed=lambda: None)
+        config = AppConfig()
+        config.audio.meeting_in_gain = 0.3
+        config.audio.microphone_in_gain = 0.4
+        config.audio.speaker_out_volume = 0.5
+        config.audio.meeting_out_volume = 0.6
+
+        page.apply_config(config)
+        selected = page.selected_audio_routes()
+
+        self.assertAlmostEqual(selected.meeting_in_gain, 0.3, places=2)
+        self.assertAlmostEqual(selected.microphone_in_gain, 0.4, places=2)
+        self.assertAlmostEqual(selected.speaker_out_volume, 0.5, places=2)
+        self.assertAlmostEqual(selected.meeting_out_volume, 0.6, places=2)
+        self.assertEqual(page.meeting_out_volume_value_label.text(), "60%")
+
     def test_main_window_hot_applies_live_caption_settings_while_session_running(self) -> None:
-        window = MainWindow("config.yaml")
+        window = MainWindow("config.yaml", device_volume_controller=_DummyDeviceVolumeController())
 
         class _RunningSession:
             def is_running(self) -> bool:

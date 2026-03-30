@@ -222,33 +222,7 @@ class TranslatorManager:
     ) -> str:
         if not is_final or not should_speak:
             return caption_text
-        if not bool(getattr(self._config.runtime, "tts_use_speech_profile", False)):
-            return caption_text
-        if self._speech_profile_name.get(source) == self._caption_profile_name.get(source):
-            return caption_text
-        try:
-            provider = self._providers.get(source, self._providers["local"])
-            speech_profile = self._speech_profiles.get(source, self._speech_profiles["local"])
-            spoken = provider.translate(
-                text=text,
-                source_lang=source_lang,
-                target_lang=target_lang,
-                context=None,
-                profile=speech_profile,
-            )
-            return spoken or caption_text
-        except Exception as exc:
-            if self._on_error:
-                self._on_error(
-                    ErrorEvent(
-                        level="warning",
-                        module="translator_manager",
-                        code="speech_profile_fallback",
-                        message="Speech profile translation failed, fallback to caption text",
-                        detail=str(exc),
-                    )
-                )
-            return caption_text
+        return caption_text
 
     def _resolve_languages(self, source: str, detected_language: str) -> tuple[str, str]:
         if source == "remote":

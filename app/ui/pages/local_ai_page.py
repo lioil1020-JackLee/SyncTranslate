@@ -328,7 +328,7 @@ class LocalAiPage(QWidget):
             )
             self.runtime_early_final_check.setChecked(bool(getattr(config.runtime, "early_final_enabled", True)))
             self.runtime_tts_accept_stable_partial_check.setChecked(
-                bool(getattr(config.runtime, "tts_accept_stable_partial", True))
+                bool(getattr(config.runtime, "tts_accept_stable_partial", False))
             )
             self.runtime_tts_partial_min_chars_spin.setValue(
                 int(getattr(config.runtime, "tts_partial_min_chars", 12))
@@ -579,7 +579,7 @@ class LocalAiPage(QWidget):
             self.runtime_asr_partial_floor_spin.setValue(520)
             self.runtime_llm_partial_floor_spin.setValue(280)
             self.runtime_early_final_check.setChecked(True)
-            self.runtime_tts_accept_stable_partial_check.setChecked(True)
+            self.runtime_tts_accept_stable_partial_check.setChecked(False)
             self.runtime_tts_partial_min_chars_spin.setValue(12)
             self.runtime_tts_use_speech_profile_check.setChecked(False)
             self.runtime_translation_cache_spin.setValue(256)
@@ -869,8 +869,8 @@ class LocalAiPage(QWidget):
         self.remote_llm_stop_tokens_edit.setPlaceholderText("每行一個 stop token，例如:\n</target>\nTranslation:")
         self._set_multiline_field_style(self.llm_stop_tokens_edit)
         self._set_multiline_field_style(self.remote_llm_stop_tokens_edit)
-        self.llm_sliding_window_enabled = QCheckBox("啟用上下文拼接")
-        self.remote_llm_sliding_window_enabled = QCheckBox("啟用上下文拼接")
+        self.llm_sliding_window_enabled = QCheckBox("僅 partial 使用上下文")
+        self.remote_llm_sliding_window_enabled = QCheckBox("僅 partial 使用上下文")
         self.llm_trigger_tokens_spin = QSpinBox()
         self.llm_trigger_tokens_spin.setRange(5, 120)
         self.remote_llm_trigger_tokens_spin = QSpinBox()
@@ -931,7 +931,7 @@ class LocalAiPage(QWidget):
         form.addRow("最大輸出 Token", self._build_dual_field_row(self.llm_max_tokens_spin, self.remote_llm_max_tokens_spin))
         form.addRow("Repeat Penalty", self._build_dual_field_row(self.llm_repeat_penalty_spin, self.remote_llm_repeat_penalty_spin))
         form.addRow("Stop Tokens", self._build_dual_field_row(self.llm_stop_tokens_edit, self.remote_llm_stop_tokens_edit))
-        form.addRow("啟用上下文拼接", self._build_dual_field_row(self.llm_sliding_window_enabled, self.remote_llm_sliding_window_enabled))
+        form.addRow("僅 partial 使用上下文", self._build_dual_field_row(self.llm_sliding_window_enabled, self.remote_llm_sliding_window_enabled))
         form.addRow("觸發 Token", self._build_dual_field_row(self.llm_trigger_tokens_spin, self.remote_llm_trigger_tokens_spin))
         form.addRow("上下文項數", self._build_dual_field_row(self.llm_context_items_spin, self.remote_llm_context_items_spin))
 

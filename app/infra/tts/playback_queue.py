@@ -34,6 +34,13 @@ class _PassthroughTask:
     created_at: float
 
 
+@dataclass(slots=True)
+class _SynthesizedTask:
+    task: _TtsTask
+    audio: np.ndarray
+    sample_rate: float
+
+
 class TTSManager:
     def __init__(
         self,
@@ -76,6 +83,10 @@ class TTSManager:
         self._max_chars = max(20, int(getattr(self._config.runtime, "tts_max_chars", 200)))
         self._pending: deque[_TtsTask] = deque()
         self._queue_changed = Condition()
+        self._ready_audio: dict[str, deque[_SynthesizedTask]] = {
+            "local": deque(),
+            "remote": deque(),
+        }
         self._drop_count = {"local": 0, "remote": 0}
         initial_mode = str(getattr(self._config.runtime, "tts_output_mode", "subtitle_only") or "subtitle_only")
         if initial_mode not in {"tts", "subtitle_only", "passthrough"}:
@@ -98,7 +109,8 @@ class TTSManager:
         self._engine_cache: dict[str, tuple[tuple[Any, ...], Any]] = {}
         self._current_task_by_channel: dict[str, _TtsTask | None] = {"local": None, "remote": None}
         self._stop_event = Event()
-        self._worker: Thread | None = None
+        self._synth_workers: dict[str, Thread | None] = {"local": None, "remote": None}
+        self._play_workers: dict[str, Thread | None] = {"local": None, "remote": None}
 
     def set_callbacks(
         self,
@@ -113,8 +125,13 @@ class TTSManager:
         if not self.stop(wait_timeout=5.0):
             raise RuntimeError("TTS worker is still shutting down")
         self._stop_event.clear()
-        self._worker = Thread(target=self._run, daemon=True)
-        self._worker.start()
+        for channel in ("local", "remote"):
+            synth_worker = Thread(target=self._run_synth, args=(channel,), daemon=True)
+            play_worker = Thread(target=self._run_playback, args=(channel,), daemon=True)
+            self._synth_workers[channel] = synth_worker
+            self._play_workers[channel] = play_worker
+            synth_worker.start()
+            play_worker.start()
         self._passthrough_stop.clear()
         for channel in ("local", "remote"):
             worker = Thread(target=self._run_passthrough, args=(channel,), daemon=True)
@@ -124,12 +141,18 @@ class TTSManager:
     def stop(self, wait_timeout: float = 5.0) -> bool:
         self._stop_event.set()
         self._passthrough_stop.set()
-        worker = self._worker
-        if worker and worker.is_alive():
-            worker.join(timeout=max(0.1, float(wait_timeout)))
-        stopped = worker is None or not worker.is_alive()
-        if stopped:
-            self._worker = None
+        stopped = True
+        for channel in ("local", "remote"):
+            synth_worker = self._synth_workers.get(channel)
+            if synth_worker and synth_worker.is_alive():
+                synth_worker.join(timeout=max(0.1, float(wait_timeout)))
+            play_worker = self._play_workers.get(channel)
+            if play_worker and play_worker.is_alive():
+                play_worker.join(timeout=max(0.1, float(wait_timeout)))
+            if (synth_worker and synth_worker.is_alive()) or (play_worker and play_worker.is_alive()):
+                stopped = False
+            self._synth_workers[channel] = None
+            self._play_workers[channel] = None
         for channel in ("local", "remote"):
             passthrough_worker = self._passthrough_workers.get(channel)
             if passthrough_worker and passthrough_worker.is_alive():
@@ -139,6 +162,8 @@ class TTSManager:
             playback.stop()
         with self._queue_changed:
             self._pending.clear()
+            self._ready_audio["local"].clear()
+            self._ready_audio["remote"].clear()
             self._passthrough_pending["local"].clear()
             self._passthrough_pending["remote"].clear()
             self._queue_changed.notify_all()
@@ -160,7 +185,7 @@ class TTSManager:
         key = channel if channel in ("local", "remote") else "local"
         if self._output_mode.get(key) != "tts":
             return
-        accept_stable_partial = bool(getattr(self._config.runtime, "tts_accept_stable_partial", True))
+        accept_stable_partial = bool(getattr(self._config.runtime, "tts_accept_stable_partial", False))
         if not is_final and not (accept_stable_partial and is_stable_partial):
             return
         cleaned = text.strip()
@@ -191,13 +216,14 @@ class TTSManager:
         dropped = 0
         with self._queue_changed:
             if self._cancel_pending_on_new_final or is_early_final or is_stable_partial:
-                if self._cancel_policy == "older_only":
+                if utterance_id:
                     dropped += self._drop_older_for_channel_locked(key, utterance_id, base_revision)
-                else:
+                elif self._cancel_policy == "all_pending":
                     dropped += self._drop_pending_for_channel_locked(key)
             for task in tasks:
                 self._pending.append(task)
-                dropped += self._shed_backlog_locked(key)
+                if not task.is_final:
+                    dropped += self._shed_backlog_locked(key)
             self._queue_changed.notify()
         if dropped > 0:
             self._drop_count[key] += dropped
@@ -232,6 +258,7 @@ class TTSManager:
         self._playbacks[key].stop()
         with self._queue_changed:
             self._pending = deque(task for task in self._pending if task.channel != key)
+            self._ready_audio[key].clear()
             self._passthrough_pending[key].clear()
             self._queue_changed.notify_all()
         if normalized == "passthrough":
@@ -260,9 +287,6 @@ class TTSManager:
             return
         try:
             passthrough_audio = audio.astype(np.float32, copy=False)
-            gain = max(0.1, float(getattr(self._config.runtime, "passthrough_gain", 1.6) or 1.6))
-            if gain != 1.0:
-                passthrough_audio = np.clip(passthrough_audio * gain, -1.0, 1.0).astype(np.float32, copy=False)
             worker = self._passthrough_workers.get(key)
             if worker and worker.is_alive():
                 with self._queue_changed:
@@ -296,34 +320,62 @@ class TTSManager:
                     )
                 )
 
-    def _run(self) -> None:
+    def _run_synth(self, channel: str) -> None:
         while not self._stop_event.is_set():
-            task = self._next_task()
+            task = self._next_text_task(channel)
             if task is None:
                 continue
 
             if self._stop_event.is_set():
                 break
 
-            channel = task.channel
             if self._output_mode.get(channel) != "tts":
                 # Skip silently — on_play_start was never called for this task,
                 # so do NOT call on_play_end either (avoids spurious StateManager echo-guard triggers).
                 continue
-            tts_cfg = self._channel_tts_config(channel)
+            try:
+                tts_cfg = self._channel_tts_config(channel)
+                engine = self._resolve_engine(channel, tts_cfg)
+                audio = engine.synthesize(task.text, sample_rate=tts_cfg.sample_rate)
+                if self._stop_event.is_set():
+                    break
+                with self._queue_changed:
+                    self._ready_audio[channel].append(
+                        _SynthesizedTask(task=task, audio=audio, sample_rate=float(tts_cfg.sample_rate))
+                    )
+                    self._queue_changed.notify_all()
+            except Exception as exc:
+                if self._on_error:
+                    self._on_error(
+                        ErrorEvent(
+                            level="error",
+                            module="tts_manager",
+                            source=channel,
+                            code="synthesis_failed",
+                            message="TTS synthesis failed",
+                            detail=str(exc),
+                        )
+                    )
+
+    def _run_playback(self, channel: str) -> None:
+        while not self._stop_event.is_set():
+            synthesized = self._next_ready_audio_task(channel)
+            if synthesized is None:
+                continue
+            if self._stop_event.is_set():
+                break
+            if self._output_mode.get(channel) != "tts":
+                continue
+            task = synthesized.task
             playback = self._playbacks[channel]
             output_device = self._output_getters[channel]()
             try:
                 self._current_task_by_channel[channel] = task
                 if self._on_play_start:
                     self._on_play_start(channel)
-                engine = self._resolve_engine(channel, tts_cfg)
-                audio = engine.synthesize(task.text, sample_rate=tts_cfg.sample_rate)
-                if self._stop_event.is_set():
-                    break
                 playback.play(
-                    audio=audio,
-                    sample_rate=tts_cfg.sample_rate,
+                    audio=synthesized.audio,
+                    sample_rate=int(synthesized.sample_rate),
                     output_device_name=output_device,
                 )
             except Exception as exc:
@@ -353,6 +405,10 @@ class TTSManager:
                 "local": len(self._passthrough_pending["local"]),
                 "remote": len(self._passthrough_pending["remote"]),
             }
+            ready_depth = {
+                "local": len(self._ready_audio["local"]),
+                "remote": len(self._ready_audio["remote"]),
+            }
             oldest_age_ms = 0.0
             if self._pending:
                 oldest_age_ms = max(0.0, (time.time() - self._pending[0].created_at) * 1000.0)
@@ -360,6 +416,8 @@ class TTSManager:
                 "queue_depth": len(self._pending),
                 "queue_depth_local": depth_by_channel["local"],
                 "queue_depth_remote": depth_by_channel["remote"],
+                "ready_depth_local": ready_depth["local"],
+                "ready_depth_remote": ready_depth["remote"],
                 "drop_count_local": self._drop_count["local"],
                 "drop_count_remote": self._drop_count["remote"],
                 "output_mode_local": self._output_mode["local"],
@@ -475,16 +533,23 @@ class TTSManager:
         out[-fade_frames:, :] *= ramp[::-1].reshape(-1, 1)
         return out
 
-    def _next_task(self) -> _TtsTask | None:
+    def _next_text_task(self, channel: str) -> _TtsTask | None:
         with self._queue_changed:
-            while not self._stop_event.is_set() and not self._pending:
+            while not self._stop_event.is_set():
+                if any(task.channel == channel for task in self._pending):
+                    break
                 self._queue_changed.wait(timeout=0.2)
             if self._stop_event.is_set():
                 return None
             while self._pending:
                 task = self._pending.popleft()
+                if task.channel != channel:
+                    self._pending.append(task)
+                    if not any(candidate.channel == channel for candidate in self._pending):
+                        return None
+                    continue
                 age_ms = max(0.0, (time.time() - task.created_at) * 1000.0)
-                if age_ms <= self._max_wait_ms:
+                if task.is_final or age_ms <= self._max_wait_ms:
                     return task
                 self._drop_count[task.channel] = self._drop_count.get(task.channel, 0) + 1
                 if self._on_error:
@@ -499,6 +564,16 @@ class TTSManager:
                         )
                     )
             return None
+
+    def _next_ready_audio_task(self, channel: str) -> _SynthesizedTask | None:
+        with self._queue_changed:
+            while not self._stop_event.is_set() and not self._ready_audio[channel]:
+                self._queue_changed.wait(timeout=0.2)
+            if self._stop_event.is_set():
+                return None
+            if not self._ready_audio[channel]:
+                return None
+            return self._ready_audio[channel].popleft()
 
     def _drop_pending_for_channel_locked(self, channel: str) -> int:
         if not self._pending:
@@ -524,7 +599,10 @@ class TTSManager:
                 kept.append(task)
                 continue
             is_same_utterance = bool(utterance_id) and task.utterance_id == utterance_id
-            if is_same_utterance and task.revision >= revision:
+            if not is_same_utterance:
+                kept.append(task)
+                continue
+            if task.revision >= revision:
                 kept.append(task)
                 continue
             dropped += 1

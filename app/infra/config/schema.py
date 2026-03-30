@@ -203,8 +203,8 @@ class TtsChannelsConfig:
 class RuntimeConfig:
     sample_rate: int = 48000
     chunk_ms: int = 100
-    passthrough_gain: float = 1.6
-    tts_gain: float = 1.4
+    passthrough_gain: float = 1.0
+    tts_gain: float = 1.0
     asr_pre_roll_ms: int = 500
     latency_mode: str = "balanced"
     display_partial_strategy: str = "stable_only"
@@ -214,7 +214,7 @@ class RuntimeConfig:
     asr_partial_interval_floor_ms: int = 280
     llm_partial_interval_floor_ms: int = 320
     early_final_enabled: bool = True
-    tts_accept_stable_partial: bool = True
+    tts_accept_stable_partial: bool = False
     tts_partial_min_chars: int = 12
     tts_use_speech_profile: bool = False
     asr_queue_maxsize_local: int = 128
@@ -230,7 +230,7 @@ class RuntimeConfig:
     translation_exact_cache_size: int = 256
     translation_prefix_min_delta_chars: int = 6
     tts_cancel_pending_on_new_final: bool = True
-    tts_cancel_policy: str = "all_pending"
+    tts_cancel_policy: str = "older_only"
     tts_max_wait_ms: int = 4000
     tts_max_chars: int = 200
     tts_drop_backlog_threshold: int = 6

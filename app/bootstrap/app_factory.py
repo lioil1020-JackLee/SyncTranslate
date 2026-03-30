@@ -88,6 +88,10 @@ def run_from_cli(argv: list[str] | None = None) -> int:
 
     _apply_windows_app_id()
     app = QApplication(sys.argv)
+    app.setApplicationName("SyncTranslate")
+    app.setApplicationDisplayName("SyncTranslate")
+    app.setOrganizationName("lioil")
+    app.setDesktopFileName("lioil.synctranslate")
     icon_file = _resolve_icon_path()
     if icon_file:
         app.setWindowIcon(QIcon(icon_file))
@@ -95,6 +99,13 @@ def run_from_cli(argv: list[str] | None = None) -> int:
     if icon_file:
         window.setWindowIcon(QIcon(icon_file))
     window.show()
+    if icon_file:
+        try:
+            app.processEvents()
+            if window.windowHandle():
+                window.windowHandle().setIcon(QIcon(icon_file))
+        except Exception:
+            pass
     try:
         return app.exec()
     except KeyboardInterrupt:

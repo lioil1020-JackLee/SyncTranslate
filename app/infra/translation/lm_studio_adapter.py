@@ -68,14 +68,22 @@ class LmStudioClient:
             "Keep named entities and numbers accurate.\n"
             f"Style policy: {style_hint}"
         )
-        user_prompt = (
-            f"Source language: {source_label}\n"
-            f"Target language: {target_label}\n"
-            "Context below is reference only. Do not translate the context by itself.\n"
-            f"Context:\n{context_text}\n\n"
-            "Translate this text only:\n"
-            f"{text}"
-        )
+        if context_text.strip():
+            user_prompt = (
+                f"Source language: {source_label}\n"
+                f"Target language: {target_label}\n"
+                "Context below is reference only. Do not translate the context by itself.\n"
+                f"Context:\n{context_text}\n\n"
+                "Translate this text only:\n"
+                f"{text}"
+            )
+        else:
+            user_prompt = (
+                f"Source language: {source_label}\n"
+                f"Target language: {target_label}\n"
+                "Translate this text only:\n"
+                f"{text}"
+            )
         response = self._chat_completion(
             messages=[
                 {"role": "system", "content": system_prompt},

@@ -12,7 +12,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QSlider,
     QSizePolicy,
     QTextEdit,
     QVBoxLayout,
@@ -118,14 +117,12 @@ class LiveCaptionPage(QWidget):
         on_clear_clicked: Callable[[], None] | None = None,
         on_start_clicked: Callable[[], None] | None = None,
         on_settings_changed: Callable[[], None] | None = None,
-        on_gain_changed: Callable[[], None] | None = None,
         on_output_mode_changed: Callable[[str], None] | None = None,
     ) -> None:
         super().__init__()
         self._on_clear_clicked = on_clear_clicked
         self._on_start_clicked = on_start_clicked
         self._on_settings_changed = on_settings_changed
-        self._on_gain_changed = on_gain_changed
         self._on_output_mode_changed = on_output_mode_changed
         self._suspend_notify = False
         self._direction_controls_enabled = True
@@ -161,18 +158,12 @@ class LiveCaptionPage(QWidget):
 
         self.remote_tts_voice_combo = QComboBox()
         self.local_tts_voice_combo = QComboBox()
-        self.output_gain_slider = QSlider(Qt.Orientation.Horizontal)
-        self.output_gain_value_label = QLabel()
         self.remote_tts_voice_combo.setMinimumWidth(220)
         self.local_tts_voice_combo.setMinimumWidth(220)
         self.remote_tts_voice_combo.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.local_tts_voice_combo.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self._configure_combo_popup(self.remote_tts_voice_combo)
         self._configure_combo_popup(self.local_tts_voice_combo)
-        self._configure_gain_slider(self.output_gain_slider)
-        self.output_gain_slider.valueChanged.connect(
-            lambda value: self._handle_gain_slider_changed(self.output_gain_value_label, value)
-        )
 
         self.start_btn = QPushButton("開始")
         self.start_btn.clicked.connect(self._handle_start_clicked)
@@ -329,9 +320,6 @@ class LiveCaptionPage(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        layout.addLayout(
-            self._make_single_gain_row("輸出音量", self.output_gain_slider, self.output_gain_value_label)
-        )
         layout.addLayout(grid)
 
         # 初始正確化 TTS 選項和標籤
@@ -374,16 +362,8 @@ class LiveCaptionPage(QWidget):
                     "tts" if self._config_tts_enabled(config, channel) else "passthrough",
                 )
                 self._ensure_translation_defaults(channel)
-            unified_gain = float(
-                getattr(config.runtime, "tts_gain", getattr(config.runtime, "passthrough_gain", 1.6))
-            )
-            self.output_gain_slider.setValue(self._gain_to_slider_value(unified_gain))
         finally:
             self._suspend_notify = False
-        self._update_gain_value_label(
-            self.output_gain_value_label,
-            self._slider_value_to_gain(self.output_gain_slider.value()),
-        )
         self._update_source_language_controls()
         self._refresh_panel_labels()
 
@@ -417,9 +397,6 @@ class LiveCaptionPage(QWidget):
             self._set_runtime_tts_enabled(config, channel, asr_enabled and translation_enabled and mode == "tts")
 
         config.runtime.translation_enabled = bool(enabled_channels)
-        gain = self.selected_output_gain()
-        config.runtime.passthrough_gain = gain
-        config.runtime.tts_gain = gain
         modes = {channel: self.selected_tts_output_mode_for_channel(channel) for channel in _CHANNELS}
         if any(mode == "tts" for mode in modes.values()):
             config.runtime.tts_output_mode = "tts"
@@ -428,15 +405,6 @@ class LiveCaptionPage(QWidget):
 
     def selected_mode(self) -> str:
         return "bidirectional"
-
-    def selected_passthrough_gain(self) -> float:
-        return self.selected_output_gain()
-
-    def selected_tts_gain(self) -> float:
-        return self.selected_output_gain()
-
-    def selected_output_gain(self) -> float:
-        return self._slider_value_to_gain(self.output_gain_slider.value())
 
     def selected_asr_language_mode(self) -> str:
         return self._get_target_language(self._channel_combo("remote", "asr"), default="auto")
@@ -474,7 +442,6 @@ class LiveCaptionPage(QWidget):
         for channel in _CHANNELS:
             self._channel_combo(channel, "asr").setEnabled(self._direction_controls_enabled)
             self._channel_combo(channel, "mode").setEnabled(self._direction_controls_enabled)
-        self.output_gain_slider.setEnabled(True)
         self._update_source_language_controls()
 
     def set_panel_statuses(
@@ -728,8 +695,6 @@ class LiveCaptionPage(QWidget):
             self._channel_combo(channel, "asr").setToolTip("ASR辨識語言，可選 auto 或指定語言")
             self._channel_combo(channel, "target").setToolTip("翻譯模式下使用的目標語言")
             self._channel_combo(channel, "voice").setToolTip("翻譯模式下使用的 TTS 聲線")
-        self.output_gain_slider.setToolTip("共用輸出音量，會同時影響原音直通與 TTS")
-
     def _refresh_panel_labels(self) -> None:
         for channel in _CHANNELS:
             self._channel_text_label(channel, "original").setText(
@@ -879,31 +844,6 @@ class LiveCaptionPage(QWidget):
             row.addWidget(export_btn)
         return row
 
-    def _make_single_gain_row(
-        self,
-        title: str,
-        slider: QSlider,
-        value_label: QLabel,
-    ) -> QHBoxLayout:
-        row = QHBoxLayout()
-        row.setContentsMargins(0, 0, 0, 8)
-        row.setSpacing(12)
-        row.addWidget(self._build_gain_control(title, slider, value_label), 1)
-        return row
-
-    def _build_gain_control(self, title: str, slider: QSlider, value_label: QLabel) -> QWidget:
-        container = QWidget()
-        layout = QHBoxLayout(container)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
-        title_label = QLabel(title)
-        title_label.setMinimumWidth(68)
-        value_label.setMinimumWidth(48)
-        layout.addWidget(title_label)
-        layout.addWidget(slider, 1)
-        layout.addWidget(value_label)
-        return container
-
     @staticmethod
     def _apply_status(label: QLabel, state: str) -> None:
         normalized = state if state in _STATUS_TEXT else "idle"
@@ -932,65 +872,6 @@ class LiveCaptionPage(QWidget):
             return
         view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-
-    @staticmethod
-    def _configure_gain_slider(slider: QSlider) -> None:
-        slider.setRange(50, 300)
-        slider.setSingleStep(10)
-        slider.setPageStep(10)
-        slider.setTickInterval(10)
-        slider.setTickPosition(QSlider.TickPosition.TicksBelow)
-        slider.setFixedHeight(30)
-        slider.setStyleSheet(
-            """
-            QSlider::groove:horizontal {
-                height: 4px;
-                margin: 0 10px;
-                border-radius: 2px;
-                background: #d1d5db;
-            }
-            QSlider::sub-page:horizontal {
-                background: #d8b36a;
-                border-radius: 2px;
-            }
-            QSlider::add-page:horizontal {
-                background: #d1d5db;
-                border-radius: 2px;
-            }
-            QSlider::handle:horizontal {
-                width: 18px;
-                height: 18px;
-                margin: -8px -9px;
-                border-radius: 9px;
-                border: 2px solid #4b5563;
-                background: #d8b36a;
-            }
-            QSlider::handle:horizontal:hover {
-                background: #e2bf79;
-            }
-            """
-        )
-
-    def _handle_gain_slider_changed(self, label: QLabel, value: int) -> None:
-        self._update_gain_value_label(label, self._slider_value_to_gain(value))
-        if self._suspend_notify:
-            return
-        if self._on_gain_changed:
-            self._on_gain_changed()
-
-    @staticmethod
-    def _slider_value_to_gain(value: int) -> float:
-        snapped = int(round(max(50, min(300, int(value))) / 10.0) * 10)
-        return round(snapped / 100.0, 1)
-
-    @staticmethod
-    def _gain_to_slider_value(value: float) -> int:
-        scaled = int(round(max(0.5, min(3.0, float(value))) * 10.0) * 10)
-        return max(50, min(300, scaled))
-
-    @staticmethod
-    def _update_gain_value_label(label: QLabel, gain: float) -> None:
-        label.setText(f"{gain:.1f}x")
 
     @staticmethod
     def _display_voice_label(voice_name: str) -> str:

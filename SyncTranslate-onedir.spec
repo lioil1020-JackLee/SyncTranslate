@@ -21,6 +21,10 @@ elif os.path.exists(lioil_icns):
 if os.path.exists(config_yaml):
     datas.append((config_yaml, "."))
 
+endpoint_volume_script = os.path.join(here, "app", "infra", "audio", "windows_endpoint_volume.ps1")
+if os.path.exists(endpoint_volume_script):
+    datas.append((endpoint_volume_script, os.path.join("app", "infra", "audio")))
+
 a = Analysis(
     ["main.py"],
     pathex=["."],

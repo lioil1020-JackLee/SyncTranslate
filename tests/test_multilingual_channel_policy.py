@@ -148,9 +148,8 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
         self.assertEqual(sample_rate, 48000.0)
         self.assertEqual(output_device, "speaker")
 
-    def test_passthrough_gain_boosts_streaming_audio(self) -> None:
+    def test_passthrough_uses_raw_streaming_audio_before_playback_volume(self) -> None:
         cfg = AppConfig()
-        cfg.runtime.passthrough_gain = 2.0
         local_playback = _DummyPlayback()
         manager = TTSManager(
             config=cfg,
@@ -166,7 +165,7 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
         manager.submit_passthrough("local", mono, 48000.0)
 
         forwarded, _, _ = local_playback.passthrough_calls[0]
-        self.assertAlmostEqual(float(forwarded[0, 0]), 0.5, places=5)
+        self.assertAlmostEqual(float(forwarded[0, 0]), 0.25, places=5)
 
     def test_asr_submit_prefers_strongest_input_channel(self) -> None:
         cfg = AppConfig()
@@ -299,6 +298,12 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
         self.assertFalse(
             _looks_like_silence_hallucination("Can you hear me now?", audio_ms=1200, vad_rms=0.04)
         )
+        self.assertTrue(
+            _looks_like_silence_hallucination("Thank you for watching.", audio_ms=1200, vad_rms=0.01)
+        )
+        self.assertTrue(
+            _looks_like_silence_hallucination("感謝您的收看", audio_ms=1200, vad_rms=0.01)
+        )
 
     def test_streaming_asr_keeps_segment_helpers_on_class(self) -> None:
         self.assertTrue(hasattr(StreamingAsr, "_segment_audio_ms"))
@@ -354,6 +359,61 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
 
         self.assertEqual(len(manager._pending), 1)
         self.assertTrue(manager._pending[0].is_stable_partial)
+
+    def test_tts_new_final_keeps_other_utterances_in_queue(self) -> None:
+        cfg = AppConfig()
+        manager = TTSManager(
+            config=cfg,
+            local_playback=_DummyPlayback(),
+            remote_playback=_DummyPlayback(),
+            get_local_output_device=lambda: "speaker",
+            get_remote_output_device=lambda: "meeting",
+        )
+        manager.set_output_mode("local", "tts")
+
+        manager.enqueue("local", "first sentence", utterance_id="u1", revision=1, is_final=True)
+        manager.enqueue("local", "second sentence", utterance_id="u2", revision=1, is_final=True)
+
+        self.assertEqual([task.utterance_id for task in manager._pending], ["u1", "u2"])
+
+    def test_tts_new_revision_replaces_only_same_utterance(self) -> None:
+        cfg = AppConfig()
+        manager = TTSManager(
+            config=cfg,
+            local_playback=_DummyPlayback(),
+            remote_playback=_DummyPlayback(),
+            get_local_output_device=lambda: "speaker",
+            get_remote_output_device=lambda: "meeting",
+        )
+        manager.set_output_mode("local", "tts")
+
+        manager.enqueue("local", "old one", utterance_id="u1", revision=1, is_final=True)
+        manager.enqueue("local", "other one", utterance_id="u2", revision=1, is_final=True)
+        manager.enqueue("local", "new one", utterance_id="u1", revision=2, is_final=True)
+
+        self.assertEqual(
+            [(task.utterance_id, task.text, task.revision) for task in manager._pending],
+            [("u2", "other one", 1), ("u1", "new one", 2)],
+        )
+
+    def test_final_tts_task_is_not_dropped_by_wait_timeout(self) -> None:
+        cfg = AppConfig()
+        cfg.runtime.tts_max_wait_ms = 1
+        manager = TTSManager(
+            config=cfg,
+            local_playback=_DummyPlayback(),
+            remote_playback=_DummyPlayback(),
+            get_local_output_device=lambda: "speaker",
+            get_remote_output_device=lambda: "meeting",
+        )
+        manager.set_output_mode("local", "tts")
+        manager.enqueue("local", "final sentence", utterance_id="u1", revision=1, is_final=True)
+        manager._pending[0].created_at -= 10.0
+
+        task = manager._next_text_task("local")
+
+        self.assertIsNotNone(task)
+        self.assertEqual(task.text, "final sentence")
 
     def test_translation_cleanup_rejects_overexpanded_zh_output(self) -> None:
         cleaned = LmStudioClient._clean_translation_output(

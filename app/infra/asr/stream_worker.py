@@ -438,9 +438,13 @@ class StreamingAsr:
 
 _HALLUCINATION_PATTERNS = (
     re.compile(r"^\s*thank(s| you)( everyone| all)?[.! ]*$", re.IGNORECASE),
+    re.compile(r"^\s*thank(s| you)?\s+for\s+watching[.! ]*$", re.IGNORECASE),
+    re.compile(r"^\s*thanks\s+for\s+your\s+watching[.! ]*$", re.IGNORECASE),
     re.compile(r"^\s*good night[.! ]*$", re.IGNORECASE),
     re.compile(r"^\s*bye(-| )?bye[.! ]*$", re.IGNORECASE),
     re.compile(r"^\s*y[' ]?all[.! ]*$", re.IGNORECASE),
+    re.compile(r"^\s*(感謝|謝謝)(您的|你們的)?收看[。！! ]*$"),
+    re.compile(r"^\s*感謝大家收看[。！! ]*$"),
     re.compile(r"^\s*謝謝(大家|各位)?[。！! ]*$"),
     re.compile(r"^\s*晚安[。！! ]*$"),
 )

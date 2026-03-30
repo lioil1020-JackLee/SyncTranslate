@@ -23,6 +23,7 @@ from app.application.runtime_orchestrator import RuntimeFacade
 from app.application.session_service import SessionController
 from app.application.settings_service import SettingsService
 from app.application.config_apply_service import ConfigApplyService
+from app.infra.audio.device_volume_controller import SystemDeviceVolumeController
 from app.bootstrap.dependency_container import build_pipeline_bundle
 from app.domain.events import ErrorEvent
 from app.infra.audio.capture import AudioCapture
@@ -45,7 +46,7 @@ else:
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, config_path: str) -> None:
+    def __init__(self, config_path: str, device_volume_controller: SystemDeviceVolumeController | None = None) -> None:
         super().__init__()
         self._window_geometry_ready = False
         self._apply_standard_window_flags()
@@ -75,6 +76,7 @@ class MainWindow(QMainWindow):
         self._pending_live_apply = False
         self._pending_live_caption_apply = False
         self._live_apply_ready = False
+        self._resolved_window_icon = QIcon()
 
         self.setWindowTitle("SyncTranslate - Local AI Runtime")
         self._set_window_icon()
@@ -117,7 +119,6 @@ class MainWindow(QMainWindow):
             on_clear_clicked=self.clear_live_caption,
             on_start_clicked=self.start_session,
             on_settings_changed=self._on_live_caption_settings_changed,
-            on_gain_changed=self._on_live_caption_gain_changed,
             on_output_mode_changed=self._on_output_mode_changed,
         )
         self.local_ai_page = LocalAiPage(
@@ -166,6 +167,7 @@ class MainWindow(QMainWindow):
             audio_routing_page=self.audio_routing_page,
             live_caption_page=self.live_caption_page,
             local_ai_page=self.local_ai_page,
+            device_volume_controller=device_volume_controller,
         )
         self._runtime_facade = RuntimeFacade(self._create_pipeline_bundle)
         self.setCentralWidget(self.tabs)
@@ -272,13 +274,6 @@ class MainWindow(QMainWindow):
 
     def _on_live_caption_settings_changed(self) -> None:
         self._schedule_live_caption_apply()
-
-    def _on_live_caption_gain_changed(self) -> None:
-        gain = self.live_caption_page.selected_output_gain()
-        self.config.runtime.passthrough_gain = gain
-        self.config.runtime.tts_gain = gain
-        self._apply_audio_route_levels()
-        self.statusBar().showMessage(f"輸出音量已套用：{gain:.1f}x")
 
     def _schedule_live_apply(self) -> None:
         if not self._live_apply_ready or self._suspend_live_apply:
@@ -498,6 +493,11 @@ class MainWindow(QMainWindow):
 
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
+        if self.windowHandle() and not self.windowIcon().isNull():
+            try:
+                self.windowHandle().setIcon(self.windowIcon())
+            except Exception:
+                pass
         if self._window_geometry_ready:
             return
         self._window_geometry_ready = True
@@ -573,6 +573,7 @@ class MainWindow(QMainWindow):
         for candidate in self._icon_candidates():
             icon = QIcon(str(candidate))
             if not icon.isNull():
+                self._resolved_window_icon = icon
                 self.setWindowIcon(icon)
                 return
 

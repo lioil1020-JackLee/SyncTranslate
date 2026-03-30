@@ -47,7 +47,6 @@ class TranslationStitcher:
         self._context: deque[str] = deque(maxlen=max(2, int(max_context_items)))
         self._last_partial_call_ms = 0
         self._min_partial_interval_ms = max(int(partial_interval_floor_ms), int(min_partial_interval_ms))
-        self._last_spoken = ""
         self._exact_cache_size = max(32, int(exact_cache_size))
         self._prefix_min_delta_chars = max(1, int(prefix_min_delta_chars))
         self._exact_cache: OrderedDict[str, str] = OrderedDict()
@@ -125,7 +124,7 @@ class TranslationStitcher:
                         should_speak=False,
                     )
 
-        context = list(self._context) if self._enabled else []
+        context = list(self._context) if self._enabled and not event.is_final else []
         cache_key = self._cache_key(text, context)
         translated = self._read_exact_cache(cache_key)
         if not translated:
@@ -151,21 +150,19 @@ class TranslationStitcher:
             self._last_skip_reason = self._build_skip_reason("non_displayable_zh", translated=translated)
             return None
         self._last_skip_reason = ""
-        if self._enabled:
-            self._context.append(text)
         if not event.is_final:
             self._last_partial_call_ms = now_ms
             self._last_partial_source = text
             self._last_partial_translation = translated
         else:
+            if self._enabled:
+                self._context.append(text)
             self._last_partial_source = ""
             self._last_partial_translation = ""
 
         is_early_final = bool(getattr(event, "is_early_final", False))
         is_stable_partial = (not event.is_final) and translated == self._last_partial_translation
-        should_speak = event.is_final and translated != self._last_spoken
-        if should_speak:
-            self._last_spoken = translated
+        should_speak = bool(event.is_final)
         return StitchResult(
             text=translated,
             is_final=event.is_final,
