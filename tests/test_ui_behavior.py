@@ -346,7 +346,7 @@ class LocalAiPageUiTests(_QtTestCase):
         self.assertEqual(page.remote_asr_model_combo.currentText(), "large-v3")
         self.assertEqual(page.llm_model_label.text(), "hy-mt1.5-7b")
         self.assertEqual(page.remote_llm_model_label.text(), "hy-mt1.5-7b")
-        self.assertEqual(page.asr_beam_spin.value(), 3)
+        self.assertEqual(page.asr_beam_spin.value(), 1)
         self.assertFalse(page.asr_condition_prev_check.isChecked())
         self.assertFalse(page.remote_asr_condition_prev_check.isChecked())
         self.assertEqual(page.asr_partial_interval_spin.value(), 800)

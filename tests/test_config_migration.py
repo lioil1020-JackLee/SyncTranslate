@@ -24,6 +24,10 @@ class ConfigMigrationTests(unittest.TestCase):
 
     def test_default_remote_asr_profile_matches_local_asr_defaults(self) -> None:
         cfg = AppConfig()
+        self.assertEqual(cfg.asr_channels.remote.beam_size, 1)
+        self.assertEqual(cfg.asr_channels.local.beam_size, 1)
+        self.assertEqual(cfg.asr_channels.remote.streaming.partial_history_seconds, 2)
+        self.assertEqual(cfg.asr_channels.local.streaming.partial_history_seconds, 2)
         self.assertTrue(cfg.asr_channels.remote.condition_on_previous_text)
         self.assertAlmostEqual(cfg.asr_channels.remote.vad.rms_threshold, 0.02, places=3)
         self.assertTrue(cfg.asr_channels.local.condition_on_previous_text)

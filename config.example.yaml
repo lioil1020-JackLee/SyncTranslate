@@ -17,7 +17,7 @@ asr:
   model: large-v3
   device: cuda
   compute_type: float16
-  beam_size: 3
+  beam_size: 1
   final_beam_size: 3
   condition_on_previous_text: true
   final_condition_on_previous_text: false
@@ -31,8 +31,8 @@ asr:
     speech_pad_ms: 170
     rms_threshold: 0.02
   streaming:
-    partial_interval_ms: 320
-    partial_history_seconds: 3
+    partial_interval_ms: 800
+    partial_history_seconds: 2
     final_history_seconds: 6
     soft_final_audio_ms: 4200
 asr_channels:
@@ -41,7 +41,7 @@ asr_channels:
     model: large-v3
     device: cuda
     compute_type: float16
-    beam_size: 3
+    beam_size: 1
     final_beam_size: 3
     condition_on_previous_text: true
     final_condition_on_previous_text: false
@@ -55,8 +55,8 @@ asr_channels:
       speech_pad_ms: 170
       rms_threshold: 0.02
     streaming:
-      partial_interval_ms: 320
-      partial_history_seconds: 3
+      partial_interval_ms: 800
+      partial_history_seconds: 2
       final_history_seconds: 6
       soft_final_audio_ms: 4200
   remote:
@@ -64,7 +64,7 @@ asr_channels:
     model: large-v3
     device: cuda
     compute_type: float16
-    beam_size: 3
+    beam_size: 1
     final_beam_size: 3
     condition_on_previous_text: true
     final_condition_on_previous_text: false
@@ -78,8 +78,8 @@ asr_channels:
       speech_pad_ms: 170
       rms_threshold: 0.02
     streaming:
-      partial_interval_ms: 320
-      partial_history_seconds: 3
+      partial_interval_ms: 800
+      partial_history_seconds: 2
       final_history_seconds: 6
       soft_final_audio_ms: 4200
 llm:
@@ -314,6 +314,8 @@ runtime:
   chunk_ms: 40
   passthrough_gain: 1.6
   tts_gain: 1.4
+  adaptive_asr_enabled: true
+  adaptive_llm_enabled: true
   asr_pre_roll_ms: 220
   latency_mode: balanced
   display_partial_strategy: stable_only

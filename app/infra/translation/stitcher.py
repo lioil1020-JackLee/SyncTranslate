@@ -30,6 +30,7 @@ class TranslationStitcher:
         source_lang: str,
         target_lang: str,
         profile: TranslationProfileConfig | None = None,
+        stable_profile: TranslationProfileConfig | None = None,
         enabled: bool = True,
         trigger_tokens: int = 20,
         max_context_items: int = 6,
@@ -37,22 +38,35 @@ class TranslationStitcher:
         partial_interval_floor_ms: int = 320,
         exact_cache_size: int = 256,
         prefix_min_delta_chars: int = 6,
+        adaptive_enabled: bool = True,
     ) -> None:
         self._translator = translator
         self._source_lang = source_lang
         self._target_lang = target_lang
         self._profile = profile
+        self._stable_profile = stable_profile
         self._enabled = bool(enabled)
-        self._trigger_tokens = max(8, int(trigger_tokens))
-        self._context: deque[str] = deque(maxlen=max(2, int(max_context_items)))
+        self._adaptive_enabled = bool(adaptive_enabled)
+        self._base_trigger_tokens = max(8, int(trigger_tokens))
+        self._trigger_tokens = self._base_trigger_tokens
+        self._base_context_items = max(2, int(max_context_items))
+        self._max_context_items = self._base_context_items
+        self._context: deque[str] = deque(maxlen=self._base_context_items)
         self._last_partial_call_ms = 0
-        self._min_partial_interval_ms = max(int(partial_interval_floor_ms), int(min_partial_interval_ms))
+        self._partial_interval_floor_ms = max(120, int(partial_interval_floor_ms))
+        self._base_min_partial_interval_ms = max(self._partial_interval_floor_ms, int(min_partial_interval_ms))
+        self._min_partial_interval_ms = self._base_min_partial_interval_ms
         self._exact_cache_size = max(32, int(exact_cache_size))
         self._prefix_min_delta_chars = max(1, int(prefix_min_delta_chars))
         self._exact_cache: OrderedDict[str, str] = OrderedDict()
         self._last_partial_source = ""
         self._last_partial_translation = ""
         self._last_skip_reason = ""
+        self._adaptive_mode = "baseline"
+        self._prefer_stable_profile = False
+        self._adaptive_recent_units: deque[int] = deque(maxlen=10)
+        self._adaptive_recent_latency_ms: deque[int] = deque(maxlen=10)
+        self._adaptive_recent_failures: deque[int] = deque(maxlen=10)
 
     def set_languages(self, *, source_lang: str, target_lang: str) -> None:
         new_source = (source_lang or "").strip()
@@ -64,6 +78,14 @@ class TranslationStitcher:
         self._context.clear()
         self._last_partial_source = ""
         self._last_partial_translation = ""
+        self._adaptive_recent_units.clear()
+        self._adaptive_recent_latency_ms.clear()
+        self._adaptive_recent_failures.clear()
+        self._adaptive_mode = "baseline"
+        self._trigger_tokens = self._base_trigger_tokens
+        self._min_partial_interval_ms = self._base_min_partial_interval_ms
+        self._max_context_items = self._base_context_items
+        self._prefer_stable_profile = False
 
     @staticmethod
     def _estimated_units(text: str) -> int:
@@ -124,31 +146,39 @@ class TranslationStitcher:
                         should_speak=False,
                     )
 
-        context = list(self._context) if self._enabled and not event.is_final else []
+        context = list(self._context)[-self._max_context_items :] if self._enabled and not event.is_final else []
         cache_key = self._cache_key(text, context)
         translated = self._read_exact_cache(cache_key)
         if not translated:
+            start = time.perf_counter()
             translated = self._translator.translate(
                 text=text,
                 source_lang=self._source_lang,
                 target_lang=self._target_lang,
                 context=context,
-                profile=self._profile,
+                profile=self._current_profile(),
             )
-            if translated:
-                self._write_exact_cache(cache_key, translated)
+            latency_ms = int((time.perf_counter() - start) * 1000)
+        else:
+            latency_ms = 0
+        if translated:
+            self._write_exact_cache(cache_key, translated)
         if not translated:
             self._last_skip_reason = self._build_skip_reason("empty_translation")
+            self._record_adaptive_result(units=units, latency_ms=latency_ms, success=False)
             return None
         if _looks_like_format_contamination(translated):
             if event.is_final:
                 self._last_partial_source = ""
                 self._last_partial_translation = ""
             self._last_skip_reason = self._build_skip_reason("format_contamination", translated=translated)
+            self._record_adaptive_result(units=units, latency_ms=latency_ms, success=False)
             return None
         if self._target_lang.lower().startswith("zh") and not _looks_like_displayable_zh_translation(translated):
             self._last_skip_reason = self._build_skip_reason("non_displayable_zh", translated=translated)
+            self._record_adaptive_result(units=units, latency_ms=latency_ms, success=False)
             return None
+        self._record_adaptive_result(units=units, latency_ms=latency_ms, success=True)
         self._last_skip_reason = ""
         if not event.is_final:
             self._last_partial_call_ms = now_ms
@@ -175,8 +205,19 @@ class TranslationStitcher:
     def last_skip_reason(self) -> str:
         return self._last_skip_reason
 
+    def adaptive_snapshot(self) -> dict[str, object]:
+        profile = self._current_profile()
+        return {
+            "mode": self._adaptive_mode,
+            "trigger_tokens": self._trigger_tokens,
+            "min_partial_interval_ms": self._min_partial_interval_ms,
+            "context_items": self._max_context_items,
+            "profile": getattr(profile, "name", ""),
+        }
+
     def _cache_key(self, text: str, context: list[str] | None = None) -> str:
-        profile_name = (self._profile.name.strip() if self._profile else "default") or "default"
+        current_profile = self._current_profile()
+        profile_name = (current_profile.name.strip() if current_profile else "default") or "default"
         context_hash = self._context_fingerprint(context or [])
         return f"{self._source_lang}>{self._target_lang}|profile={profile_name}|ctx={context_hash}|{text}"
 
@@ -216,6 +257,66 @@ class TranslationStitcher:
         if last_error:
             details.append(f"error={last_error!r}")
         return " | ".join(details)
+
+    def _current_profile(self) -> TranslationProfileConfig | None:
+        if self._prefer_stable_profile and self._profile and self._profile.name == "live_caption_fast":
+            return self._stable_profile or self._profile
+        return self._profile
+
+    def _record_adaptive_result(self, *, units: int, latency_ms: int, success: bool) -> None:
+        if not self._adaptive_enabled:
+            return
+        self._adaptive_recent_units.append(max(1, int(units)))
+        self._adaptive_recent_latency_ms.append(max(0, int(latency_ms)))
+        self._adaptive_recent_failures.append(0 if success else 1)
+        self._recompute_adaptive_tuning()
+
+    def _recompute_adaptive_tuning(self) -> None:
+        if not self._adaptive_enabled:
+            return
+        avg_units = (
+            sum(self._adaptive_recent_units) / len(self._adaptive_recent_units)
+            if self._adaptive_recent_units
+            else 0.0
+        )
+        avg_latency_ms = (
+            sum(self._adaptive_recent_latency_ms) / len(self._adaptive_recent_latency_ms)
+            if self._adaptive_recent_latency_ms
+            else 0.0
+        )
+        failure_rate = (
+            sum(self._adaptive_recent_failures) / len(self._adaptive_recent_failures)
+            if self._adaptive_recent_failures
+            else 0.0
+        )
+
+        trigger_tokens = self._base_trigger_tokens
+        min_partial_interval_ms = self._base_min_partial_interval_ms
+        max_context_items = self._base_context_items
+        prefer_stable_profile = False
+        mode_parts: list[str] = []
+
+        if avg_units and avg_units <= max(8, self._base_trigger_tokens - 2):
+            trigger_tokens = min(28, self._base_trigger_tokens + 4)
+            min_partial_interval_ms = min(1400, self._base_min_partial_interval_ms + 180)
+            max_context_items = max(2, self._base_context_items - 2)
+            mode_parts.append("short_fragments")
+        elif avg_units >= self._base_trigger_tokens + 6:
+            trigger_tokens = max(8, self._base_trigger_tokens - 2)
+            mode_parts.append("long_sentences")
+
+        if avg_latency_ms >= 900 or failure_rate >= 0.35:
+            trigger_tokens = min(28, max(trigger_tokens, self._base_trigger_tokens + 2))
+            min_partial_interval_ms = min(1600, max(min_partial_interval_ms, self._base_min_partial_interval_ms + 260))
+            max_context_items = max(2, min(max_context_items, self._base_context_items - 1))
+            prefer_stable_profile = True
+            mode_parts.append("conservative")
+
+        self._adaptive_mode = "+".join(mode_parts) if mode_parts else "baseline"
+        self._trigger_tokens = trigger_tokens
+        self._min_partial_interval_ms = max(self._partial_interval_floor_ms, min_partial_interval_ms)
+        self._max_context_items = max(2, min(self._base_context_items, max_context_items))
+        self._prefer_stable_profile = prefer_stable_profile
 
 
 def _looks_like_displayable_zh_translation(text: str) -> bool:

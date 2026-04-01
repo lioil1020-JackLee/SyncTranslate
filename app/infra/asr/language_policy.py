@@ -20,6 +20,7 @@ class VadDecision:
 class VadSegmenter:
     def __init__(self, config: VadSettings) -> None:
         self._config = config
+        self._runtime_min_silence_duration_ms: float | None = None
         self._speech_ms = 0.0
         self._silence_ms = 0.0
         self._speech_holdoff_ms = 0.0  # elapsed ms since last real speech, within pad window
@@ -41,6 +42,18 @@ class VadSegmenter:
     def effective_rms_threshold(self) -> float:
         # Honor the user-configured threshold from UI/config directly.
         return max(0.0, float(self._config.rms_threshold))
+
+    @property
+    def effective_min_silence_duration_ms(self) -> float:
+        if self._runtime_min_silence_duration_ms is not None:
+            return max(120.0, float(self._runtime_min_silence_duration_ms))
+        return max(120.0, float(self._config.min_silence_duration_ms))
+
+    def set_runtime_tuning(self, *, min_silence_duration_ms: int | None = None) -> None:
+        if min_silence_duration_ms is None:
+            self._runtime_min_silence_duration_ms = None
+            return
+        self._runtime_min_silence_duration_ms = max(120.0, float(min_silence_duration_ms))
 
     def update(self, chunk: np.ndarray, sample_rate: float) -> VadDecision:
         if sample_rate <= 0:
@@ -68,7 +81,7 @@ class VadSegmenter:
                     self._speech_holdoff_ms += chunk_ms
                 else:
                     self._silence_ms += chunk_ms
-                    if self._silence_ms >= float(self._config.min_silence_duration_ms):
+                    if self._silence_ms >= self.effective_min_silence_duration_ms:
                         finalize = True
 
             if finalize:
@@ -111,7 +124,7 @@ class VadSegmenter:
                     self._speech_holdoff_ms += chunk_ms
                 else:
                     self._silence_ms += chunk_ms
-                    if self._silence_ms >= float(self._config.min_silence_duration_ms):
+                    if self._silence_ms >= self.effective_min_silence_duration_ms:
                         finalize = True
 
         if finalize:

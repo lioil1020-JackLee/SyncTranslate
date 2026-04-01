@@ -17,7 +17,7 @@ class FasterWhisperEngine:
     model: str = "large-v3"
     device: str = "cuda"
     compute_type: str = "float16"
-    beam_size: int = 3
+    beam_size: int = 1
     final_beam_size: int = 3
     condition_on_previous_text: bool = True
     final_condition_on_previous_text: bool = False

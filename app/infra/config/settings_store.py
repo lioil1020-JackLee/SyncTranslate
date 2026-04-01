@@ -254,7 +254,7 @@ def migrate_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
     result["asr"]["model"] = str(asr.get("model") or openai.get("asr_model") or "large-v3")
     result["asr"]["device"] = str(asr.get("device") or "cuda")
     result["asr"]["compute_type"] = str(asr.get("compute_type") or "float16")
-    result["asr"]["beam_size"] = int(asr.get("beam_size", 3))
+    result["asr"]["beam_size"] = int(asr.get("beam_size", 1))
     result["asr"]["final_beam_size"] = int(asr.get("final_beam_size", max(3, result["asr"]["beam_size"])))
     result["asr"]["condition_on_previous_text"] = bool(asr.get("condition_on_previous_text", True))
     result["asr"]["final_condition_on_previous_text"] = bool(asr.get("final_condition_on_previous_text", False))

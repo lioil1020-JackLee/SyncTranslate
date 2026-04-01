@@ -35,6 +35,8 @@ SyncTranslate 是一個在 Windows 上運作的雙向即時翻譯桌面工具，
 - `TTS = 無` 時仍可保留字幕與翻譯文字，不會再被自動補回預設聲線。
 - passthrough 已改為非同步播放佇列，避免卡住 ASR callback。
 - ASR 預設調整為穩定優先，降低 partial 與 final hallucination。
+- ASR partial 預設改為較輕量的 live decode 組合，降低即時辨識抖動。
+- ASR / LLM 新增 session 內自適應調參，會依最近語句長度與延遲微調 live 策略，但不會自動改寫 `config.yaml`。
 - `設定 > 音訊裝置` 的四個音量 slider 以百分比 `0% ~ 100%` 顯示真實裝置音量。
 
 ## 核心概念
@@ -56,12 +58,15 @@ SyncTranslate 是一個在 Windows 上運作的雙向即時翻譯桌面工具，
 ## 目前內建預設
 
 - ASR：`large-v3`
+- ASR partial beam：`1`
+- ASR partial history：`2s`
 - 執行取樣率：`48000`
 - chunk：`40ms`
 - pre-roll：`220ms`
 - 內部播放增益：固定 `100%`
 - 字幕 profile：`live_caption_fast`
 - 語音 profile：`speech_output_natural`
+- runtime adaptive：`ASR / LLM = enabled`
 
 ## 方向控制規則
 
@@ -107,3 +112,10 @@ uv run python -m pytest -q
 - TTS now speaks the final LLM translation text directly and no longer generates a separate speech-profile rewrite.
 - Default behavior no longer speaks stable partial text; ASR, LLM, and TTS stay on a simple final-result pipeline.
 - `僅 partial 使用上下文` 開啟時，只有 partial 翻譯會參考前文；final 翻譯仍只看當句，避免同一句 ASR 出現不同譯文。
+
+## 2026-04-01 Runtime Adaptive Tuning
+
+- ASR partial 預設改為 `beam_size = 1`、`partial_history_seconds = 2`，先降低 live partial decode 負擔。
+- ASR 會依最近語句長度、partial latency、final latency 與 queue 壓力，動態調整 `partial_interval_ms`、`min_silence_duration_ms`、`soft_final_audio_ms`。
+- LLM 會依最近片段長度、翻譯延遲與失敗率，動態調整 partial trigger、最小 partial 間隔、context 長度，必要時暫時從 `live_caption_fast` 切到 `live_caption_stable`。
+- 自適應僅在目前 session 生效，不會把學到的值自動寫回 `config.yaml`。

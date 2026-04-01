@@ -201,6 +201,10 @@ class ASRManager:
                     "last_debug": "",
                     "vad_rms": 0.0,
                     "vad_threshold": 0.0,
+                    "adaptive_mode": "baseline",
+                    "adaptive_partial_interval_ms": 0,
+                    "adaptive_min_silence_duration_ms": 0,
+                    "adaptive_soft_final_audio_ms": 0,
                 }
                 continue
             stats = stream.stats()
@@ -212,6 +216,10 @@ class ASRManager:
                 "last_debug": stats.last_debug,
                 "vad_rms": stats.vad_rms,
                 "vad_threshold": stats.vad_threshold,
+                "adaptive_mode": stats.adaptive_mode,
+                "adaptive_partial_interval_ms": stats.adaptive_partial_interval_ms,
+                "adaptive_min_silence_duration_ms": stats.adaptive_min_silence_duration_ms,
+                "adaptive_soft_final_audio_ms": stats.adaptive_soft_final_audio_ms,
             }
         return result
 
@@ -257,6 +265,7 @@ class ASRManager:
             min_partial_audio_ms=int(getattr(runtime_cfg, "asr_partial_min_audio_ms", 280)),
             partial_interval_floor_ms=int(getattr(runtime_cfg, "asr_partial_interval_floor_ms", 280)),
             early_final_enabled=bool(getattr(runtime_cfg, "early_final_enabled", True)),
+            adaptive_enabled=bool(getattr(runtime_cfg, "adaptive_asr_enabled", True)),
             queue_maxsize=queue_maxsize,
             on_debug=self._on_error,
         )

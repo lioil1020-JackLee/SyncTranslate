@@ -34,6 +34,10 @@ class StreamingAsrStats:
     last_debug: str
     vad_rms: float
     vad_threshold: float
+    adaptive_mode: str
+    adaptive_partial_interval_ms: int
+    adaptive_min_silence_duration_ms: int
+    adaptive_soft_final_audio_ms: int
 
 
 class StreamingAsr:
@@ -50,6 +54,7 @@ class StreamingAsr:
         min_partial_audio_ms: int = 280,
         partial_interval_floor_ms: int = 280,
         early_final_enabled: bool = True,
+        adaptive_enabled: bool = True,
         queue_maxsize: int = 128,
         on_event: Callable[[AsrEvent], None] | None = None,
         on_debug: Callable[[str], None] | None = None,
@@ -57,7 +62,9 @@ class StreamingAsr:
         self._engine = engine
         self._vad = vad
         # Keep partial decode conservative to avoid native decoder overload.
-        self._partial_interval_ms = max(int(partial_interval_floor_ms), int(partial_interval_ms))
+        self._partial_interval_floor_ms = max(120, int(partial_interval_floor_ms))
+        self._base_partial_interval_ms = max(self._partial_interval_floor_ms, int(partial_interval_ms))
+        self._partial_interval_ms = self._base_partial_interval_ms
         self._partial_history_seconds = max(1, int(partial_history_seconds))
         self._final_history_seconds = max(1, int(final_history_seconds))
         self._pre_roll_ms = max(0, int(pre_roll_ms))
@@ -74,8 +81,18 @@ class StreamingAsr:
         self._min_partial_audio_ms = max(120, int(min_partial_audio_ms))
         self._force_final_queue_size = max(8, self._queue.maxsize // 4)
         self._force_final_audio_ms = 1800
-        self._soft_final_audio_ms = max(self._force_final_audio_ms, int(soft_final_audio_ms))
+        self._base_soft_final_audio_ms = max(self._force_final_audio_ms, int(soft_final_audio_ms))
+        self._soft_final_audio_ms = self._base_soft_final_audio_ms
         self._early_final_enabled = bool(early_final_enabled)
+        self._adaptive_enabled = bool(adaptive_enabled)
+        self._base_min_silence_duration_ms = int(
+            max(120.0, float(getattr(vad, "effective_min_silence_duration_ms", 240.0)))
+        )
+        self._adaptive_mode = "baseline"
+        self._adaptive_recent_audio_ms: deque[int] = deque(maxlen=10)
+        self._adaptive_partial_latencies: deque[int] = deque(maxlen=10)
+        self._adaptive_final_latencies: deque[int] = deque(maxlen=10)
+        self._adaptive_load_backoff_until_ms = 0
         self._overflow_count = 0
         self._last_overflow_report_ms = 0
         self._drop_partial_until_final = False
@@ -88,6 +105,13 @@ class StreamingAsr:
         self._final_count = 0
         self._last_debug = ""
         self._stats_lock = Lock()
+        self._apply_adaptive_tuning(
+            mode="baseline",
+            partial_interval_ms=self._base_partial_interval_ms,
+            min_silence_duration_ms=self._base_min_silence_duration_ms,
+            soft_final_audio_ms=self._base_soft_final_audio_ms,
+            force=True,
+        )
 
     def start(self, on_event: Callable[[AsrEvent], None]) -> None:
         self.stop()
@@ -123,6 +147,17 @@ class StreamingAsr:
         self._partial_count = 0
         self._final_count = 0
         self._last_debug = ""
+        self._adaptive_recent_audio_ms.clear()
+        self._adaptive_partial_latencies.clear()
+        self._adaptive_final_latencies.clear()
+        self._adaptive_load_backoff_until_ms = 0
+        self._apply_adaptive_tuning(
+            mode="baseline",
+            partial_interval_ms=self._base_partial_interval_ms,
+            min_silence_duration_ms=self._base_min_silence_duration_ms,
+            soft_final_audio_ms=self._base_soft_final_audio_ms,
+            force=True,
+        )
         while not self._queue.empty():
             try:
                 self._queue.get_nowait()
@@ -151,6 +186,12 @@ class StreamingAsr:
                 last_debug=self._last_debug,
                 vad_rms=self._vad.last_rms,
                 vad_threshold=self._vad.effective_rms_threshold,
+                adaptive_mode=self._adaptive_mode,
+                adaptive_partial_interval_ms=self._partial_interval_ms,
+                adaptive_min_silence_duration_ms=int(
+                    getattr(self._vad, "effective_min_silence_duration_ms", self._base_min_silence_duration_ms)
+                ),
+                adaptive_soft_final_audio_ms=self._soft_final_audio_ms,
             )
 
     def submit_chunk(self, chunk: np.ndarray, sample_rate: float) -> None:
@@ -173,6 +214,8 @@ class StreamingAsr:
             self._drop_partial_until_final = True
             # Cool down partial decoding after overflow to reduce native ASR load spikes.
             self._partial_cooldown_until_ms = max(self._partial_cooldown_until_ms, now_ms + 8000)
+            self._adaptive_load_backoff_until_ms = max(self._adaptive_load_backoff_until_ms, now_ms + 12000)
+            self._recompute_adaptive_tuning(now_ms=now_ms)
             self._debug("asr safety mode: partial decode cooling down after overflow")
 
     def _run(self) -> None:
@@ -296,6 +339,7 @@ class StreamingAsr:
             now_ms = int(time.monotonic() * 1000)
             self._partial_cooldown_until_ms = max(self._partial_cooldown_until_ms, now_ms + 15000)
             self._debug("asr safety mode: partial decode cooling down after high partial latency")
+        self._record_partial_adaptation(latency_ms=latency_ms)
         self._on_event(
             AsrEvent(
                 text=text.strip(),
@@ -343,6 +387,7 @@ class StreamingAsr:
             now_ms = int(time.monotonic() * 1000)
             self._partial_cooldown_until_ms = max(self._partial_cooldown_until_ms, now_ms + 6000)
             self._debug(f"asr partial backoff: latency={latency_ms}ms")
+        self._record_final_adaptation(audio_ms=audio_ms, latency_ms=latency_ms, now_ms=now_ms)
         if not text.strip():
             return
         if self._stop_event.is_set():
@@ -376,9 +421,110 @@ class StreamingAsr:
         segment_audio_ms = self._segment_audio_ms()
         if segment_audio_ms < 300 or segment_audio_ms > 2600:
             return False
-        configured_silence_ms = float(getattr(getattr(self._vad, "_config", None), "min_silence_duration_ms", 240))
+        configured_silence_ms = float(getattr(self._vad, "effective_min_silence_duration_ms", 240.0))
         early_silence_ms = max(120.0, min(220.0, configured_silence_ms * 0.7))
         return silence_ms >= early_silence_ms
+
+    def _record_partial_adaptation(self, *, latency_ms: int) -> None:
+        if not self._adaptive_enabled:
+            return
+        self._adaptive_partial_latencies.append(max(0, int(latency_ms)))
+        self._recompute_adaptive_tuning(now_ms=int(time.monotonic() * 1000))
+
+    def _record_final_adaptation(self, *, audio_ms: int, latency_ms: int, now_ms: int) -> None:
+        if not self._adaptive_enabled:
+            return
+        self._adaptive_recent_audio_ms.append(max(0, int(audio_ms)))
+        self._adaptive_final_latencies.append(max(0, int(latency_ms)))
+        self._recompute_adaptive_tuning(now_ms=now_ms)
+
+    def _recompute_adaptive_tuning(self, *, now_ms: int) -> None:
+        if not self._adaptive_enabled:
+            return
+
+        avg_audio_ms = (
+            sum(self._adaptive_recent_audio_ms) / len(self._adaptive_recent_audio_ms)
+            if self._adaptive_recent_audio_ms
+            else 0.0
+        )
+        avg_partial_latency_ms = (
+            sum(self._adaptive_partial_latencies) / len(self._adaptive_partial_latencies)
+            if self._adaptive_partial_latencies
+            else 0.0
+        )
+        avg_final_latency_ms = (
+            sum(self._adaptive_final_latencies) / len(self._adaptive_final_latencies)
+            if self._adaptive_final_latencies
+            else 0.0
+        )
+
+        partial_interval_ms = self._base_partial_interval_ms
+        min_silence_duration_ms = self._base_min_silence_duration_ms
+        soft_final_audio_ms = self._base_soft_final_audio_ms
+        mode_parts: list[str] = []
+
+        if avg_audio_ms and avg_audio_ms <= 1800:
+            partial_interval_ms = max(self._partial_interval_floor_ms, self._base_partial_interval_ms - 180)
+            min_silence_duration_ms = max(180, int(round(self._base_min_silence_duration_ms * 0.75)))
+            soft_final_audio_ms = max(self._force_final_audio_ms, int(round(self._base_soft_final_audio_ms * 0.85)))
+            mode_parts.append("short_turn")
+        elif avg_audio_ms >= 4200:
+            partial_interval_ms = min(1800, self._base_partial_interval_ms + 260)
+            min_silence_duration_ms = min(1100, int(round(self._base_min_silence_duration_ms * 1.15)))
+            mode_parts.append("long_form")
+
+        if (
+            avg_partial_latency_ms >= 900
+            or avg_final_latency_ms >= 1400
+            or now_ms < self._adaptive_load_backoff_until_ms
+        ):
+            partial_interval_ms = min(2000, max(partial_interval_ms, self._base_partial_interval_ms + 360))
+            soft_final_audio_ms = max(self._force_final_audio_ms, min(3600, self._base_soft_final_audio_ms - 600))
+            mode_parts.append("load_shed")
+
+        mode = "+".join(mode_parts) if mode_parts else "baseline"
+        self._apply_adaptive_tuning(
+            mode=mode,
+            partial_interval_ms=partial_interval_ms,
+            min_silence_duration_ms=min_silence_duration_ms,
+            soft_final_audio_ms=soft_final_audio_ms,
+        )
+
+    def _apply_adaptive_tuning(
+        self,
+        *,
+        mode: str,
+        partial_interval_ms: int,
+        min_silence_duration_ms: int,
+        soft_final_audio_ms: int,
+        force: bool = False,
+    ) -> None:
+        next_partial_interval_ms = max(self._partial_interval_floor_ms, int(partial_interval_ms))
+        next_min_silence_duration_ms = max(120, int(min_silence_duration_ms))
+        next_soft_final_audio_ms = max(self._force_final_audio_ms, int(soft_final_audio_ms))
+        current_min_silence_duration_ms = int(
+            getattr(self._vad, "effective_min_silence_duration_ms", self._base_min_silence_duration_ms)
+        )
+        changed = force or any(
+            (
+                mode != self._adaptive_mode,
+                next_partial_interval_ms != self._partial_interval_ms,
+                next_min_silence_duration_ms != current_min_silence_duration_ms,
+                next_soft_final_audio_ms != self._soft_final_audio_ms,
+            )
+        )
+        self._adaptive_mode = mode
+        self._partial_interval_ms = next_partial_interval_ms
+        self._soft_final_audio_ms = next_soft_final_audio_ms
+        if hasattr(self._vad, "set_runtime_tuning"):
+            self._vad.set_runtime_tuning(min_silence_duration_ms=next_min_silence_duration_ms)
+        if changed and not force:
+            self._debug(
+                "asr adaptive "
+                f"mode={mode} partial_ms={next_partial_interval_ms} "
+                f"silence_ms={next_min_silence_duration_ms} "
+                f"soft_final_ms={next_soft_final_audio_ms}"
+            )
 
     def _debug(self, message: str) -> None:
         with self._stats_lock:

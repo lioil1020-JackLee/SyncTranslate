@@ -1033,7 +1033,11 @@ class MainWindow(QMainWindow):
                     f"frames={capture['frame_count']} level={capture['level']:.5f} "
                     f"queue={asr['queue_size']} dropped={asr['dropped_chunks']} "
                     f"partials={asr['partial_count']} finals={asr['final_count']} "
-                    f"vad_rms={asr['vad_rms']:.5f} vad_th={asr['vad_threshold']:.5f}"
+                    f"vad_rms={asr['vad_rms']:.5f} vad_th={asr['vad_threshold']:.5f} "
+                    f"adaptive={asr.get('adaptive_mode', '-')} "
+                    f"partial_ms={asr.get('adaptive_partial_interval_ms', '-')} "
+                    f"silence_ms={asr.get('adaptive_min_silence_duration_ms', '-')} "
+                    f"soft_final_ms={asr.get('adaptive_soft_final_audio_ms', '-')}"
                 )
             )
             if capture["last_error"]:

@@ -497,8 +497,8 @@ class LocalAiPage(QWidget):
         try:
             self._set_combo_text(self.asr_model_combo, "large-v3")
             self._set_combo_text(self.remote_asr_model_combo, "large-v3")
-            self.asr_beam_spin.setValue(3)
-            self.remote_asr_beam_spin.setValue(3)
+            self.asr_beam_spin.setValue(1)
+            self.remote_asr_beam_spin.setValue(1)
             self.asr_partial_interval_spin.setValue(800)
             self.remote_asr_partial_interval_spin.setValue(800)
             self.asr_partial_history_spin.setValue(2)

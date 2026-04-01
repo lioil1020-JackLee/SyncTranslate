@@ -80,6 +80,27 @@ class _ContextSensitiveProvider(_FakeProvider):
         return f"plain:{text}"
 
 
+class _ScriptedProvider(_FakeProvider):
+    def __init__(self, responses: list[str]) -> None:
+        super().__init__()
+        self._responses = list(responses)
+
+    def translate(
+        self,
+        text: str,
+        *,
+        source_lang: str,
+        target_lang: str,
+        context=None,
+        profile=None,
+    ) -> str:
+        profile_name = getattr(profile, "name", "default")
+        self.calls.append((text, source_lang, target_lang, profile_name))
+        if self._responses:
+            return self._responses.pop(0)
+        return f"caption:{text}"
+
+
 class TranslatorManagerProfileTests(unittest.TestCase):
     @patch("app.infra.translation.engine.create_translation_provider")
     def test_tts_speaks_caption_translation_text_directly(self, mock_factory) -> None:
@@ -115,7 +136,7 @@ class TranslatorManagerProfileTests(unittest.TestCase):
         assert translated is not None
         self.assertEqual(translated.text, "caption:hello world")
         self.assertEqual(translated.speak_text, "caption:hello world")
-        self.assertEqual(len(providers[0].calls), 1)
+        self.assertEqual(sum(len(provider.calls) for provider in providers), 1)
 
     @patch("app.infra.translation.engine.create_translation_provider")
     def test_matching_caption_and_speech_profiles_reuse_caption_text(self, mock_factory) -> None:
@@ -157,7 +178,9 @@ class TranslatorManagerProfileTests(unittest.TestCase):
         providers = [_EmptyProvider(), _EmptyProvider()]
         mock_factory.side_effect = providers
 
-        manager = TranslatorManager(AppConfig())
+        config = AppConfig()
+        config.language.meeting_target = "en"
+        manager = TranslatorManager(config)
         event = ASREventWithSource(
             source="local",
             utterance_id="u3",
@@ -186,7 +209,9 @@ class TranslatorManagerProfileTests(unittest.TestCase):
         providers = [_FakeProvider(), _FakeProvider()]
         mock_factory.side_effect = providers
 
-        manager = TranslatorManager(AppConfig())
+        config = AppConfig()
+        config.language.meeting_target = "en"
+        manager = TranslatorManager(config)
         event1 = ASREventWithSource(
             source="remote",
             utterance_id="u4",
@@ -233,7 +258,9 @@ class TranslatorManagerProfileTests(unittest.TestCase):
         providers = [_ContextSensitiveProvider(), _ContextSensitiveProvider()]
         mock_factory.side_effect = providers
 
-        manager = TranslatorManager(AppConfig())
+        config = AppConfig()
+        config.language.meeting_target = "en"
+        manager = TranslatorManager(config)
         first = ASREventWithSource(
             source="remote",
             utterance_id="u10",
@@ -298,6 +325,7 @@ class TranslatorManagerProfileTests(unittest.TestCase):
 
         config = AppConfig()
         config.llm.sliding_window.enabled = True
+        config.language.meeting_target = "en"
         manager = TranslatorManager(config)
 
         first_final = ASREventWithSource(
@@ -322,7 +350,7 @@ class TranslatorManagerProfileTests(unittest.TestCase):
             pipeline_revision=1,
             config_fingerprint="fp",
             created_at=1.0,
-            text="She said",
+            text="She said we should join the call right now",
             is_final=False,
             is_early_final=False,
             start_ms=1200,
@@ -336,7 +364,93 @@ class TranslatorManagerProfileTests(unittest.TestCase):
 
         self.assertIsNotNone(translated)
         assert translated is not None
-        self.assertEqual(translated.text, "context:1:She said")
+        self.assertEqual(translated.text, "context:1:She said we should join the call right now")
+
+    @patch("app.infra.translation.engine.create_translation_provider")
+    def test_llm_adapts_partial_gate_for_short_fragments(self, mock_factory) -> None:
+        providers = [_FakeProvider(), _FakeProvider()]
+        mock_factory.side_effect = providers
+
+        config = AppConfig()
+        config.language.meeting_target = "en"
+        manager = TranslatorManager(config)
+        for idx in range(4):
+            manager.process(
+                ASREventWithSource(
+                    source="remote",
+                    utterance_id=f"short-{idx}",
+                    revision=1,
+                    pipeline_revision=1,
+                    config_fingerprint="fp",
+                    created_at=float(idx),
+                    text="hi there",
+                    is_final=True,
+                    is_early_final=False,
+                    start_ms=0,
+                    end_ms=900,
+                    latency_ms=50,
+                    detected_language="en",
+                )
+            )
+
+        snapshot = manager._stitchers["remote"].adaptive_snapshot()  # type: ignore[attr-defined]
+        self.assertIn("short_fragments", str(snapshot["mode"]))
+        self.assertGreater(int(snapshot["trigger_tokens"]), 16)
+        self.assertGreater(int(snapshot["min_partial_interval_ms"]), 320)
+
+    @patch("app.infra.translation.engine.create_translation_provider")
+    def test_llm_switches_to_stable_profile_when_recent_failures_are_high(self, mock_factory) -> None:
+        providers = [
+            _ScriptedProvider(["caption:local"]),
+            _ScriptedProvider(["<translation>noisy</translation>", "<translation>noisy</translation>", "caption:clean"]),
+        ]
+        mock_factory.side_effect = providers
+
+        config = AppConfig()
+        config.language.meeting_target = "en"
+        manager = TranslatorManager(config)
+        for idx in range(4):
+            translated = manager.process(
+                ASREventWithSource(
+                    source="remote",
+                    utterance_id=f"dirty-{idx}",
+                    revision=1,
+                    pipeline_revision=1,
+                    config_fingerprint="fp",
+                    created_at=float(idx),
+                    text="this is a slightly longer sentence for adaptation",
+                    is_final=True,
+                    is_early_final=False,
+                    start_ms=0,
+                    end_ms=2200,
+                    latency_ms=50,
+                    detected_language="en",
+                )
+            )
+            self.assertIsNone(translated)
+
+        translated = manager.process(
+            ASREventWithSource(
+                source="remote",
+                utterance_id="dirty-final",
+                revision=1,
+                pipeline_revision=1,
+                config_fingerprint="fp",
+                created_at=10.0,
+                text="this is a slightly longer sentence for adaptation now",
+                is_final=True,
+                is_early_final=False,
+                start_ms=0,
+                end_ms=2200,
+                latency_ms=50,
+                detected_language="en",
+            )
+        )
+
+        self.assertIsNotNone(translated)
+        snapshot = manager._stitchers["remote"].adaptive_snapshot()  # type: ignore[attr-defined]
+        self.assertEqual(snapshot["profile"], "live_caption_stable")
+        self.assertEqual(providers[1].calls[-1][3], "live_caption_stable")
 
 
 if __name__ == "__main__":

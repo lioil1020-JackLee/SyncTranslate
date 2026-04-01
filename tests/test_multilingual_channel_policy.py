@@ -6,6 +6,7 @@ import sys
 from types import ModuleType
 
 from app.infra.asr.streaming_pipeline import ASRManager
+from app.infra.asr.language_policy import VadSegmenter
 from app.infra.config.schema import AppConfig
 from app.infra.asr.stream_worker import StreamingAsr, _looks_like_silence_hallucination
 from app.infra.asr.faster_whisper_adapter import FasterWhisperEngine, _clear_model_cache_for_tests
@@ -334,6 +335,57 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
 
         self.assertEqual(stream._partial_interval_ms, 250)
         self.assertEqual(stream._min_partial_audio_ms, 240)
+
+    def test_streaming_asr_adapts_for_short_turns(self) -> None:
+        stream = StreamingAsr(
+            engine=object(),  # type: ignore[arg-type]
+            vad=VadSegmenter(type("Cfg", (), {
+                "enabled": True,
+                "min_speech_duration_ms": 150,
+                "min_silence_duration_ms": 520,
+                "max_speech_duration_s": 10.0,
+                "speech_pad_ms": 320,
+                "rms_threshold": 0.02,
+            })()),  # type: ignore[arg-type]
+            partial_interval_ms=800,
+            partial_interval_floor_ms=520,
+            soft_final_audio_ms=4200,
+            adaptive_enabled=True,
+        )
+
+        for idx in range(4):
+            stream._record_final_adaptation(audio_ms=1400, latency_ms=420, now_ms=1000 + idx)
+
+        stats = stream.stats()
+        self.assertEqual(stats.adaptive_mode, "short_turn")
+        self.assertLess(stats.adaptive_partial_interval_ms, 800)
+        self.assertLess(stats.adaptive_min_silence_duration_ms, 520)
+        self.assertLess(stats.adaptive_soft_final_audio_ms, 4200)
+
+    def test_streaming_asr_load_sheds_when_recent_latency_is_high(self) -> None:
+        stream = StreamingAsr(
+            engine=object(),  # type: ignore[arg-type]
+            vad=VadSegmenter(type("Cfg", (), {
+                "enabled": True,
+                "min_speech_duration_ms": 150,
+                "min_silence_duration_ms": 520,
+                "max_speech_duration_s": 10.0,
+                "speech_pad_ms": 320,
+                "rms_threshold": 0.02,
+            })()),  # type: ignore[arg-type]
+            partial_interval_ms=800,
+            partial_interval_floor_ms=520,
+            soft_final_audio_ms=4200,
+            adaptive_enabled=True,
+        )
+
+        for idx in range(4):
+            stream._record_partial_adaptation(latency_ms=1200 + idx * 20)
+
+        stats = stream.stats()
+        self.assertIn("load_shed", stats.adaptive_mode)
+        self.assertGreater(stats.adaptive_partial_interval_ms, 800)
+        self.assertLess(stats.adaptive_soft_final_audio_ms, 4200)
 
     def test_tts_queue_can_accept_stable_partial_before_final(self) -> None:
         cfg = AppConfig()

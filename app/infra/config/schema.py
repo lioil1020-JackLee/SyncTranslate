@@ -45,7 +45,7 @@ class VadSettings:
 @dataclass(slots=True)
 class AsrStreamingSettings:
     partial_interval_ms: int = 800
-    partial_history_seconds: int = 3
+    partial_history_seconds: int = 2
     final_history_seconds: int = 6
     soft_final_audio_ms: int = 4200
 
@@ -56,7 +56,7 @@ class AsrConfig:
     model: str = "large-v3"
     device: str = "cuda"
     compute_type: str = "float16"
-    beam_size: int = 3
+    beam_size: int = 1
     final_beam_size: int = 3
     condition_on_previous_text: bool = True
     final_condition_on_previous_text: bool = False
@@ -208,6 +208,8 @@ class RuntimeConfig:
     chunk_ms: int = 100
     passthrough_gain: float = 1.0
     tts_gain: float = 1.0
+    adaptive_asr_enabled: bool = True
+    adaptive_llm_enabled: bool = True
     asr_pre_roll_ms: int = 500
     latency_mode: str = "balanced"
     display_partial_strategy: str = "stable_only"

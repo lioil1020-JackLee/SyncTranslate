@@ -61,6 +61,7 @@ class TranslatorManager:
                 source_lang=config.language.meeting_source,
                 target_lang=config.language.meeting_target,
                 profile=remote_caption_profile,
+                stable_profile=self._resolve_profile(remote_llm, "live_caption_stable"),
                 enabled=remote_llm.sliding_window.enabled,
                 trigger_tokens=remote_trigger_tokens,
                 max_context_items=remote_context_items,
@@ -68,12 +69,14 @@ class TranslatorManager:
                 partial_interval_floor_ms=int(getattr(config.runtime, "llm_partial_interval_floor_ms", 320)),
                 exact_cache_size=config.runtime.translation_exact_cache_size,
                 prefix_min_delta_chars=config.runtime.translation_prefix_min_delta_chars,
+                adaptive_enabled=bool(getattr(config.runtime, "adaptive_llm_enabled", True)),
             ),
             "local": TranslationStitcher(
                 translator=self._providers["local"],
                 source_lang=config.language.local_source,
                 target_lang=config.language.local_target,
                 profile=local_caption_profile,
+                stable_profile=self._resolve_profile(local_llm, "live_caption_stable"),
                 enabled=local_llm.sliding_window.enabled,
                 trigger_tokens=local_trigger_tokens,
                 max_context_items=local_context_items,
@@ -81,6 +84,7 @@ class TranslatorManager:
                 partial_interval_floor_ms=int(getattr(config.runtime, "llm_partial_interval_floor_ms", 320)),
                 exact_cache_size=config.runtime.translation_exact_cache_size,
                 prefix_min_delta_chars=config.runtime.translation_prefix_min_delta_chars,
+                adaptive_enabled=bool(getattr(config.runtime, "adaptive_llm_enabled", True)),
             ),
         }
         self._speech_profiles = {
