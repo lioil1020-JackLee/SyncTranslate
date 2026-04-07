@@ -63,6 +63,9 @@ class ConfigApplyService:
         audio.meeting_out_volume = meeting_out_volume
         self._device_volume_controller.apply_audio_route_config(audio)
 
-    def apply_audio_route_levels_from_ui(self) -> None:
+    def apply_audio_route_levels_from_ui(self, config: AppConfig | None = None) -> None:
         audio = self._audio_routing_page.selected_audio_routes()
+        if config is not None:
+            config.audio = audio
+            audio = config.audio
         self.apply_audio_route_levels(audio)

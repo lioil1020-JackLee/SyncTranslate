@@ -25,6 +25,8 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
 
       - name: Set up Python
         run: uv python install 3.12
@@ -32,7 +34,7 @@ jobs:
       - name: Install dependencies
         shell: pwsh
         run: |
-          uv sync --locked --extra local --group dev
+          uv sync --locked --extra local --group build
 
       - name: Verify runtime imports
         shell: pwsh
@@ -40,6 +42,11 @@ jobs:
           uv run python -c "import ssl; print('ssl ok')"
           uv run python -c "import edge_tts; print('edge_tts ok')"
           uv run python -c "import faster_whisper; print('faster_whisper ok')"
+
+      - name: Run test suite
+        shell: pwsh
+        run: |
+          uv run pytest -q
 
       - name: Build with PyInstaller
         shell: pwsh

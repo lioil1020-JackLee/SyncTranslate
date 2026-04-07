@@ -76,7 +76,7 @@ class AudioRoutingPage(QWidget):
                     self._slider_value_to_gain(value),
                 )
             )
-            slider.sliderReleased.connect(self._notify_route_changed)
+            slider.valueChanged.connect(self._notify_route_changed)
 
         self.meeting_in_hostapi_combo.currentIndexChanged.connect(self._refresh_meeting_in_combo)
         self.microphone_in_hostapi_combo.currentIndexChanged.connect(self._refresh_microphone_in_combo)

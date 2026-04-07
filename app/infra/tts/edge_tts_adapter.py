@@ -95,7 +95,7 @@ def _decode_edge_tts_audio(audio_bytes: bytes, sample_rate: int) -> np.ndarray:
     except Exception as exc:
         raise ValueError(
             "edge_tts returned MP3 audio and optional package 'miniaudio' is not installed. "
-            "Install with: uv pip install miniaudio"
+            "Sync dependencies with uv so 'miniaudio' is installed from pyproject.toml."
         ) from exc
 
     try:

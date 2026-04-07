@@ -1072,7 +1072,7 @@ class MainWindow(QMainWindow):
         self._config_apply_service.apply_audio_route_levels(self.config.audio)
 
     def _apply_audio_route_levels_from_ui(self) -> None:
-        self._config_apply_service.apply_audio_route_levels_from_ui()
+        self._config_apply_service.apply_audio_route_levels_from_ui(self.config)
 
     def _save_config_to_disk(self) -> Path:
         return self._settings_service.save(self.config)

@@ -1,8 +1,12 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "synctranslate"
 version = "2.0.0"
 description = "Windows desktop live interpreter for meeting audio with local ASR and local LLM backends"
-readme = "docs/文件導覽.md"
+readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "edge-tts>=7.2.7",
@@ -25,5 +29,20 @@ local = [
 
 [dependency-groups]
 dev = [
+    "pytest>=8.4.2",
+]
+build = [
     "pyinstaller>=6.16.0",
 ]
+
+[tool.uv]
+default-groups = ["dev"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools]
+py-modules = ["main"]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
