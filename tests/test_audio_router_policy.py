@@ -204,8 +204,7 @@ class AudioRouterPolicyTests(unittest.TestCase):
     def test_router_starts_only_sources_with_asr_enabled(self) -> None:
         router, input_manager, asr_manager, translator, _ = _build_router(enabled_by_source={"remote": True, "local": True})
         config = type("Cfg", (), {"runtime": type("Rt", (), {"remote_asr_language": "en", "local_asr_language": "none"})()})()
-        asr_manager._config = config  # type: ignore[attr-defined]
-        translator._config = config  # type: ignore[attr-defined]
+        router.refresh_runtime_config(config)  # type: ignore[arg-type]
         routes = AudioRouteConfig(meeting_in="remote-dev", microphone_in="local-dev", speaker_out="spk", meeting_out="mtg")
         router.start("meeting_to_local", routes, sample_rate=24000, chunk_ms=40)
 
@@ -217,8 +216,7 @@ class AudioRouterPolicyTests(unittest.TestCase):
     def test_passthrough_toggle_changes_capture_need_for_local_source(self) -> None:
         router, input_manager, asr_manager, translator, _ = _build_router(enabled_by_source={"remote": True, "local": True})
         config = type("Cfg", (), {"runtime": type("Rt", (), {"remote_asr_language": "en", "local_asr_language": "none"})()})()
-        asr_manager._config = config  # type: ignore[attr-defined]
-        translator._config = config  # type: ignore[attr-defined]
+        router.refresh_runtime_config(config)  # type: ignore[arg-type]
         routes = AudioRouteConfig(meeting_in="remote-dev", microphone_in="local-dev", speaker_out="spk", meeting_out="mtg")
         router.start("meeting_to_local", routes, sample_rate=24000, chunk_ms=40)
 
@@ -232,8 +230,7 @@ class AudioRouterPolicyTests(unittest.TestCase):
     def test_subtitle_only_mode_does_not_trigger_passthrough_capture(self) -> None:
         router, input_manager, asr_manager, translator, _ = _build_router(enabled_by_source={"remote": True, "local": True})
         config = type("Cfg", (), {"runtime": type("Rt", (), {"remote_asr_language": "en", "local_asr_language": "none"})()})()
-        asr_manager._config = config  # type: ignore[attr-defined]
-        translator._config = config  # type: ignore[attr-defined]
+        router.refresh_runtime_config(config)  # type: ignore[arg-type]
         routes = AudioRouteConfig(meeting_in="remote-dev", microphone_in="local-dev", speaker_out="spk", meeting_out="mtg")
         router.start("meeting_to_local", routes, sample_rate=24000, chunk_ms=40)
 
@@ -340,8 +337,7 @@ class AudioRouterPolicyTests(unittest.TestCase):
     def test_unknown_mode_is_ignored_and_router_stays_bidirectional(self) -> None:
         router, input_manager, asr_manager, translator, _ = _build_router(enabled_by_source={"remote": True, "local": True})
         config = type("Cfg", (), {"runtime": type("Rt", (), {"remote_asr_language": "en", "local_asr_language": "none"})()})()
-        asr_manager._config = config  # type: ignore[attr-defined]
-        translator._config = config  # type: ignore[attr-defined]
+        router.refresh_runtime_config(config)  # type: ignore[arg-type]
         routes = AudioRouteConfig(meeting_in="remote-dev", microphone_in="local-dev", speaker_out="spk", meeting_out="mtg")
         router.start("unknown_mode", routes, sample_rate=24000, chunk_ms=40)
 
@@ -420,6 +416,144 @@ class AudioRouterPolicyTests(unittest.TestCase):
             router._transcript_buffer.latest("meeting_original", limit=1)[0].text,
             "hello",
         )
+
+
+class AudioRouterRuntimeConfigTests(unittest.TestCase):
+    """Tests that verify the runtime config snapshot and policy helpers work correctly."""
+
+    def test_refresh_runtime_config_stores_snapshot_on_router(self) -> None:
+        router, _, _, _, _ = _build_router()
+        from app.infra.config.schema import AppConfig
+        config = AppConfig()
+        config.runtime.display_partial_strategy = "all"
+        router.refresh_runtime_config(config)
+        self.assertIs(router._runtime_config, config)
+
+    def test_display_partial_strategy_reads_from_runtime_snapshot(self) -> None:
+        router, _, _, _, _ = _build_router()
+        from app.infra.config.schema import AppConfig
+        config = AppConfig()
+        config.runtime.display_partial_strategy = "all"
+        router.refresh_runtime_config(config)
+        self.assertEqual(router._display_partial_strategy(), "all")
+
+    def test_display_partial_strategy_defaults_to_stable_only_without_config(self) -> None:
+        router, _, _, _, _ = _build_router()
+        self.assertEqual(router._display_partial_strategy(), "stable_only")
+
+    def test_stable_partial_min_repeats_reads_from_runtime_snapshot(self) -> None:
+        router, _, _, _, _ = _build_router()
+        from app.infra.config.schema import AppConfig
+        config = AppConfig()
+        config.runtime.stable_partial_min_repeats = 5
+        router.refresh_runtime_config(config)
+        self.assertEqual(router._stable_partial_min_repeats(), 5)
+
+    def test_put_drop_oldest_returns_false_when_queue_not_full(self) -> None:
+        from queue import Queue
+        router, _, _, _, _ = _build_router()
+        q = Queue(maxsize=4)
+        dropped = router._put_drop_oldest(q, "item-1")
+        self.assertFalse(dropped)
+        self.assertEqual(q.qsize(), 1)
+
+    def test_put_drop_oldest_returns_true_and_drops_oldest_when_full(self) -> None:
+        from queue import Queue
+        router, _, _, _, _ = _build_router()
+        q = Queue(maxsize=2)
+        q.put_nowait("old-1")
+        q.put_nowait("old-2")
+        dropped = router._put_drop_oldest(q, "new-item")
+        self.assertTrue(dropped)
+        self.assertEqual(q.qsize(), 2)
+        items = [q.get_nowait(), q.get_nowait()]
+        self.assertIn("new-item", items)
+
+    def test_should_drop_over_latency_drops_when_latency_exceeds_max(self) -> None:
+        router, _, _, _, _ = _build_router()
+        from app.infra.config.schema import AppConfig
+        config = AppConfig()
+        config.runtime.max_pipeline_latency_ms = 1000
+        router.refresh_runtime_config(config)
+        event = ASREventWithSource(
+            source="remote",
+            utterance_id="u-slow",
+            revision=1,
+            pipeline_revision=1,
+            config_fingerprint="fp",
+            created_at=0.0,
+            text="slow",
+            is_final=True,
+            is_early_final=False,
+            start_ms=0,
+            end_ms=2000,
+            latency_ms=1500,  # exceeds 1000ms max
+            detected_language="en",
+        )
+        self.assertTrue(router._should_drop_over_latency(event))
+
+    def test_should_drop_over_latency_keeps_when_within_limit(self) -> None:
+        router, _, _, _, _ = _build_router()
+        from app.infra.config.schema import AppConfig
+        config = AppConfig()
+        config.runtime.max_pipeline_latency_ms = 3000
+        router.refresh_runtime_config(config)
+        event = ASREventWithSource(
+            source="remote",
+            utterance_id="u-fast",
+            revision=1,
+            pipeline_revision=1,
+            config_fingerprint="fp",
+            created_at=0.0,
+            text="fast",
+            is_final=True,
+            is_early_final=False,
+            start_ms=0,
+            end_ms=500,
+            latency_ms=200,
+            detected_language="en",
+        )
+        self.assertFalse(router._should_drop_over_latency(event))
+
+    def test_stats_includes_translation_overflow_field(self) -> None:
+        router, _, _, _, _ = _build_router()
+        stats = router.stats()
+        self.assertIn("translation_overflow", stats.__dataclass_fields__)
+        self.assertEqual(stats.translation_overflow, {"local": 0, "remote": 0})
+
+    def test_translation_queue_overflow_increments_counter_and_emits_diagnostic(self) -> None:
+        router, _, _, _, _ = _build_router(async_translation=True)
+        from queue import Queue
+        diagnostics: list[str] = []
+        router._on_diagnostic_event = diagnostics.append  # type: ignore[method-assign]
+        # Fill the queue to capacity then trigger overflow
+        q = router._translation_queues["remote"]
+        while not q.full():
+            q.put_nowait(object())
+        event = ASREventWithSource(
+            source="remote",
+            utterance_id="u-overflow",
+            revision=1,
+            pipeline_revision=1,
+            config_fingerprint="fp",
+            created_at=0.0,
+            text="overflow text",
+            is_final=False,
+            is_early_final=False,
+            start_ms=0,
+            end_ms=100,
+            latency_ms=50,
+            detected_language="en",
+        )
+        router._enqueue_translation_event(event)
+        self.assertEqual(router._translation_overflow_counters["remote"], 1)
+        self.assertTrue(any("translation_queue_overflow" in d for d in diagnostics))
+
+    def test_stop_resets_translation_overflow_counters(self) -> None:
+        router, _, _, _, _ = _build_router()
+        router._translation_overflow_counters["remote"] = 5
+        router.stop()
+        self.assertEqual(router._translation_overflow_counters, {"local": 0, "remote": 0})
 
 
 if __name__ == "__main__":

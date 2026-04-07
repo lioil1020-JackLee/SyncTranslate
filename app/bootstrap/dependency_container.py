@@ -72,6 +72,7 @@ def build_pipeline_bundle(
         on_play_start=audio_router.handle_tts_play_start,
         on_play_end=audio_router.handle_tts_play_end,
     )
+    audio_router.refresh_runtime_config(config)
     return PipelineBundle(
         audio_router=audio_router,
         session_controller=SessionController(audio_router),

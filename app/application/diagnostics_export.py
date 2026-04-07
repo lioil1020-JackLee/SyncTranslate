@@ -14,9 +14,18 @@ def export_runtime_diagnostics(
     routes,
     runtime_stats_text: str,
     recent_errors: list[str],
+    router_stats: dict[str, object] | None = None,
 ) -> Path:
     now = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_path = Path(f"diagnostics_{now}.txt")
+
+    overflow = {}
+    latency_summary: list[str] = []
+    if router_stats:
+        overflow = router_stats.get("translation_overflow") or {}
+        for entry in list(router_stats.get("latency") or [])[:8]:
+            latency_summary.append(str(entry))
+
     content = "\n".join(
         [
             "SyncTranslate Diagnostics",
@@ -46,6 +55,14 @@ def export_runtime_diagnostics(
             f"local_tts_model: {config.local_tts.model_path}",
             f"local_tts_voice: {config.local_tts.voice_name}",
             f"sample_rate: {config.runtime.sample_rate}",
+            f"max_pipeline_latency_ms: {config.runtime.max_pipeline_latency_ms}",
+            f"display_partial_strategy: {config.runtime.display_partial_strategy}",
+            f"llm_queue_maxsize_local: {config.runtime.llm_queue_maxsize_local}",
+            f"llm_queue_maxsize_remote: {config.runtime.llm_queue_maxsize_remote}",
+            f"translation_overflow_local: {overflow.get('local', 0)}",
+            f"translation_overflow_remote: {overflow.get('remote', 0)}",
+            "recent_latency_entries:",
+            *latency_summary,
             "runtime_stats:",
             runtime_stats_text,
             "recent_errors:",
@@ -99,6 +116,8 @@ def export_session_report(
             "local_translation_enabled": translation_enabled_for_source(config.runtime, "local"),
             "asr_language_mode": "auto",
             "tts_output_mode": str(getattr(config.runtime, "tts_output_mode", "subtitle_only") or "subtitle_only"),
+            "max_pipeline_latency_ms": config.runtime.max_pipeline_latency_ms,
+            "display_partial_strategy": config.runtime.display_partial_strategy,
             "asr_queue_maxsize_local": config.runtime.asr_queue_maxsize_local,
             "asr_queue_maxsize_remote": config.runtime.asr_queue_maxsize_remote,
             "llm_queue_maxsize_local": config.runtime.llm_queue_maxsize_local,
@@ -110,6 +129,8 @@ def export_session_report(
             "tts_queue_maxsize": config.runtime.tts_queue_maxsize,
         },
         "stats": payload.get("stats_before_stop", {}),
+        "translation_overflow": (payload.get("stats_before_stop") or {}).get("translation_overflow", {}),
+        "recent_latency": list((payload.get("stats_before_stop") or {}).get("latency") or [])[:16],
         "session_meta": payload.get("session_meta", {}),
         "recent_errors": recent_errors[-50:],
         "config_snapshot": config.to_dict(),

@@ -280,53 +280,6 @@ class MainWindow(QMainWindow):
             return
         if self._session_action_running:
             self._pending_live_apply = True
-            self.statusBar().showMessage("設定變更已暫存，等待目前的啟動/停止動作完成後套用")
-            return
-        if self.session_controller and self.session_controller.is_running():
-            self._pending_live_apply = True
-            self.statusBar().showMessage("設定變更已暫存，請先停止 session，程式會在停止後自動套用")
-            return
-        self._live_apply_timer.start()
-
-    def _apply_live_config_now(self) -> None:
-        if not self._live_apply_ready:
-            return
-        if self._session_action_running:
-            self._pending_live_apply = True
-            return
-        if self._live_apply_timer.isActive():
-            self._live_apply_timer.stop()
-
-        was_running = self.session_controller.is_running() if self.session_controller else False
-        if was_running:
-            self._pending_live_apply = True
-            self.statusBar().showMessage("設定變更已暫存，請先停止 session，程式會在停止後自動套用")
-            return
-        route = self.audio_routing_page.selected_audio_routes()
-        try:
-            self._pending_live_apply = False
-            self._sync_ui_to_config()
-            self.live_caption_page.apply_config(self.config)
-            self._runtime_facade.mark_dirty()
-            # Live apply should not write config.yaml automatically.
-            # Keep config changes in memory; only explicit save persists to disk.
-            path = Path(self.config_path)
-
-            if was_running and self.session_controller:
-                self.statusBar().showMessage(f"設定已暫存: {path}")
-            else:
-                self._ensure_pipelines_ready()
-                self.statusBar().showMessage(f"設定已套用(未儲存): {path}")
-            self.validate_current_routes()
-        except Exception as exc:
-            self._report_error(f"auto_apply_config failed: {exc}")
-            self.statusBar().showMessage(f"設定套用失敗: {exc}")
-
-    def _schedule_live_apply(self) -> None:
-        if not self._live_apply_ready or self._suspend_live_apply:
-            return
-        if self._session_action_running:
-            self._pending_live_apply = True
             self.statusBar().showMessage("設定已變更，待開始或停止完成後套用")
             return
         if self.session_controller and self.session_controller.is_running():

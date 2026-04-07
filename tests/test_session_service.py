@@ -43,6 +43,7 @@ class _FakeAudioRouter:
             asr={},
             tts={},
             latency=[],
+            translation_overflow={"local": 0, "remote": 0},
         )
 
 

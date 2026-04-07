@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import faulthandler
 from pathlib import Path
 import sys
@@ -43,6 +44,20 @@ def _configure_runtime_logging() -> None:
 
     sys.excepthook = _sys_excepthook
     threading.excepthook = _threading_excepthook
+
+    def _close_fault_log() -> None:
+        try:
+            faulthandler.disable()
+        except Exception:
+            pass
+        try:
+            if _FAULT_LOG_HANDLE is not None:
+                _FAULT_LOG_HANDLE.flush()
+                _FAULT_LOG_HANDLE.close()
+        except Exception:
+            pass
+
+    atexit.register(_close_fault_log)
 
 
 def main() -> int:

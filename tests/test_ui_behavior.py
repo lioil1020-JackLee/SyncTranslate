@@ -440,5 +440,82 @@ class LocalAiPageUiTests(_QtTestCase):
         self.assertTrue(hasattr(page, "show_advanced_check"))
 
 
+class MainWindowScheduleLiveApplyTests(_QtTestCase):
+    """Tests that verify _schedule_live_apply and _apply_live_config_now behavior."""
+
+    def test_schedule_live_apply_sets_pending_when_session_running(self) -> None:
+        window = MainWindow("config.yaml", device_volume_controller=_DummyDeviceVolumeController())
+
+        class _RunningSession:
+            def is_running(self) -> bool:
+                return True
+
+        window.session_controller = _RunningSession()  # type: ignore[assignment]
+        window._pending_live_apply = False
+        window._schedule_live_apply()
+
+        self.assertTrue(window._pending_live_apply)
+        # Timer must NOT be active (we deferred, not queued)
+        self.assertFalse(window._live_apply_timer.isActive())
+
+    def test_schedule_live_apply_starts_timer_when_session_idle(self) -> None:
+        window = MainWindow("config.yaml", device_volume_controller=_DummyDeviceVolumeController())
+
+        class _IdleSession:
+            def is_running(self) -> bool:
+                return False
+
+        window.session_controller = _IdleSession()  # type: ignore[assignment]
+        window._pending_live_apply = False
+        window._schedule_live_apply()
+
+        self.assertTrue(window._live_apply_timer.isActive())
+
+    def test_apply_live_config_now_defers_when_session_running(self) -> None:
+        window = MainWindow("config.yaml", device_volume_controller=_DummyDeviceVolumeController())
+
+        class _RunningSession:
+            def is_running(self) -> bool:
+                return True
+
+        window.session_controller = _RunningSession()  # type: ignore[assignment]
+        window._pending_live_apply = False
+        window._apply_live_config_now()
+
+        self.assertTrue(window._pending_live_apply)
+
+    def test_apply_live_config_now_applies_when_session_idle(self) -> None:
+        window = MainWindow("config.yaml", device_volume_controller=_DummyDeviceVolumeController())
+
+        class _IdleSession:
+            def is_running(self) -> bool:
+                return False
+
+        window.session_controller = _IdleSession()  # type: ignore[assignment]
+        window._pending_live_apply = True
+        window._apply_live_config_now()
+
+        # After applying, pending flag should be cleared
+        self.assertFalse(window._pending_live_apply)
+
+    def test_schedule_live_apply_is_no_op_when_not_ready(self) -> None:
+        window = MainWindow("config.yaml", device_volume_controller=_DummyDeviceVolumeController())
+        window._live_apply_ready = False
+        window._pending_live_apply = False
+        window._schedule_live_apply()
+
+        self.assertFalse(window._pending_live_apply)
+        self.assertFalse(window._live_apply_timer.isActive())
+
+    def test_schedule_live_apply_is_no_op_when_suspended(self) -> None:
+        window = MainWindow("config.yaml", device_volume_controller=_DummyDeviceVolumeController())
+        window._suspend_live_apply = True
+        window._pending_live_apply = False
+        window._schedule_live_apply()
+
+        self.assertFalse(window._pending_live_apply)
+        self.assertFalse(window._live_apply_timer.isActive())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -46,6 +46,43 @@ class DiagnosticsExportTests(unittest.TestCase):
             self.assertIn("router: running=True", text)
             self.assertIn("warn-2", text)
 
+    def test_export_runtime_diagnostics_includes_overflow_and_latency_fields(self) -> None:
+        cfg = AppConfig()
+        cfg.runtime.max_pipeline_latency_ms = 2500
+        cfg.runtime.display_partial_strategy = "stable_only"
+        cfg.runtime.llm_queue_maxsize_local = 16
+        cfg.runtime.llm_queue_maxsize_remote = 24
+        routes = AudioRouteConfig(
+            meeting_in="remote-in",
+            microphone_in="local-in",
+            speaker_out="speaker-out",
+            meeting_out="meeting-out",
+        )
+        router_stats = {
+            "translation_overflow": {"local": 3, "remote": 7},
+            "latency": [
+                {"source": "remote", "utterance_id": "u1", "speech_end_to_asr_final_ms": 400},
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp, contextlib.chdir(tmp):
+            path = export_runtime_diagnostics(
+                config_path="config.yaml",
+                config=cfg,
+                routes=routes,
+                runtime_stats_text="router: running=True",
+                recent_errors=[],
+                router_stats=router_stats,
+            )
+
+            self.assertTrue(path.exists())
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("max_pipeline_latency_ms: 2500", text)
+            self.assertIn("display_partial_strategy: stable_only", text)
+            self.assertIn("translation_overflow_local: 3", text)
+            self.assertIn("translation_overflow_remote: 7", text)
+            self.assertIn("u1", text)
+
     def test_export_session_report_contains_runtime_snapshot_and_recent_errors(self) -> None:
         cfg = AppConfig()
         cfg.runtime.remote_translation_enabled = True
@@ -58,7 +95,11 @@ class DiagnosticsExportTests(unittest.TestCase):
             meeting_out="meeting-out",
         )
         payload = {
-            "stats_before_stop": {"router": {"running": True}},
+            "stats_before_stop": {
+                "router": {"running": True},
+                "translation_overflow": {"local": 2, "remote": 4},
+                "latency": [{"source": "remote", "utterance_id": "u1"}],
+            },
             "session_meta": {"duration_sec": 12.5},
         }
 
@@ -79,9 +120,13 @@ class DiagnosticsExportTests(unittest.TestCase):
             self.assertFalse(report["runtime"]["local_translation_enabled"])
             self.assertEqual(report["runtime"]["asr_language_mode"], "auto")
             self.assertEqual(report["runtime"]["tts_output_mode"], "tts")
+            self.assertIn("max_pipeline_latency_ms", report["runtime"])
+            self.assertIn("display_partial_strategy", report["runtime"])
             self.assertEqual(report["stats"], payload["stats_before_stop"])
             self.assertEqual(report["session_meta"], payload["session_meta"])
             self.assertEqual(report["recent_errors"][-1], "err-b")
+            self.assertEqual(report["translation_overflow"], {"local": 2, "remote": 4})
+            self.assertEqual(len(report["recent_latency"]), 1)
 
 
 if __name__ == "__main__":

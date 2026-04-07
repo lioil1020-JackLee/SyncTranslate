@@ -14,6 +14,12 @@ from app.infra.audio.routing import AudioInputManager
 from app.infra.asr.streaming_pipeline import ASREventWithSource, ASRManager
 from app.infra.config.schema import AppConfig, AudioRouteConfig
 from app.domain.runtime_state import StateManager
+from app.domain.constants import (
+    DISPLAY_PARTIAL_ALL,
+    DISPLAY_PARTIAL_NONE,
+    DISPLAY_PARTIAL_STABLE_ONLY,
+    OUTPUT_MODE_TTS,
+)
 from app.application.transcript_service import TranscriptBuffer
 from app.infra.translation.engine import TranslatorManager
 from app.infra.tts.playback_queue import TTSManager
@@ -28,6 +34,7 @@ class RouterStats:
     asr: dict[str, dict[str, object]]
     tts: dict[str, object]
     latency: list[dict[str, object]]
+    translation_overflow: dict[str, int]
 
 
 @dataclass(slots=True)
@@ -76,6 +83,8 @@ class AudioRouter:
         self._async_translation = bool(async_translation)
         self._translation_workers: dict[str, Thread] = {}
         self._translation_stop_event = Event()
+        self._runtime_config: AppConfig | None = None
+        self._translation_overflow_counters: dict[str, int] = {"local": 0, "remote": 0}
         self._translation_queues = {
             "local": Queue(maxsize=self._translation_queue_maxsize_for_source("local")),
             "remote": Queue(maxsize=self._translation_queue_maxsize_for_source("remote")),
@@ -125,6 +134,7 @@ class AudioRouter:
         self._partial_display_state.clear()
         self._latency_by_utterance.clear()
         self._recent_latency.clear()
+        self._translation_overflow_counters = {"local": 0, "remote": 0}
         self._state.stop_session()
 
     def stats(self) -> RouterStats:
@@ -155,6 +165,7 @@ class AudioRouter:
             asr=self._asr_manager.stats(),
             tts=self._tts_manager.stats(),
             latency=list(self._recent_latency),
+            translation_overflow=dict(self._translation_overflow_counters),
         )
 
     def _on_local_audio_chunk(self, chunk: np.ndarray, sample_rate: float) -> None:
@@ -192,12 +203,7 @@ class AudioRouter:
 
     def _on_asr_event(self, event: ASREventWithSource) -> None:
         try:
-            runtime_config = getattr(getattr(self._asr_manager, "_config", None), "runtime", None)
-            max_latency_ms = max(500, int(getattr(runtime_config, "max_pipeline_latency_ms", 3000)))
-            if int(event.latency_ms) > max_latency_ms:
-                self._emit_diagnostic_event(
-                    f"drop_over_latency source={event.source} utterance_id={event.utterance_id} latency_ms={event.latency_ms}"
-                )
+            if self._should_drop_over_latency(event):
                 return
             self._emit_asr_event(event)
             self._record_asr_latency(event)
@@ -233,7 +239,7 @@ class AudioRouter:
                     created_at=datetime.fromtimestamp(event.created_at),
                 )
                 should_speak = event.is_final or bool(getattr(event, "is_early_final", False))
-                if should_speak and self._tts_manager.output_mode(tts_channel) == "tts":
+                if should_speak and self._tts_manager.output_mode(tts_channel) == OUTPUT_MODE_TTS:
                     speak_text = event.text.strip()
                     if speak_text:
                         self._emit_tts_request(tts_channel, speak_text)
@@ -292,7 +298,7 @@ class AudioRouter:
             latency_ms=event.latency_ms,
             created_at=datetime.fromtimestamp(translated.created_at),
         )
-        if translated.should_speak and self._tts_manager.output_mode(translated.tts_channel) == "tts":
+        if translated.should_speak and self._tts_manager.output_mode(translated.tts_channel) == OUTPUT_MODE_TTS:
             self._emit_tts_request(translated.tts_channel, translated.speak_text)
             self._record_tts_enqueue_latency(
                 channel=translated.tts_channel,
@@ -348,6 +354,7 @@ class AudioRouter:
         self._reconcile_runtime_sources()
 
     def refresh_runtime_config(self, config: AppConfig) -> None:
+        self._runtime_config = config
         refresh_runtime = getattr(self._asr_manager, "refresh_runtime", None)
         if callable(refresh_runtime):
             refresh_runtime()
@@ -402,9 +409,7 @@ class AudioRouter:
         }
 
     def _asr_needed_for_source(self, source: str) -> bool:
-        runtime = getattr(getattr(self._asr_manager, "_config", None), "runtime", None)
-        if runtime is None:
-            runtime = getattr(getattr(self._translator_manager, "_config", None), "runtime", None)
+        runtime = getattr(self._runtime_config, "runtime", None)
         if runtime is None:
             return True
         attr = "remote_asr_language" if source == "remote" else "local_asr_language"
@@ -432,7 +437,7 @@ class AudioRouter:
         return self._on_local_audio_chunk
 
     def _translation_queue_maxsize_for_source(self, source: str) -> int:
-        runtime = getattr(getattr(self._translator_manager, "_config", None), "runtime", None)
+        runtime = getattr(self._runtime_config, "runtime", None)
         if source == "remote":
             value = int(getattr(runtime, "llm_queue_maxsize_remote", 32)) if runtime is not None else 32
         else:
@@ -486,9 +491,9 @@ class AudioRouter:
             self._partial_display_state.pop(channel, None)
             return True, False
         strategy = self._display_partial_strategy()
-        if strategy == "all":
+        if strategy == DISPLAY_PARTIAL_ALL:
             return True, False
-        if strategy == "none":
+        if strategy == DISPLAY_PARTIAL_NONE:
             return False, False
         normalized = text.strip()
         if not normalized or not utterance_id:
@@ -515,19 +520,19 @@ class AudioRouter:
         return True, True
 
     def _display_partial_strategy(self) -> str:
-        runtime = getattr(getattr(self._translator_manager, "_config", None), "runtime", None)
-        value = str(getattr(runtime, "display_partial_strategy", "stable_only") or "stable_only").strip().lower()
-        if value in {"all", "none", "stable_only"}:
+        runtime = getattr(self._runtime_config, "runtime", None)
+        value = str(getattr(runtime, "display_partial_strategy", DISPLAY_PARTIAL_STABLE_ONLY) or DISPLAY_PARTIAL_STABLE_ONLY).strip().lower()
+        if value in {DISPLAY_PARTIAL_ALL, DISPLAY_PARTIAL_NONE, DISPLAY_PARTIAL_STABLE_ONLY}:
             return value
-        return "stable_only"
+        return DISPLAY_PARTIAL_STABLE_ONLY
 
     def _stable_partial_min_repeats(self) -> int:
-        runtime = getattr(getattr(self._translator_manager, "_config", None), "runtime", None)
+        runtime = getattr(self._runtime_config, "runtime", None)
         value = int(getattr(runtime, "stable_partial_min_repeats", 2)) if runtime is not None else 2
         return max(1, value)
 
     def _partial_stability_max_delta_chars(self) -> int:
-        runtime = getattr(getattr(self._translator_manager, "_config", None), "runtime", None)
+        runtime = getattr(self._runtime_config, "runtime", None)
         value = int(getattr(runtime, "partial_stability_max_delta_chars", 8)) if runtime is not None else 8
         return max(1, value)
 
@@ -579,23 +584,44 @@ class AudioRouter:
     def _enqueue_translation_event(self, event: ASREventWithSource) -> None:
         key = event.source if event.source in ("local", "remote") else "local"
         queue = self._translation_queues[key]
+        dropped = self._put_drop_oldest(queue, event)
+        if dropped:
+            self._translation_overflow_counters[key] = self._translation_overflow_counters.get(key, 0) + 1
+            self._emit_diagnostic_event(
+                f"translation_queue_overflow source={key} utterance_id={event.utterance_id} revision={event.revision}"
+                f" total_overflow={self._translation_overflow_counters[key]}"
+            )
+
+    def _put_drop_oldest(self, queue: Queue, item: object) -> bool:
+        """Put item into queue, dropping the oldest entry if full. Returns True if a drop occurred."""
         try:
-            queue.put_nowait(event)
+            queue.put_nowait(item)
+            return False
         except Full:
-            dropped = False
-            try:
-                queue.get_nowait()
-                dropped = True
-            except Empty:
-                pass
-            try:
-                queue.put_nowait(event)
-            except Full:
-                pass
-            if dropped:
-                self._emit_diagnostic_event(
-                    f"translation_queue_overflow source={key} utterance_id={event.utterance_id} revision={event.revision}"
-                )
+            pass
+        dropped = False
+        try:
+            queue.get_nowait()
+            dropped = True
+        except Empty:
+            pass
+        try:
+            queue.put_nowait(item)
+        except Full:
+            pass
+        return dropped
+
+    def _should_drop_over_latency(self, event: ASREventWithSource) -> bool:
+        """Return True (and emit diagnostic) if event latency exceeds max_pipeline_latency_ms."""
+        runtime_config = getattr(self._runtime_config, "runtime", None)
+        max_latency_ms = max(500, int(getattr(runtime_config, "max_pipeline_latency_ms", 3000)))
+        if int(event.latency_ms) > max_latency_ms:
+            self._emit_diagnostic_event(
+                f"drop_over_latency source={event.source} utterance_id={event.utterance_id}"
+                f" latency_ms={event.latency_ms} max_ms={max_latency_ms}"
+            )
+            return True
+        return False
 
     def _run_translation_worker(self, source: str) -> None:
         queue = self._translation_queues[source]
