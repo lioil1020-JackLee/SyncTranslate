@@ -1,10 +1,26 @@
 # -*- mode: python ; coding: utf-8 -*-
 import os
+import sys
 from PyInstaller.utils.hooks import collect_data_files
 
 
 datas = collect_data_files("opencc")
 icon = None
+binaries = []
+
+
+def collect_openssl_binaries():
+    dll_dir = os.path.join(sys.base_prefix, "DLLs")
+    names = ("libssl-3-x64.dll", "libcrypto-3-x64.dll")
+    found = []
+    for name in names:
+        candidate = os.path.join(dll_dir, name)
+        if os.path.exists(candidate):
+            found.append((candidate, "."))
+    return found
+
+
+binaries.extend(collect_openssl_binaries())
 
 here = os.path.abspath(".")
 lioil_ico = os.path.join(here, "lioil.ico")
@@ -28,7 +44,7 @@ if os.path.exists(endpoint_volume_script):
 a = Analysis(
     ["main.py"],
     pathex=["."],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=[
         "PySide6.QtCore",

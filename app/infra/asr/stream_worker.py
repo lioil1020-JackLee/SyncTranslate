@@ -93,6 +93,8 @@ class StreamingAsr:
         self._adaptive_partial_latencies: deque[int] = deque(maxlen=10)
         self._adaptive_final_latencies: deque[int] = deque(maxlen=10)
         self._adaptive_load_backoff_until_ms = 0
+        self._final_error_cooldown_until_ms = 0
+        self._last_final_error_text = ""
         self._overflow_count = 0
         self._last_overflow_report_ms = 0
         self._drop_partial_until_final = False
@@ -151,6 +153,8 @@ class StreamingAsr:
         self._adaptive_partial_latencies.clear()
         self._adaptive_final_latencies.clear()
         self._adaptive_load_backoff_until_ms = 0
+        self._final_error_cooldown_until_ms = 0
+        self._last_final_error_text = ""
         self._apply_adaptive_tuning(
             mode="baseline",
             partial_interval_ms=self._base_partial_interval_ms,
@@ -367,9 +371,22 @@ class StreamingAsr:
         except Exception as exc:
             if self._stop_event.is_set():
                 return
+            error_text = _format_asr_exception_message(exc)
+            cooldown_ms = 15000
+            if "_ssl" in error_text.lower() or "libssl" in error_text.lower() or "libcrypto" in error_text.lower():
+                cooldown_ms = 45000
+            should_emit = (
+                now_ms >= self._final_error_cooldown_until_ms
+                or error_text != self._last_final_error_text
+            )
+            self._final_error_cooldown_until_ms = max(self._final_error_cooldown_until_ms, now_ms + cooldown_ms)
+            self._last_final_error_text = error_text
+            if not should_emit:
+                self._debug("asr final failed repeatedly; suppressing duplicate error during cooldown")
+                return
             self._on_event(
                 AsrEvent(
-                    text=f"[asr-error] {exc}",
+                    text=f"[asr-error] {error_text}",
                     is_final=True,
                     is_early_final=is_early_final,
                     start_ms=self._segment_start_ms,
@@ -594,6 +611,18 @@ _HALLUCINATION_PATTERNS = (
     re.compile(r"^\s*謝謝(大家|各位)?[。！! ]*$"),
     re.compile(r"^\s*晚安[。！! ]*$"),
 )
+
+
+def _format_asr_exception_message(exc: Exception) -> str:
+    message = str(exc).strip() or exc.__class__.__name__
+    lowered = message.lower()
+    if "dll load failed while importing _ssl" in lowered:
+        return (
+            f"{message}。ASR 執行環境缺少 OpenSSL 相依檔，"
+            "請確認發行包中的 _internal/libssl-3-x64.dll、_internal/libcrypto-3-x64.dll 與 _internal/_ssl.pyd 都存在，"
+            "並從 dist/SyncTranslate-onedir/SyncTranslate.exe 啟動。"
+        )
+    return message
 
 
 def _looks_like_silence_hallucination(text: str, *, audio_ms: int, vad_rms: float) -> bool:
