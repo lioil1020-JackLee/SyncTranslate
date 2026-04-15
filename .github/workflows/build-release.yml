@@ -42,6 +42,7 @@ jobs:
           uv run python -c "import ssl; print('ssl ok')"
           uv run python -c "import edge_tts; print('edge_tts ok')"
           uv run python -c "import faster_whisper; print('faster_whisper ok')"
+          uv run python -c "import funasr; print('funasr ok')"
 
       - name: Run test suite
         shell: pwsh

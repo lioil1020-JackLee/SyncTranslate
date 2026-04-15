@@ -52,6 +52,8 @@ a = Analysis(
         "PySide6.QtWidgets",
         "edge_tts",
         "faster_whisper",
+        "funasr",
+        "modelscope",
         "miniaudio",
         "opencc",
         "soundcard",
