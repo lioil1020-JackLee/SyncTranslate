@@ -11,6 +11,7 @@ from app.infra.asr.backend_resolution import resolve_backend_for_language
 from app.domain.events import ErrorEvent
 from app.infra.asr.backend_v2 import build_backend_pair
 from app.infra.asr.contracts import ASREventWithSource
+from app.infra.asr.endpoint_profiles import get_endpoint_profile
 from app.infra.asr.endpointing_v2 import EndpointSignal, build_endpointing_runtime
 from app.infra.asr.pipeline_v2 import AsrV2PipelineSpec, build_v2_pipeline_spec, resolve_requested_asr_language
 from app.infra.asr.worker_v2 import SourceRuntimeV2, V2RuntimeEvent
@@ -249,17 +250,26 @@ class ASRManagerV2:
             "requested_language": resolution.requested_language,
             "normalized_language": resolution.normalized_language,
         }
+        # Resolve endpoint profile for this source channel
+        _profile_name = (
+            getattr(self._config.runtime, "asr_profile_remote", None)
+            if source == "remote"
+            else getattr(self._config.runtime, "asr_profile_local", None)
+        )
+        _ep_profile = get_endpoint_profile(_profile_name)
+        _ep_kwargs = _ep_profile.to_worker_kwargs()
+
         runtime = SourceRuntimeV2(
             source=source,
             partial_backend=partial_backend,
             final_backend=final_backend,
             endpointing=endpointing,
-            partial_interval_ms=profile.streaming.partial_interval_ms,
+            partial_interval_ms=_ep_kwargs.get("partial_interval_ms", profile.streaming.partial_interval_ms),
             partial_history_seconds=profile.streaming.partial_history_seconds,
             final_history_seconds=profile.streaming.final_history_seconds,
-            soft_final_audio_ms=profile.streaming.soft_final_audio_ms,
-            pre_roll_ms=int(getattr(self._config.runtime, "asr_pre_roll_ms", 500)),
-            min_partial_audio_ms=int(getattr(self._config.runtime, "asr_partial_min_audio_ms", 280)),
+            soft_final_audio_ms=_ep_kwargs.get("soft_final_audio_ms", profile.streaming.soft_final_audio_ms),
+            pre_roll_ms=_ep_kwargs.get("pre_roll_ms", int(getattr(self._config.runtime, "asr_pre_roll_ms", 500))),
+            min_partial_audio_ms=_ep_kwargs.get("min_partial_audio_ms", int(getattr(self._config.runtime, "asr_partial_min_audio_ms", 280))),
             queue_maxsize=self._queue_maxsize_for_source(source),
             frontend_enabled=bool(getattr(self._config.runtime, "asr_frontend_enabled", True)),
             frontend_target_rms=float(getattr(self._config.runtime, "asr_frontend_target_rms", 0.05)),

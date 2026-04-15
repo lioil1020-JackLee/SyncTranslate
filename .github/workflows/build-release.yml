@@ -43,6 +43,9 @@ jobs:
           uv run python -c "import edge_tts; print('edge_tts ok')"
           uv run python -c "import faster_whisper; print('faster_whisper ok')"
           uv run python -c "import funasr; print('funasr ok')"
+          uv run python -c "import tiktoken; print('tiktoken ok')"
+          uv run python -c "import addict; print('addict ok')"
+          uv run python -c "import onnxruntime; print('onnxruntime ok')"
 
       - name: Run test suite
         shell: pwsh

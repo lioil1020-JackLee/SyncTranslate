@@ -47,6 +47,14 @@ SyncTranslate 是一個以 Windows 桌面為主的即時雙向字幕 / 翻譯 / 
 - `app/application/`
   - `audio_router.py`
   - `transcript_service.py`
+  - `transcript_postprocessor.py`（Phase 1）
+  - `asr_event_processor.py`（Phase 4）
+  - `translation_dispatcher.py`（Phase 4）
+  - `tts_dispatcher.py`（Phase 4）
+  - `pipeline_metrics.py`（Phase 4）
+- `app/domain/`
+  - `glossary.py`（Phase 1）
+  - `metrics.py`（Phase 1）
 - `app/infra/asr/`
   - `factory.py`
   - `manager_v2.py`
@@ -55,9 +63,15 @@ SyncTranslate 是一個以 Windows 桌面為主的即時雙向字幕 / 翻譯 / 
   - `backend_v2.py`
   - `endpointing_v2.py`
   - `funasr_registry.py`
+  - `streaming_policy.py`（Phase 2）
+  - `endpoint_profiles.py`（Phase 2）
+  - `audio_pipeline/`（Phase 3）
+- `app/infra/logging/`（Phase 1）
 - `app/infra/translation/`
 - `app/infra/tts/`
 - `app/ui/`
+  - `controllers/`（Phase 4）
+- `tools/asr_benchmark/`（Phase 3，開發工具）
 
 更完整內容請看：
 
@@ -86,10 +100,10 @@ uv run python .\main.py
 uv run python .\main.py --check
 ```
 
-執行測試：
+執行測試（全套 319 tests）：
 
 ```powershell
-uv run python -m unittest discover -s tests -p "test_*.py" -v
+uv run pytest -q
 ```
 
 如果要打包 onedir：
@@ -103,15 +117,15 @@ uv run pyinstaller .\SyncTranslate-onedir.spec --noconfirm --clean
 
 目前最重要的 runtime 設定包括：
 
-- `runtime.asr_pipeline`
-  - 預設為 `v2`
-- `runtime.local_asr_language`
-- `runtime.remote_asr_language`
+- `runtime.asr_pipeline`：預設 `v2`
+- `runtime.local_asr_language` / `runtime.remote_asr_language`：決定 ASR backend
 - `runtime.asr_v2_endpointing`
-- `runtime.asr_final_correction_enabled`
-- `runtime.speaker_diarization_enabled`
-- `runtime.asr_queue_maxsize_local`
-- `runtime.asr_queue_maxsize_remote`
+- `runtime.asr_profile_local` / `runtime.asr_profile_remote`：endpoint profile（default / meeting_room / headset / noisy_environment / max_accuracy / low_latency）
+- `runtime.enable_postprocessor` / `runtime.enable_partial_stabilization`：ASR 後處理
+- `runtime.glossary_enabled` / `runtime.glossary_path`：術語表套用
+- `runtime.degradation_policy_enabled`：streaming 降級保護
+- `runtime.enable_structured_logging`：jsonl 結構化日誌
+- `runtime.asr_queue_maxsize_local` / `runtime.asr_queue_maxsize_remote`
 
 ASR 路由規則：
 

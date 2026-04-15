@@ -43,19 +43,30 @@ class AsrTranscriptValidatorV2:
         if not value:
             return TranscriptValidationResult(text="", accepted=False, reason="empty", score=0.0)
 
+        is_cjk_language = self._is_cjk_family_language(language)
         duration_sec = max(0.001, float(np.asarray(audio).reshape(-1).size) / float(max(1, sample_rate)))
         chars_per_second = len(value) / duration_sec
         speech_ratio = self._speech_ratio_from_stats_or_audio(audio, frontend_stats=frontend_stats)
-        if chars_per_second > self._max_chars_per_second:
+        # Non-CJK transcripts naturally need more characters to represent the same content.
+        # Relax density threshold to avoid over-filtering English/Japanese/Korean outputs.
+        density_limit = self._max_chars_per_second if is_cjk_language else self._max_chars_per_second * 2.2
+        if chars_per_second > density_limit:
             return TranscriptValidationResult(text="", accepted=False, reason="too-dense", score=0.0)
-        if len(value) >= 14 and speech_ratio < self._min_speech_ratio_for_long_text:
+        # Low speech-ratio gating is mainly useful on CJK channels where short noise bursts
+        # may produce fluent hallucinations; keep non-CJK path less aggressive.
+        if is_cjk_language and len(value) >= 14 and speech_ratio < self._min_speech_ratio_for_long_text:
             return TranscriptValidationResult(text="", accepted=False, reason="low-speech-ratio", score=0.0)
         if self._looks_like_loop(value):
             return TranscriptValidationResult(text="", accepted=False, reason="looped-phrase", score=0.0)
         if language.lower().startswith(("zh", "cmn", "yue")) and self._looks_like_sparse_cjk_noise(value):
             return TranscriptValidationResult(text="", accepted=False, reason="sparse-cjk-noise", score=0.0)
-        score = max(0.0, 1.0 - max(0.0, chars_per_second - 5.0) / max(1.0, self._max_chars_per_second))
+        score = max(0.0, 1.0 - max(0.0, chars_per_second - 5.0) / max(1.0, density_limit))
         return TranscriptValidationResult(text=value, accepted=True, reason="", score=score)
+
+    @staticmethod
+    def _is_cjk_family_language(language: str) -> bool:
+        normalized = str(language or "").strip().lower()
+        return normalized.startswith(("zh", "cmn", "yue"))
 
     @staticmethod
     def _sanitize(text: str) -> str:

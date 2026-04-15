@@ -149,7 +149,7 @@ class TranscriptService:
         if combined_len > 60 and len(current_text) > 12 and len(previous_text) > 20:
             return False
         if len(current_text) <= 12 or len(previous_text) <= 20:
-            return True
+            return gap_ms <= 400
         return gap_ms <= 700
 
     @staticmethod
@@ -170,7 +170,7 @@ class TranscriptService:
 
     @staticmethod
     def _ends_sentence(text: str) -> bool:
-        return bool(re.search(r"[。！？!?…;；:]$|\)$|\]$|\"$|』$|」$", text.strip()))
+        return bool(re.search(r"[。！？!?.…;；:]$|\)$|\]$|\"$|』$|」$", text.strip()))
 
     @staticmethod
     def _starts_new_sentence(text: str) -> bool:

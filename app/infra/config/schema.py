@@ -291,6 +291,23 @@ class RuntimeConfig:
     local_tts_enabled: bool = False
     use_channel_specific_asr: bool = True
     use_channel_specific_llm: bool = True
+    # --- Phase 1: PostProcessor / Glossary ---
+    glossary_enabled: bool = False
+    glossary_path: str = ""
+    glossary_apply_on_partial: bool = False
+    glossary_apply_on_final: bool = True
+    enable_postprocessor: bool = True
+    enable_partial_stabilization: bool = True
+    # --- Phase 1: Structured logging ---
+    enable_structured_logging: bool = True
+    runtime_log_format: str = "jsonl"
+    # --- Phase 2: ASR profiles ---
+    asr_profile_local: str = "default"
+    asr_profile_remote: str = "default"
+    streaming_profile_local: str = "default"
+    streaming_profile_remote: str = "default"
+    # --- Phase 2: Degradation policy ---
+    degradation_policy_enabled: bool = True
 
 
 @dataclass(slots=True)

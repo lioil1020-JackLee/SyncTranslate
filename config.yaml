@@ -8,7 +8,7 @@ audio:
   speaker_out_volume: 0.2
   meeting_out_volume: 1.0
 language:
-  remote_translation_target: en
+  remote_translation_target: zh-TW
   local_translation_target: en
 asr_channels:
   local:
@@ -243,11 +243,28 @@ runtime:
   local_echo_guard_resume_delay_ms: 300
   remote_echo_guard_resume_delay_ms: 300
   tts_output_mode: passthrough
-  remote_asr_language: zh-TW
+  remote_asr_language: en
   local_asr_language: zh-TW
-  remote_translation_target: en
+  remote_translation_target: zh-TW
   local_translation_target: en
   remote_tts_voice: none
   local_tts_voice: none
   remote_tts_enabled: false
   local_tts_enabled: false
+  # --- ASR 後處理 / Glossary ---
+  enable_postprocessor: true
+  enable_partial_stabilization: true
+  glossary_enabled: false
+  glossary_path: ''
+  glossary_apply_on_partial: false
+  glossary_apply_on_final: true
+  # --- Structured logging ---
+  enable_structured_logging: true
+  runtime_log_format: jsonl
+  # --- ASR endpoint profiles ---
+  asr_profile_local: default
+  asr_profile_remote: default
+  streaming_profile_local: default
+  streaming_profile_remote: default
+  # --- Streaming degradation policy ---
+  degradation_policy_enabled: true

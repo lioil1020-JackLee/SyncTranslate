@@ -251,3 +251,20 @@ runtime:
   local_tts_voice: none
   remote_tts_enabled: false
   local_tts_enabled: false
+  # --- ASR 後處理 / Glossary ---
+  enable_postprocessor: true
+  enable_partial_stabilization: true
+  glossary_enabled: false
+  glossary_path: ''
+  glossary_apply_on_partial: false
+  glossary_apply_on_final: true
+  # --- Structured logging ---
+  enable_structured_logging: true
+  runtime_log_format: jsonl
+  # --- ASR endpoint profiles ---
+  asr_profile_local: default
+  asr_profile_remote: default
+  streaming_profile_local: default
+  streaming_profile_remote: default
+  # --- Streaming degradation policy ---
+  degradation_policy_enabled: true

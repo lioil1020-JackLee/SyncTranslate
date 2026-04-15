@@ -55,6 +55,35 @@ class AsrPostprocessV2Tests(unittest.TestCase):
 
         self.assertTrue(result.accepted)
 
+    def test_validator_keeps_non_cjk_long_text_with_low_speech_ratio(self) -> None:
+        validator = AsrTranscriptValidatorV2(enabled=True, min_speech_ratio_for_long_text=0.2)
+        audio = np.zeros((32000,), dtype=np.float32)
+
+        result = validator.validate(
+            "this is a stable english sentence that should be kept",
+            audio=audio,
+            sample_rate=16000,
+            language="en",
+            frontend_stats={"speech_ratio": 0.02},
+        )
+
+        self.assertTrue(result.accepted)
+
+    def test_validator_still_rejects_cjk_long_text_with_low_speech_ratio(self) -> None:
+        validator = AsrTranscriptValidatorV2(enabled=True, min_speech_ratio_for_long_text=0.2)
+        audio = np.zeros((32000,), dtype=np.float32)
+
+        result = validator.validate(
+            "這是一段長句子但在低語音比例下應該被過濾避免幻覺內容",
+            audio=audio,
+            sample_rate=16000,
+            language="zh-TW",
+            frontend_stats={"speech_ratio": 0.02},
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.reason, "low-speech-ratio")
+
 
 if __name__ == "__main__":
     unittest.main()

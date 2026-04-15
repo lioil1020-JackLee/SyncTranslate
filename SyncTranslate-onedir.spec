@@ -1,12 +1,19 @@
 # -*- mode: python ; coding: utf-8 -*-
 import os
 import sys
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules
 
 
-datas = collect_data_files("opencc")
+datas = collect_data_files("opencc") + collect_data_files("PySide6") + collect_data_files("sounddevice") + collect_data_files("soundcard")
 icon = None
 binaries = []
+hidden_imports = []
+
+for pkg in ("funasr", "faster_whisper", "modelscope", "addict"):
+    pkg_datas, pkg_binaries, pkg_hiddenimports = collect_all(pkg)
+    datas += pkg_datas
+    binaries += pkg_binaries
+    hidden_imports += pkg_hiddenimports
 
 
 def collect_openssl_binaries():
@@ -55,7 +62,37 @@ a = Analysis(
         "opencc",
         "soundcard",
         "sounddevice",
-    ] + collect_submodules("funasr") + collect_submodules("modelscope") + collect_submodules("faster_whisper"),
+        "tiktoken",
+        "addict",
+        "modelscope",
+        "onnxruntime",
+        # app sub-packages (Phase 1-4 new modules)
+        "app.application.transcript_postprocessor",
+        "app.application.asr_event_processor",
+        "app.application.translation_dispatcher",
+        "app.application.tts_dispatcher",
+        "app.application.pipeline_metrics",
+        "app.domain.glossary",
+        "app.domain.metrics",
+        "app.infra.config.glossary_loader",
+        "app.infra.logging",
+        "app.infra.logging.runtime_logger",
+        "app.infra.asr.streaming_policy",
+        "app.infra.asr.endpoint_profiles",
+        "app.infra.asr.audio_pipeline",
+        "app.infra.asr.audio_pipeline.base",
+        "app.infra.asr.audio_pipeline.identity",
+        "app.infra.asr.audio_pipeline.highpass",
+        "app.infra.asr.audio_pipeline.loudness",
+        "app.infra.asr.audio_pipeline.noise_reduction",
+        "app.infra.asr.audio_pipeline.music_suppression",
+        "app.infra.asr.audio_pipeline.frontend_chain",
+        "app.ui.controllers",
+        "app.ui.controllers.session_action_controller",
+        "app.ui.controllers.live_caption_refresh_controller",
+        "app.ui.controllers.config_hot_apply_controller",
+        "app.ui.controllers.healthcheck_controller",
+    ] + hidden_imports + collect_submodules("funasr") + collect_submodules("modelscope") + collect_submodules("faster_whisper"),
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

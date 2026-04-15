@@ -11,6 +11,11 @@ import numpy as np
 
 from app.infra.asr.endpointing_v2 import EndpointSignal, EndpointingRuntime
 from app.infra.asr.frontend_v2 import AsrAudioFrontendV2
+from app.infra.asr.streaming_policy import (
+    DEGRADATION_NORMAL,
+    StreamingContext,
+    StreamingPolicy,
+)
 
 
 @dataclass(slots=True)
@@ -37,6 +42,7 @@ class SourceRuntimeV2Stats:
     endpointing: dict[str, object]
     last_signal: EndpointSignal
     frontend: dict[str, object]
+    degradation_level: str = DEGRADATION_NORMAL
 
 
 class SourceRuntimeV2:
@@ -120,7 +126,9 @@ class SourceRuntimeV2:
         self._final_count = 0
         self._dropped_chunks = 0
         self._last_debug = ""
+        self._last_degradation_level: str = DEGRADATION_NORMAL
         self._stats_lock = Lock()
+        self._streaming_policy = StreamingPolicy(degradation_enabled=True)
 
     def start(self, on_event: Callable[[V2RuntimeEvent], None]) -> None:
         self.stop()
@@ -186,6 +194,7 @@ class SourceRuntimeV2:
                 endpointing=self._endpointing.snapshot(),
                 last_signal=self._last_signal,
                 frontend=self._frontend.stats(),
+                degradation_level=self._last_degradation_level,
             )
 
     def _run(self) -> None:
@@ -240,38 +249,36 @@ class SourceRuntimeV2:
             self._segment_sample_rate = sample_rate_int
             segment_audio_ms = self._segment_audio_ms()
             backlog = self._queue.qsize()
-            should_force_final = backlog >= self._force_final_queue_size and segment_audio_ms >= self._force_final_audio_ms
-            can_emit_partial = (
-                signal.speech_active
-                and segment_audio_ms >= self._min_partial_audio_ms
-                and backlog <= 1
-                and not self._drop_partial_until_final
-                and now_ms >= self._partial_cooldown_until_ms
+
+            ctx = StreamingContext(
+                signal=signal,
+                segment_audio_ms=segment_audio_ms,
+                now_ms=now_ms,
+                last_partial_emit_ms=self._last_partial_emit_ms,
+                backlog=backlog,
+                drop_partial_until_final=self._drop_partial_until_final,
+                partial_cooldown_until_ms=self._partial_cooldown_until_ms,
+                dropped_chunks_total=self._dropped_chunks,
+                partial_interval_ms=self._partial_interval_ms,
+                min_partial_audio_ms=self._min_partial_audio_ms,
+                soft_endpoint_finalize_audio_ms=self._soft_endpoint_finalize_audio_ms,
+                speech_end_finalize_audio_ms=self._speech_end_finalize_audio_ms,
+                adaptive_length_limit_ms=self._adaptive_length_limit_ms(signal=signal),
+                adaptive_length_ceiling_ms=self._adaptive_length_ceiling_ms,
+                force_final_queue_size=self._force_final_queue_size,
+                force_final_audio_ms=self._force_final_audio_ms,
             )
-            if can_emit_partial and now_ms - self._last_partial_emit_ms >= self._partial_interval_ms:
+            decision = self._streaming_policy.decide(ctx)
+            self._last_degradation_level = decision.degradation_level
+
+            if decision.emit_partial:
                 self._emit_partial(now_ms=now_ms)
-            adaptive_length_limit_ms = self._adaptive_length_limit_ms(signal=signal)
-            should_finalize_on_soft_endpoint = (
-                signal.soft_endpoint
-                and segment_audio_ms >= self._soft_endpoint_finalize_audio_ms
-            )
-            should_finalize_on_speech_end = (
-                signal.speech_ended
-                and segment_audio_ms >= self._speech_end_finalize_audio_ms
-            )
-            should_finalize = (
-                signal.hard_endpoint
-                or should_finalize_on_speech_end
-                or should_finalize_on_soft_endpoint
-                or (segment_audio_ms >= adaptive_length_limit_ms and signal.pause_ms >= 180.0)
-                or should_force_final
-            )
-            if should_finalize:
+            if decision.emit_final:
                 self._emit_final(
                     now_ms=now_ms,
-                    is_early_final=(not signal.hard_endpoint),
+                    is_early_final=decision.is_early_final,
                 )
-                if should_finalize_on_soft_endpoint and not signal.hard_endpoint:
+                if decision.reset_endpointing_after_final:
                     # Treat a soft endpoint final as an utterance boundary so the
                     # next speech burst can immediately start a new segment.
                     self._endpointing.reset()

@@ -21,6 +21,7 @@ from app.domain.constants import (
     OUTPUT_MODE_TTS,
 )
 from app.application.transcript_service import TranscriptBuffer
+from app.application.transcript_postprocessor import TranscriptPostProcessor
 from app.infra.translation.engine import TranslatorManager
 from app.infra.tts.playback_queue import TTSManager
 
@@ -92,6 +93,7 @@ class AudioRouter:
         self._partial_display_state: dict[str, _PartialDisplayState] = {}
         self._latency_by_utterance: dict[tuple[str, str], dict[str, object]] = {}
         self._recent_latency: deque[dict[str, object]] = deque(maxlen=32)
+        self._postprocessor: TranscriptPostProcessor = TranscriptPostProcessor(enabled=False)
 
     @property
     def running(self) -> bool:
@@ -208,11 +210,25 @@ class AudioRouter:
             self._emit_asr_event(event)
             self._record_asr_latency(event)
             original_channel, translated_channel, tts_channel = self._channels_of(event.source)
+            # PostProcessor: 對原始文字做 partial/final 後處理
+            detected_language = str(getattr(event, "detected_language", "") or "")
+            if event.is_final:
+                processed_text = self._postprocessor.process_final(
+                    event.source, event.text,
+                    language=detected_language,
+                    utterance_id=event.utterance_id or "",
+                )
+            else:
+                processed_text = self._postprocessor.process_partial(
+                    event.source, event.text,
+                    language=detected_language,
+                    utterance_id=event.utterance_id or "",
+                )
             self._maybe_store_transcript(
                 source=original_channel,
                 channel=original_channel,
                 kind="original",
-                text=event.text,
+                text=processed_text,
                 is_final=event.is_final,
                 is_stable_partial=not event.is_final,
                 utterance_id=event.utterance_id,
@@ -362,6 +378,7 @@ class AudioRouter:
 
     def refresh_runtime_config(self, config: AppConfig) -> None:
         self._runtime_config = config
+        self._rebuild_postprocessor(config)
         refresh_runtime = getattr(self._asr_manager, "refresh_runtime", None)
         if callable(refresh_runtime):
             refresh_runtime()
@@ -370,6 +387,32 @@ class AudioRouter:
                 config,
                 getattr(self._asr_manager, "_pipeline_revision", 1),
             )
+
+    def _rebuild_postprocessor(self, config: AppConfig) -> None:
+        """依 config.runtime 重新建立 TranscriptPostProcessor。"""
+        runtime = getattr(config, "runtime", None)
+        enabled = bool(getattr(runtime, "enable_postprocessor", True))
+        partial_stab = bool(getattr(runtime, "enable_partial_stabilization", True))
+        glossary_enabled = bool(getattr(runtime, "glossary_enabled", False))
+        glossary_path = str(getattr(runtime, "glossary_path", "") or "")
+        apply_on_partial = bool(getattr(runtime, "glossary_apply_on_partial", False))
+        apply_on_final = bool(getattr(runtime, "glossary_apply_on_final", True))
+
+        glossary = None
+        if glossary_enabled and glossary_path:
+            try:
+                from app.infra.config.glossary_loader import load_glossary
+                glossary = load_glossary(glossary_path)
+            except Exception:
+                pass
+
+        self._postprocessor = TranscriptPostProcessor(
+            enabled=enabled,
+            partial_stabilization_enabled=partial_stab,
+            glossary=glossary,
+            glossary_apply_on_partial=apply_on_partial,
+            glossary_apply_on_final=apply_on_final,
+        )
 
     def _reconcile_runtime_sources(self) -> None:
         if not self.running or self._routes is None or self._sample_rate <= 0:
