@@ -10,6 +10,7 @@ from typing import Callable
 import numpy as np
 
 from app.infra.asr.endpointing_v2 import EndpointSignal, EndpointingRuntime
+from app.infra.asr.frontend_v2 import AsrAudioFrontendV2
 
 
 @dataclass(slots=True)
@@ -35,6 +36,7 @@ class SourceRuntimeV2Stats:
     backend_runtime: dict[str, object]
     endpointing: dict[str, object]
     last_signal: EndpointSignal
+    frontend: dict[str, object]
 
 
 class SourceRuntimeV2:
@@ -52,6 +54,14 @@ class SourceRuntimeV2:
         pre_roll_ms: int,
         min_partial_audio_ms: int,
         queue_maxsize: int,
+        frontend_enabled: bool = True,
+        frontend_target_rms: float = 0.05,
+        frontend_max_gain: float = 3.0,
+        frontend_highpass_alpha: float = 0.96,
+        enhancement_enabled: bool = True,
+        enhancement_noise_reduce_strength: float = 0.42,
+        enhancement_noise_adapt_rate: float = 0.18,
+        enhancement_music_suppress_strength: float = 0.2,
         on_event: Callable[[V2RuntimeEvent], None] | None = None,
         on_debug: Callable[[str], None] | None = None,
     ) -> None:
@@ -59,6 +69,16 @@ class SourceRuntimeV2:
         self._partial_backend = partial_backend
         self._final_backend = final_backend
         self._endpointing = endpointing
+        self._frontend = AsrAudioFrontendV2(
+            enabled=frontend_enabled,
+            target_rms=frontend_target_rms,
+            max_gain=frontend_max_gain,
+            highpass_alpha=frontend_highpass_alpha,
+            enhancement_enabled=enhancement_enabled,
+            enhancement_noise_reduce_strength=enhancement_noise_reduce_strength,
+            enhancement_noise_adapt_rate=enhancement_noise_adapt_rate,
+            enhancement_music_suppress_strength=enhancement_music_suppress_strength,
+        )
         self._partial_interval_ms = max(200, int(partial_interval_ms))
         self._partial_history_seconds = max(1, int(partial_history_seconds))
         self._final_history_seconds = max(2, int(final_history_seconds))
@@ -82,7 +102,16 @@ class SourceRuntimeV2:
         self._in_segment = False
         self._force_final_queue_size = max(8, self._queue.maxsize // 4)
         self._force_final_audio_ms = 1800
-        self._soft_endpoint_finalize_audio_ms = max(900, self._min_partial_audio_ms)
+        final_backend_name = str(getattr(getattr(self._final_backend, "descriptor", None), "name", "")).lower()
+        self._prefer_conservative_finalize = "funasr_v2" in final_backend_name
+        self._soft_endpoint_finalize_audio_ms = max(
+            1500 if self._prefer_conservative_finalize else 900,
+            self._min_partial_audio_ms,
+        )
+        self._speech_end_finalize_audio_ms = max(
+            1300 if self._prefer_conservative_finalize else 900,
+            min(self._soft_endpoint_finalize_audio_ms, self._min_partial_audio_ms + 300),
+        )
         self._adaptive_length_floor_ms = max(3200, self._soft_final_audio_ms)
         self._adaptive_length_ceiling_ms = max(self._adaptive_length_floor_ms, 12000)
         self._drop_partial_until_final = False
@@ -106,6 +135,7 @@ class SourceRuntimeV2:
             self._thread.join(timeout=8.0)
         self._thread = None
         self._endpointing.reset()
+        self._frontend.reset()
         self._segment_chunks = []
         self._segment_sample_rate = 16000
         self._segment_start_ms = 0
@@ -155,6 +185,7 @@ class SourceRuntimeV2:
                 backend_runtime=self._backend_runtime_info(),
                 endpointing=self._endpointing.snapshot(),
                 last_signal=self._last_signal,
+                frontend=self._frontend.stats(),
             )
 
     def _run(self) -> None:
@@ -191,15 +222,13 @@ class SourceRuntimeV2:
     def _process_chunk(self, *, chunk: np.ndarray, sample_rate: float) -> None:
         if sample_rate <= 0:
             return
-        if chunk.ndim == 2 and chunk.shape[1] > 1:
-            chunk = np.mean(chunk, axis=1, dtype=np.float32)
-        else:
-            chunk = chunk.reshape(-1).astype(np.float32, copy=False)
+        prepared = self._frontend.process(chunk, sample_rate)
+        chunk = prepared.audio
         if chunk.size == 0:
             return
-        sample_rate_int = int(sample_rate)
+        sample_rate_int = prepared.sample_rate
         self._append_pre_roll(chunk, sample_rate_int)
-        signal = self._endpointing.update(chunk, sample_rate)
+        signal = self._endpointing.update(chunk, sample_rate_int)
         self._last_signal = signal
         now_ms = int(time.monotonic() * 1000)
 
@@ -226,9 +255,13 @@ class SourceRuntimeV2:
                 signal.soft_endpoint
                 and segment_audio_ms >= self._soft_endpoint_finalize_audio_ms
             )
+            should_finalize_on_speech_end = (
+                signal.speech_ended
+                and segment_audio_ms >= self._speech_end_finalize_audio_ms
+            )
             should_finalize = (
                 signal.hard_endpoint
-                or signal.speech_ended
+                or should_finalize_on_speech_end
                 or should_finalize_on_soft_endpoint
                 or (segment_audio_ms >= adaptive_length_limit_ms and signal.pause_ms >= 180.0)
                 or should_force_final
@@ -277,7 +310,12 @@ class SourceRuntimeV2:
             return
         audio = self._limited_audio(self._partial_history_seconds)
         start = time.perf_counter()
-        result = self._partial_backend.transcribe_partial(audio, self._segment_sample_rate)
+        result = self._transcribe_backend(
+            self._partial_backend,
+            method_name="transcribe_partial",
+            audio=audio,
+            sample_rate=self._segment_sample_rate,
+        )
         text = (result.text or "").strip()
         if not text or text == self._last_partial_text:
             return
@@ -303,7 +341,12 @@ class SourceRuntimeV2:
             return
         audio = self._limited_audio(self._final_history_seconds)
         start = time.perf_counter()
-        result = self._final_backend.transcribe_final(audio, self._segment_sample_rate)
+        result = self._transcribe_backend(
+            self._final_backend,
+            method_name="transcribe_final",
+            audio=audio,
+            sample_rate=self._segment_sample_rate,
+        )
         text = (result.text or "").strip()
         if not text:
             return
@@ -357,6 +400,23 @@ class SourceRuntimeV2:
             "model_init_mode": "lazy",
             "init_failure": "",
         }
+
+    def _transcribe_backend(
+        self,
+        backend: object,
+        *,
+        method_name: str,
+        audio: np.ndarray,
+        sample_rate: int,
+    ):
+        method = getattr(backend, method_name)
+        frontend_stats = self._frontend.stats()
+        try:
+            return method(audio, sample_rate, frontend_stats=frontend_stats)
+        except TypeError as exc:
+            if "frontend_stats" not in str(exc):
+                raise
+            return method(audio, sample_rate)
 
     def _adaptive_length_limit_ms(self, *, signal: EndpointSignal) -> int:
         if signal.pause_ms >= 420.0:

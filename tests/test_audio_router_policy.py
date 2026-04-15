@@ -120,6 +120,27 @@ class _FakeTranslatorManager:
         return None
 
 
+class _CorrectingTranslatorManager(_FakeTranslatorManager):
+    def correct_asr_event(self, event):
+        return ASREventWithSource(
+            source=event.source,
+            utterance_id=event.utterance_id,
+            revision=event.revision,
+            pipeline_revision=event.pipeline_revision,
+            config_fingerprint=event.config_fingerprint,
+            created_at=event.created_at,
+            text="corrected text",
+            is_final=event.is_final,
+            is_early_final=event.is_early_final,
+            start_ms=event.start_ms,
+            end_ms=event.end_ms,
+            latency_ms=event.latency_ms,
+            detected_language=event.detected_language,
+            raw_text=event.text,
+            correction_applied=True,
+        )
+
+
 class _FakeTtsManager:
     def __init__(self) -> None:
         self._mode = {"local": "subtitle_only", "remote": "subtitle_only"}
@@ -272,6 +293,32 @@ class AudioRouterPolicyTests(unittest.TestCase):
         self.assertEqual(len(translated), 1)
         self.assertEqual(translated[0].text, "hello from asr")
         self.assertEqual(tts.enqueued, [])
+
+    def test_original_panel_keeps_raw_asr_when_correction_is_applied(self) -> None:
+        translator = _CorrectingTranslatorManager(enabled=False)
+        router, _, _, _, _ = _build_router(translation_enabled=False, translator_manager=translator)
+        event = ASREventWithSource(
+            source="remote",
+            utterance_id="u-raw",
+            revision=1,
+            pipeline_revision=1,
+            config_fingerprint="fp",
+            created_at=0.0,
+            text="raw asr text",
+            is_final=True,
+            is_early_final=False,
+            start_ms=0,
+            end_ms=500,
+            latency_ms=50,
+            detected_language="zh-TW",
+        )
+
+        router._on_asr_event(event)
+
+        original = router._transcript_buffer.latest("meeting_original", limit=1)
+        translated = router._transcript_buffer.latest("meeting_translated", limit=1)
+        self.assertEqual(original[0].text, "raw asr text")
+        self.assertEqual(translated[0].text, "corrected text")
 
     def test_translation_disabled_with_tts_mode_speaks_asr_text(self) -> None:
         router, _, _, _, tts = _build_router(translation_enabled=False)

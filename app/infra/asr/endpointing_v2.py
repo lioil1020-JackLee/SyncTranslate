@@ -4,6 +4,7 @@ import contextlib
 import io
 from dataclasses import asdict
 from dataclasses import dataclass
+from uuid import uuid4
 
 import numpy as np
 
@@ -332,6 +333,7 @@ class _FunASRStreamingVad:
         self._device = str(device or "cpu")
         self._cache: dict[str, object] = {}
         self._registry = get_funasr_registry()
+        self._session_key = uuid4().hex
 
     @property
     def available(self) -> bool:
@@ -341,7 +343,7 @@ class _FunASRStreamingVad:
         self._cache = {}
 
     def runtime_info(self) -> dict[str, object]:
-        return self._registry.snapshot_vad(requested_device=self._device)
+        return self._registry.snapshot_vad(requested_device=self._device, session_key=self._session_key)
 
     def detect(self, *, chunk: np.ndarray, sample_rate: float) -> list[tuple[int, int]]:
         resampled = _resample_linear(np.asarray(chunk, dtype=np.float32), sample_rate=int(sample_rate), target_rate=16000)
@@ -349,7 +351,7 @@ class _FunASRStreamingVad:
             return []
         chunk_size_ms = max(1, int(round((resampled.size / 16000.0) * 1000.0)))
         try:
-            handle = self._registry.get_vad(requested_device=self._device)
+            handle = self._registry.get_vad(requested_device=self._device, session_key=self._session_key)
         except Exception:
             return []
         try:

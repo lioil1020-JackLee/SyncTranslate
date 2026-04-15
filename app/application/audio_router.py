@@ -229,20 +229,6 @@ class AudioRouter:
             if not translation_enabled:
                 correct_event = getattr(self._translator_manager, "correct_asr_event", lambda value: value)
                 corrected_event = correct_event(event) if event.is_final else event
-                if corrected_event is not event:
-                    self._maybe_store_transcript(
-                        source=original_channel,
-                        channel=original_channel,
-                        kind="original",
-                        text=corrected_event.text,
-                        is_final=corrected_event.is_final,
-                        is_stable_partial=not corrected_event.is_final,
-                        utterance_id=corrected_event.utterance_id,
-                        revision=corrected_event.revision,
-                        latency_ms=corrected_event.latency_ms,
-                        created_at=datetime.fromtimestamp(corrected_event.created_at),
-                        speaker_label=getattr(corrected_event, "speaker_label", ""),
-                    )
                 self._maybe_store_transcript(
                     source=translated_channel,
                     channel=translated_channel,
@@ -291,21 +277,6 @@ class AudioRouter:
     def _process_translation_event(self, event: ASREventWithSource) -> None:
         correct_event = getattr(self._translator_manager, "correct_asr_event", lambda value: value)
         corrected_event = correct_event(event)
-        if corrected_event is not event:
-            original_channel, _, _ = self._channels_of(corrected_event.source)
-            self._maybe_store_transcript(
-                source=original_channel,
-                channel=original_channel,
-                kind="original",
-                text=corrected_event.text,
-                is_final=corrected_event.is_final,
-                is_stable_partial=not corrected_event.is_final,
-                utterance_id=corrected_event.utterance_id,
-                revision=corrected_event.revision,
-                latency_ms=corrected_event.latency_ms,
-                created_at=datetime.fromtimestamp(corrected_event.created_at),
-                speaker_label=getattr(corrected_event, "speaker_label", ""),
-            )
         translated = self._translator_manager.process(corrected_event)
         if not translated:
             skip_reason = ""

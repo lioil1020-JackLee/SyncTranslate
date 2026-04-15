@@ -190,6 +190,7 @@ class ASRManagerV2:
                 "device_effective": str(backend_runtime.get("device_effective", "")),
                 "model_init_mode": str(backend_runtime.get("model_init_mode", "lazy")),
                 "init_failure": str(backend_runtime.get("init_failure", "")),
+                "frontend": stats.frontend,
                 "endpointing": stats.endpointing,
                 "endpoint_signal": {
                     "speech_active": signal.speech_active,
@@ -260,6 +261,20 @@ class ASRManagerV2:
             pre_roll_ms=int(getattr(self._config.runtime, "asr_pre_roll_ms", 500)),
             min_partial_audio_ms=int(getattr(self._config.runtime, "asr_partial_min_audio_ms", 280)),
             queue_maxsize=self._queue_maxsize_for_source(source),
+            frontend_enabled=bool(getattr(self._config.runtime, "asr_frontend_enabled", True)),
+            frontend_target_rms=float(getattr(self._config.runtime, "asr_frontend_target_rms", 0.05)),
+            frontend_max_gain=float(getattr(self._config.runtime, "asr_frontend_max_gain", 3.0)),
+            frontend_highpass_alpha=float(getattr(self._config.runtime, "asr_frontend_highpass_alpha", 0.96)),
+            enhancement_enabled=bool(getattr(self._config.runtime, "asr_enhancement_enabled", True)),
+            enhancement_noise_reduce_strength=float(
+                getattr(self._config.runtime, "asr_enhancement_noise_reduce_strength", 0.42)
+            ),
+            enhancement_noise_adapt_rate=float(
+                getattr(self._config.runtime, "asr_enhancement_noise_adapt_rate", 0.18)
+            ),
+            enhancement_music_suppress_strength=float(
+                getattr(self._config.runtime, "asr_enhancement_music_suppress_strength", 0.2)
+            ),
             on_debug=self._on_error,
         )
         self._runtimes[source] = runtime
@@ -323,6 +338,7 @@ class ASRManagerV2:
             "device_effective": "",
             "model_init_mode": "lazy",
             "init_failure": "",
+            "frontend": {},
             "endpointing": {},
             "endpoint_signal": {
                 "speech_active": False,

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+from difflib import SequenceMatcher
+import re
 from typing import TYPE_CHECKING, Any
 
 from app.infra.config.schema import DEFAULT_FIXED_LLM_MODEL, LlmConfig
@@ -61,6 +63,8 @@ class AsrTextCorrector:
             corrected = raw_text
         if not corrected:
             corrected = raw_text
+        if not self._is_safe_correction(raw_text, corrected, language=language):
+            corrected = raw_text
         applied = corrected != raw_text
         self._remember(corrected)
         return AsrCorrectionResult(text=corrected, raw_text=raw_text, applied=applied)
@@ -69,6 +73,57 @@ class AsrTextCorrector:
         value = (text or "").strip()
         if value:
             self._context.append(value)
+
+    @staticmethod
+    def _is_safe_correction(raw_text: str, corrected: str, *, language: str) -> bool:
+        raw = (raw_text or "").strip()
+        candidate = (corrected or "").strip()
+        if not raw or not candidate:
+            return False
+        if raw == candidate:
+            return True
+        if _looks_like_structured_junk(candidate):
+            return False
+        if len(candidate) > max(len(raw) + 12, int(len(raw) * 1.45) + 4):
+            return False
+        if len(candidate) < max(1, int(len(raw) * 0.45)) and len(raw) >= 8:
+            return False
+
+        normalized_raw = _normalize_for_compare(raw)
+        normalized_candidate = _normalize_for_compare(candidate)
+        ratio = SequenceMatcher(a=normalized_raw, b=normalized_candidate).ratio()
+        if len(normalized_raw) >= 6 and ratio < 0.42:
+            return False
+
+        normalized_language = str(language or "").strip().lower()
+        if normalized_language.startswith(("zh", "cmn", "yue")):
+            if _contains_cjk(raw) and not _contains_cjk(candidate):
+                return False
+            if len(normalized_raw) >= 6 and ratio < 0.55:
+                return False
+        return True
+
+
+def _normalize_for_compare(text: str) -> str:
+    return re.sub(r"\s+", "", (text or "").strip().lower())
+
+
+def _contains_cjk(text: str) -> bool:
+    return any("\u4e00" <= ch <= "\u9fff" for ch in (text or ""))
+
+
+def _looks_like_structured_junk(text: str) -> bool:
+    value = (text or "").strip()
+    if not value:
+        return True
+    lowered = value.lower()
+    if any(token in lowered for token in ("```", "\"correction\"", "\"translation\"", "<think", "</think")):
+        return True
+    if re.search(r"(?:^|\s)json(?:\s|$)", lowered):
+        return True
+    if "{" in value or "}" in value:
+        return True
+    return False
 
 
 __all__ = ["AsrCorrectionResult", "AsrTextCorrector"]

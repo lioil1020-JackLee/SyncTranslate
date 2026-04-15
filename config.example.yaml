@@ -219,7 +219,20 @@ runtime:
   tts_drop_backlog_threshold: 3
   llm_streaming_tokens: 16
   max_pipeline_latency_ms: 3200
-  asr_final_correction_enabled: true
+  asr_frontend_enabled: true
+  asr_frontend_target_rms: 0.05
+  asr_frontend_max_gain: 3.0
+  asr_frontend_highpass_alpha: 0.96
+  asr_enhancement_enabled: true
+  asr_enhancement_noise_reduce_strength: 0.42
+  asr_enhancement_noise_adapt_rate: 0.18
+  asr_enhancement_music_suppress_strength: 0.2
+  asr_hotwords_enabled: false
+  asr_hotword_lexicon: ''
+  asr_result_validator_enabled: true
+  asr_result_max_chars_per_second: 14.0
+  asr_result_min_speech_ratio_for_long_text: 0.18
+  asr_final_correction_enabled: false
   asr_final_correction_context_items: 3
   asr_final_correction_max_chars: 120
   speaker_diarization_enabled: false

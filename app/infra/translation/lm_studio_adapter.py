@@ -225,8 +225,10 @@ class LmStudioClient:
         stripped = _strip_thinking_sections(text)
         json_correction = _extract_json_field(stripped, "correction")
         if json_correction:
-            return _sanitize_surface_text(json_correction)
-        return _sanitize_surface_text(stripped)
+            return _clean_correction_output(json_correction)
+        if _looks_like_structured_reply(stripped):
+            return ""
+        return _clean_correction_output(stripped)
 
     @staticmethod
     def _clean_translation_output(text: str, *, target_lang: str) -> str:
@@ -413,6 +415,43 @@ def _sanitize_surface_text(text: str) -> str:
     value = re.sub(r"\s+", " ", value)
     value = re.sub(r"^(translation|output|result|target|source|翻譯|译文)\s*[:：]\s*", "", value, flags=re.IGNORECASE)
     return value.strip(" \t\n\r\"'`[]{}")
+
+
+def _clean_correction_output(text: str) -> str:
+    value = _sanitize_surface_text(text)
+    if not value:
+        return ""
+    value = re.sub(r"^(?:json|correction)\s*[:：-]?\s*", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"\s*(?:```(?:json)?|json)\s*$", "", value, flags=re.IGNORECASE)
+    value = value.strip(" \t\n\r\"'`[]{}")
+    if _looks_like_structured_reply(value):
+        return ""
+    return value
+
+
+def _looks_like_structured_reply(text: str) -> bool:
+    value = (text or "").strip()
+    if not value:
+        return False
+    lowered = value.lower()
+    suspicious_tokens = (
+        "```",
+        '{"',
+        '"}',
+        '"correction"',
+        '"translation"',
+        "<think",
+        "</think",
+        "assistant:",
+        "user:",
+    )
+    if any(token in lowered for token in suspicious_tokens):
+        return True
+    if re.search(r"(?:^|\s)json(?:\s|$)", lowered):
+        return True
+    if "{" in value or "}" in value:
+        return True
+    return False
 
 
 def _looks_like_markup_fragment(text: str) -> bool:

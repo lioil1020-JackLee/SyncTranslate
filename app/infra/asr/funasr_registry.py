@@ -71,8 +71,8 @@ class FunASRModelRegistry:
             requested_device=requested_device,
         )
 
-    def get_vad(self, *, requested_device: str) -> FunASRModelHandle:
-        key = f"vad::fsmn-vad::{requested_device or 'auto'}"
+    def get_vad(self, *, requested_device: str, session_key: str | None = None) -> FunASRModelHandle:
+        key = self._vad_key(requested_device=requested_device, session_key=session_key)
         return self._get_or_create(
             kind="vad",
             key=key,
@@ -89,14 +89,19 @@ class FunASRModelRegistry:
             requested_device=requested_device,
         )
 
-    def snapshot_vad(self, *, requested_device: str) -> dict[str, object]:
-        key = f"vad::fsmn-vad::{requested_device or 'auto'}"
+    def snapshot_vad(self, *, requested_device: str, session_key: str | None = None) -> dict[str, object]:
+        key = self._vad_key(requested_device=requested_device, session_key=session_key)
         return self._snapshot(
             kind="vad",
             key=key,
             model_path=_resolve_vad_model_path(),
             requested_device=requested_device,
         )
+
+    @staticmethod
+    def _vad_key(*, requested_device: str, session_key: str | None) -> str:
+        scope = str(session_key or "shared").strip() or "shared"
+        return f"vad::fsmn-vad::{requested_device or 'auto'}::{scope}"
 
     def _snapshot(
         self,
