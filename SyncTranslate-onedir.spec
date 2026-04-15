@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 import os
 import sys
-from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 
 datas = collect_data_files("opencc")
@@ -51,14 +51,11 @@ a = Analysis(
         "PySide6.QtGui",
         "PySide6.QtWidgets",
         "edge_tts",
-        "faster_whisper",
-        "funasr",
-        "modelscope",
         "miniaudio",
         "opencc",
         "soundcard",
         "sounddevice",
-    ],
+    ] + collect_submodules("funasr") + collect_submodules("modelscope") + collect_submodules("faster_whisper"),
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
