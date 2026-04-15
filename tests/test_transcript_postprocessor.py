@@ -88,6 +88,30 @@ class TestPartialStabilization:
         r = self.pp.process_partial("local", "short", utterance_id="u6")
         assert r == "short"
 
+    def test_final_recovers_prefix_lost_to_audio_truncation(self):
+        """final 因 audio history 截斷而只剩尾部時，應從最後 stable partial 補回前綴。"""
+        # Partial 先顯示完整文字（stable）
+        self.pp.process_partial("local", "Hello world how are you", utterance_id="u7")
+        self.pp.process_partial("local", "Hello world how are you doing", utterance_id="u7")
+        # Final 因 audio window 截斷，只含後半部
+        result = self.pp.process_final("local", "are you doing", utterance_id="u7")
+        # 應補回前綴 "Hello world how"
+        assert result.startswith("Hello world how"), f"Expected prefix recovery, got: {result!r}"
+        assert "are you doing" in result
+
+    def test_final_not_modified_when_long_enough(self):
+        """final 已足夠長（>= 80% of last partial）時，不做前綴回收。"""
+        self.pp.process_partial("local", "Hello world", utterance_id="u8")
+        result = self.pp.process_final("local", "Hello world!", utterance_id="u8")
+        assert result == "Hello world!"
+
+    def test_final_not_modified_when_completely_different(self):
+        """final 與 last partial 完全不同（ASR 重新辨識）時，不強行補前綴。"""
+        self.pp.process_partial("local", "Apple banana cherry", utterance_id="u9")
+        # Final 完全不同，不是 last partial 的尾綴
+        result = self.pp.process_final("local", "zebra xylophone", utterance_id="u9")
+        assert result == "zebra xylophone"
+
 
 class TestGlossaryIntegration:
     def test_glossary_applied_on_final(self):

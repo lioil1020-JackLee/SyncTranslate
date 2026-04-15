@@ -55,8 +55,10 @@ class TranscriptPostProcessor:
         self._glossary = glossary
         self._glossary_apply_on_partial = glossary_apply_on_partial
         self._glossary_apply_on_final = glossary_apply_on_final
-        # {channel_key: last_partial_text}
+        # {channel_key: last_normalized_partial_text}（用於 _stabilize_partial 比對）
         self._last_partial: dict[str, str] = {}
+        # {channel_key: last_displayed_partial_text}（stabilize 後實際顯示的文字，用於 final 前綴回收）
+        self._last_displayed_partial: dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -80,7 +82,11 @@ class TranscriptPostProcessor:
             key = f"{source}:{utterance_id}"
             stabilized = self._stabilize_partial(key, normalized)
         else:
+            key = f"{source}:{utterance_id}"
             stabilized = normalized
+
+        # 記錄實際顯示的 partial，供 process_final 回收遺失前綴使用
+        self._last_displayed_partial[key] = stabilized
 
         if self._glossary and self._glossary_apply_on_partial:
             stabilized = self._glossary.apply(stabilized, conservative=True)
@@ -99,11 +105,17 @@ class TranscriptPostProcessor:
         if not self._enabled:
             return text
 
-        # 清除此 utterance 的 partial 狀態
+        # 清除此 utterance 的 partial 狀態，並取出最後顯示的 partial 以供前綴回收
         key = f"{source}:{utterance_id}"
         self._last_partial.pop(key, None)
+        last_displayed = self._last_displayed_partial.pop(key, "")
 
         normalized = self._normalize(text, language=language)
+
+        # 若 final 比最後顯示的 partial 短很多，嘗試回收遺失的前綴
+        # （ASR final 因 audio history 截斷，可能只有末尾幾秒的文字）
+        if last_displayed and self._partial_stabilization_enabled:
+            normalized = self._recover_final_prefix(last_displayed, normalized)
 
         if self._glossary and self._glossary_apply_on_final:
             normalized = self._glossary.apply(normalized, conservative=False)
@@ -112,7 +124,9 @@ class TranscriptPostProcessor:
 
     def reset_utterance(self, source: str, utterance_id: str) -> None:
         """主動清除指定 utterance 的暫存狀態。"""
-        self._last_partial.pop(f"{source}:{utterance_id}", None)
+        key = f"{source}:{utterance_id}"
+        self._last_partial.pop(key, None)
+        self._last_displayed_partial.pop(key, None)
 
     def reset_source(self, source: str) -> None:
         """清除特定 source 所有 utterance 的暫存狀態。"""
@@ -120,10 +134,62 @@ class TranscriptPostProcessor:
         to_del = [k for k in self._last_partial if k.startswith(prefix)]
         for k in to_del:
             del self._last_partial[k]
+        to_del = [k for k in self._last_displayed_partial if k.startswith(prefix)]
+        for k in to_del:
+            del self._last_displayed_partial[k]
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _recover_final_prefix(self, last_displayed: str, final_text: str) -> str:
+        """若 final 比最後顯示的 partial 短很多，嘗試從 partial 回收遺失的前綴。
+
+        ASR final 因 audio history 截斷（final_history_seconds），可能只包含
+        末尾幾秒的文字，而稍早已穩定顯示的前綴部分就會消失。
+        此方法嘗試比對 final_text 是否為 last_displayed 的尾綴，若是則補回前綴。
+        """
+        if not last_displayed or not final_text:
+            return final_text
+
+        # final 已夠長（>= 80% of last_displayed），不需回收
+        if len(final_text) >= len(last_displayed) * 0.8:
+            return final_text
+
+        # 取 final_text 前 30 個字元作為探針，在 last_displayed 中搜尋出現位置
+        probe_len = min(30, len(final_text))
+        probe = final_text[:probe_len].lower()
+        haystack = last_displayed.lower()
+
+        idx = haystack.find(probe)
+        if idx <= 0:
+            # 找不到或在最前面，表示 final 是全新改寫，不回收
+            return final_text
+
+        # 確認 last_displayed[idx:] 和 final_text 開頭確實對得上（至少 60%）
+        overlap_len = min(len(last_displayed) - idx, len(final_text))
+        match_chars = sum(
+            1 for a, b in zip(last_displayed[idx:idx + overlap_len], final_text[:overlap_len])
+            if a.lower() == b.lower()
+        )
+        if match_chars < overlap_len * 0.6:
+            return final_text
+
+        # 補回前綴
+        prefix = last_displayed[:idx].rstrip()
+        if not prefix:
+            return final_text
+        # 決定分隔符：CJK 不加空格，西文加空格
+        needs_space = (
+            prefix
+            and final_text
+            and prefix[-1].isascii()
+            and prefix[-1] not in ",.!?;:"
+            and final_text[0].isascii()
+            and not final_text[0].isspace()
+        )
+        sep = " " if needs_space else ""
+        return prefix + sep + final_text
 
     def _stabilize_partial(self, key: str, text: str) -> str:
         """若新 partial 與舊 partial 共享長前綴，保留穩定前綴避免抖動。"""
