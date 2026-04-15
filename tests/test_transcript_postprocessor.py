@@ -44,6 +44,14 @@ class TestTextNormalization:
     def test_empty_string(self):
         assert self.pp.process_final("local", "") == ""
 
+    def test_simplified_chinese_is_converted_to_traditional_for_zh(self):
+        result = self.pp.process_final("local", "卖火柴的小女孩", language="zh-TW")
+        assert result == "賣火柴的小女孩"
+
+    def test_english_text_is_not_changed_by_chinese_script_normalization(self):
+        result = self.pp.process_final("local", "hello world", language="en")
+        assert result == "hello world"
+
 
 class TestPartialStabilization:
     def setup_method(self):

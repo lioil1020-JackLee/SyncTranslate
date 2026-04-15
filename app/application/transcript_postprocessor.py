@@ -9,8 +9,19 @@ import re
 import unicodedata
 from typing import TYPE_CHECKING
 
+try:
+    from opencc import OpenCC  # type: ignore
+except Exception:
+    OpenCC = None
+
 if TYPE_CHECKING:
     from app.domain.glossary import GlossaryStore
+
+
+if OpenCC is not None:
+    _S2T_CONVERTER = OpenCC("s2twp")
+else:
+    _S2T_CONVERTER = None
 
 
 class TranscriptPostProcessor:
@@ -154,6 +165,9 @@ class TranscriptPostProcessor:
         # 3. 全形半形基本整理（數字 / 英文字母）
         result = _normalize_fullwidth(result)
 
+        # 3.5 中文簡繁整理：中文 ASR 後端常輸出簡體，UI 以繁體中文為主。
+        result = _normalize_chinese_script(result, language=language)
+
         # 4. 中英文標點整理（英文句末加空格）
         result = _normalize_punctuation(result, language=language)
 
@@ -178,6 +192,19 @@ _FULLWIDTH_TABLE = str.maketrans(
 def _normalize_fullwidth(text: str) -> str:
     """將全形 ASCII 字元轉為半形。"""
     return text.translate(_FULLWIDTH_TABLE)
+
+
+def _normalize_chinese_script(text: str, *, language: str = "") -> str:
+    """將中文輸出統一為繁體（若 OpenCC 可用）。"""
+    normalized_language = str(language or "").strip().lower().replace("_", "-")
+    if _S2T_CONVERTER is None:
+        return text
+    if normalized_language in {"zh", "zh-tw", "zh-cn", "cmn", "cmn-hans", "cmn-hant", "yue"}:
+        try:
+            return _S2T_CONVERTER.convert(text)
+        except Exception:
+            return text
+    return text
 
 
 _PUNCT_SPACE_RE = re.compile(r"([.!?,;:])([A-Za-z\u4e00-\u9fff])")
