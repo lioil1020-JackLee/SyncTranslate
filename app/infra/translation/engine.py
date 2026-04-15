@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections import deque
 from copy import deepcopy
 import time
 from typing import Callable
 
+from app.infra.asr.text_correction import AsrTextCorrector
 from app.domain.events import ErrorEvent
 from app.infra.asr.streaming_pipeline import ASREventWithSource
 from app.infra.translation.provider import create_translation_provider
@@ -28,6 +30,7 @@ class TranslationEvent:
     is_early_final: bool
     should_display: bool
     should_speak: bool
+    speaker_label: str = ""
 
 
 class TranslatorManager:
@@ -98,6 +101,23 @@ class TranslatorManager:
         self._speech_profile_name = {
             "local": local_llm.speech_profile,
             "remote": remote_llm.speech_profile,
+        }
+        correction_enabled = bool(getattr(config.runtime, "asr_final_correction_enabled", False))
+        correction_context_items = int(getattr(config.runtime, "asr_final_correction_context_items", 3))
+        correction_max_chars = int(getattr(config.runtime, "asr_final_correction_max_chars", 120))
+        self._correctors = {
+            "local": AsrTextCorrector(
+                local_llm,
+                enabled=correction_enabled,
+                context_items=correction_context_items,
+                max_chars=correction_max_chars,
+            ),
+            "remote": AsrTextCorrector(
+                remote_llm,
+                enabled=correction_enabled,
+                context_items=correction_context_items,
+                max_chars=correction_max_chars,
+            ),
         }
 
     def last_skip_reason(self, source: str) -> str:
@@ -171,6 +191,7 @@ class TranslatorManager:
                 is_early_final=stitched.is_early_final,
                 should_display=stitched.should_display,
                 should_speak=stitched.should_speak,
+                speaker_label=event.speaker_label,
             )
         speak_text = self._resolve_speak_text(
             source="local",
@@ -196,6 +217,37 @@ class TranslatorManager:
             is_early_final=stitched.is_early_final,
             should_display=stitched.should_display,
             should_speak=stitched.should_speak,
+            speaker_label=event.speaker_label,
+        )
+
+    def correct_asr_event(self, event: ASREventWithSource) -> ASREventWithSource:
+        if not event.is_final or bool(getattr(event, "correction_applied", False)):
+            return event
+        source = event.source if event.source in ("local", "remote") else "local"
+        corrector = self._correctors.get(source)
+        if corrector is None:
+            return event
+        language, _ = self._resolve_languages(source, getattr(event, "detected_language", ""))
+        result = corrector.correct(event.text, language=language)
+        if not result.applied:
+            return event
+        return ASREventWithSource(
+            source=event.source,
+            utterance_id=event.utterance_id,
+            revision=event.revision,
+            pipeline_revision=event.pipeline_revision,
+            config_fingerprint=event.config_fingerprint,
+            created_at=event.created_at,
+            text=result.text,
+            is_final=event.is_final,
+            is_early_final=event.is_early_final,
+            start_ms=event.start_ms,
+            end_ms=event.end_ms,
+            latency_ms=event.latency_ms,
+            detected_language=event.detected_language,
+            raw_text=event.raw_text or result.raw_text,
+            correction_applied=True,
+            speaker_label=event.speaker_label,
         )
 
     @staticmethod

@@ -192,6 +192,7 @@ class LocalAiPage(QWidget):
         root.setContentsMargins(_PAGE_MIN_PADDING, _PAGE_MIN_PADDING, _PAGE_MIN_PADDING, _PAGE_MIN_PADDING)
         root.setSpacing(6)
         root.addWidget(self.experience_group)
+        root.addWidget(self.runtime_status_label)
         root.addLayout(content_stack)
         root.addStretch(1)
 
@@ -211,6 +212,7 @@ class LocalAiPage(QWidget):
         self._apply_optimized_defaults()
         self._set_advanced_settings_visible(False)
         self._disable_wheel_for_advanced_controls()
+        self._refresh_asr_runtime_hints()
 
     def apply_config(self, config: AppConfig) -> None:
         self._suspend_notify = True
@@ -348,6 +350,7 @@ class LocalAiPage(QWidget):
                 self.show_advanced_check.setChecked(False)
                 self._set_advanced_settings_visible(False)
                 self._advanced_visibility_initialized = True
+            self._refresh_asr_runtime_hints()
         finally:
             self._suspend_notify = False
 
@@ -490,7 +493,12 @@ class LocalAiPage(QWidget):
         config.llm_channels.remote.speech_profile = speech_profile
 
     def set_runtime_status(self, text: str) -> None:
-        self.runtime_status_label.setText(text)
+        base_text = (text or "").strip()
+        hint_text = self._current_asr_runtime_hint_text()
+        if base_text and hint_text:
+            self.runtime_status_label.setText(f"{base_text}\n{hint_text}")
+            return
+        self.runtime_status_label.setText(base_text or hint_text)
 
     def _apply_optimized_defaults(self) -> None:
         self._suspend_notify = True
@@ -505,22 +513,22 @@ class LocalAiPage(QWidget):
             self.remote_asr_partial_history_spin.setValue(2)
             self.asr_final_history_spin.setValue(6)
             self.remote_asr_final_history_spin.setValue(6)
-            self.asr_min_speech_spin.setValue(150)
-            self.remote_asr_min_speech_spin.setValue(150)
-            self.asr_min_silence_spin.setValue(520)
-            self.remote_asr_min_silence_spin.setValue(520)
-            self.asr_speech_pad_spin.setValue(320)
-            self.remote_asr_speech_pad_spin.setValue(320)
+            self.asr_min_speech_spin.setValue(220)
+            self.remote_asr_min_speech_spin.setValue(220)
+            self.asr_min_silence_spin.setValue(900)
+            self.remote_asr_min_silence_spin.setValue(900)
+            self.asr_speech_pad_spin.setValue(520)
+            self.remote_asr_speech_pad_spin.setValue(520)
             self.asr_max_speech_spin.setValue(16)
             self.remote_asr_max_speech_spin.setValue(16)
             self.asr_condition_prev_check.setChecked(False)
             self.remote_asr_condition_prev_check.setChecked(False)
-            self.asr_rms_threshold_spin.setValue(0.02)
-            self.remote_asr_rms_threshold_spin.setValue(0.02)
-            self.asr_no_speech_threshold_spin.setValue(0.55)
-            self.remote_asr_no_speech_threshold_spin.setValue(0.55)
-            self.asr_queue_local_spin.setValue(96)
-            self.asr_queue_remote_spin.setValue(96)
+            self.asr_rms_threshold_spin.setValue(0.025)
+            self.remote_asr_rms_threshold_spin.setValue(0.025)
+            self.asr_no_speech_threshold_spin.setValue(0.72)
+            self.remote_asr_no_speech_threshold_spin.setValue(0.72)
+            self.asr_queue_local_spin.setValue(160)
+            self.asr_queue_remote_spin.setValue(160)
 
             self.llm_temperature_spin.setValue(0.0)
             self.remote_llm_temperature_spin.setValue(0.0)
@@ -555,20 +563,20 @@ class LocalAiPage(QWidget):
             self._select_combo_data(self.runtime_latency_mode_combo, "balanced")
             self._select_combo_data(self.runtime_display_partial_strategy_combo, "stable_only")
             self.runtime_chunk_spin.setValue(40)
-            self.runtime_asr_pre_roll_spin.setValue(220)
+            self.runtime_asr_pre_roll_spin.setValue(520)
             self.runtime_stable_partial_min_repeats_spin.setValue(2)
             self.runtime_partial_stability_delta_spin.setValue(8)
-            self.runtime_asr_partial_min_audio_spin.setValue(520)
-            self.runtime_asr_partial_floor_spin.setValue(520)
+            self.runtime_asr_partial_min_audio_spin.setValue(1000)
+            self.runtime_asr_partial_floor_spin.setValue(1000)
             self.runtime_llm_partial_floor_spin.setValue(280)
-            self.runtime_early_final_check.setChecked(True)
+            self.runtime_early_final_check.setChecked(False)
             self.runtime_tts_accept_stable_partial_check.setChecked(False)
             self.runtime_tts_partial_min_chars_spin.setValue(12)
             self.runtime_tts_use_speech_profile_check.setChecked(False)
             self.runtime_translation_cache_spin.setValue(256)
             self.runtime_prefix_delta_spin.setValue(6)
             self.runtime_llm_streaming_tokens_spin.setValue(16)
-            self.runtime_max_pipeline_latency_spin.setValue(2200)
+            self.runtime_max_pipeline_latency_spin.setValue(3200)
             self.runtime_tts_max_wait_spin.setValue(2200)
             self.runtime_tts_max_chars_spin.setValue(160)
             self.runtime_tts_drop_threshold_spin.setValue(3)
@@ -584,6 +592,16 @@ class LocalAiPage(QWidget):
         self.channel_strategy_label = QLabel("已內建高準確 + 低延遲優化參數")
         self.optimized_profile_label = QLabel("翻譯採精準直譯，TTS 採清晰播報，進階參數可在下方展開後微調。")
         self.optimized_profile_label.setWordWrap(False)
+        self.asr_routing_summary_label = QLabel(
+            "中文 ASR 會自動使用 FunASR + FSMN-VAD；非中文與 auto 會自動使用 faster-whisper。"
+        )
+        self.asr_routing_summary_label.setWordWrap(True)
+        self.asr_routing_summary_label.setStyleSheet("color: #b7bdc6;")
+        self.asr_concurrency_summary_label = QLabel(
+            "本地與遠端可同時發話。現在已避免共享模型互相污染，但若實際 effective device 仍是 CPU，雙通道中文辨識的延遲仍可能升高。"
+        )
+        self.asr_concurrency_summary_label.setWordWrap(True)
+        self.asr_concurrency_summary_label.setStyleSheet("color: #b7bdc6;")
 
         button_row = self._build_inline_row(self.quick_save_btn, self.quick_health_btn, self.show_advanced_check)
 
@@ -591,6 +609,8 @@ class LocalAiPage(QWidget):
         self._configure_form_layout(form)
         form.addRow("優化策略", self.channel_strategy_label)
         form.addRow("目前設定", self.optimized_profile_label)
+        form.addRow("ASR 路由", self.asr_routing_summary_label)
+        form.addRow("雙通道提醒", self.asr_concurrency_summary_label)
         form.addRow("", button_row)
 
         group = QGroupBox("快速操作")
@@ -642,6 +662,9 @@ class LocalAiPage(QWidget):
         self.asr_engine_combo = QComboBox()
         self.asr_engine_combo.addItem("faster-whisper", "faster_whisper")
         self._configure_combo_popup(self.asr_engine_combo)
+        self.asr_engine_combo.setEnabled(False)
+        self.asr_engine_combo.hide()
+        self.asr_engine_combo.setToolTip("ASR 後端已改成依各通道 ASR 語言自動路由，這個欄位保留給舊設定相容性。")
 
         self.asr_model_combo = QComboBox()
         # 中文 ASR 模型
@@ -649,7 +672,7 @@ class LocalAiPage(QWidget):
         for model in self._discover_asr_models():
             self.asr_model_combo.addItem(model)
         self._configure_combo_popup(self.asr_model_combo)
-        self.asr_model_combo.setToolTip("可手動輸入自定義模型名稱或本地路徑")
+        self.asr_model_combo.setToolTip("非中文或 auto 路徑會使用 faster-whisper，這裡設定其模型名稱。")
 
         self.remote_asr_model_combo = QComboBox()
         # 英文 ASR 模型
@@ -657,7 +680,7 @@ class LocalAiPage(QWidget):
         for model in self._discover_asr_models():
             self.remote_asr_model_combo.addItem(model)
         self._configure_combo_popup(self.remote_asr_model_combo)
-        self.remote_asr_model_combo.setToolTip("可手動輸入自定義模型名稱或本地路徑")
+        self.remote_asr_model_combo.setToolTip("非中文或 auto 路徑會使用 faster-whisper，這裡設定其模型名稱。")
 
         self.asr_device_combo = QComboBox()
         self.asr_device_combo.addItem("cuda", "cuda")
@@ -665,6 +688,7 @@ class LocalAiPage(QWidget):
         self._configure_combo_popup(self.asr_device_combo)
         self.asr_device_combo.setMinimumWidth(150)
         self.asr_device_combo.setMaximumWidth(150)
+        self.asr_device_combo.setToolTip("這是請求的 ASR 裝置。實際使用的 effective device 可能因 CUDA / Torch 環境而回退為 CPU。")
 
         self.asr_compute_label = QLabel("-")
         self.asr_compute_label.setMinimumWidth(78)
@@ -1477,7 +1501,24 @@ class LocalAiPage(QWidget):
     def _on_asr_device_changed(self) -> None:
         device = str(self.asr_device_combo.currentData() or "cuda")
         self.asr_compute_label.setText(self._compute_type_for_device(device))
+        self._refresh_asr_runtime_hints()
         self._notify_settings_changed()
+
+    def _refresh_asr_runtime_hints(self) -> None:
+        self.runtime_status_label.setText(self._current_asr_runtime_hint_text())
+
+    def _current_asr_runtime_hint_text(self) -> str:
+        requested_device = str(self.asr_device_combo.currentData() or "cuda")
+        compute_type = self._compute_type_for_device(requested_device)
+        if requested_device == "cuda":
+            return (
+                "ASR 路由：中文 -> FunASR + FSMN-VAD；非中文 / auto -> faster-whisper。"
+                f" 目前請求裝置為 CUDA，shared compute type={compute_type}。若執行診斷顯示 effective device=CPU，代表已自動回退 CPU。"
+            )
+        return (
+            "ASR 路由：中文 -> FunASR + FSMN-VAD；非中文 / auto -> faster-whisper。"
+            " 目前請求裝置為 CPU；若本地與遠端同時以中文發話，雙通道延遲通常會比 CUDA 明顯。"
+        )
 
     def _notify_settings_changed(self) -> None:
         if self._suspend_notify:

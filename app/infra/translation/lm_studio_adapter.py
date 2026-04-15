@@ -120,6 +120,57 @@ class LmStudioClient:
             self._last_cleaned_response = cleaned
         return cleaned
 
+    def correct_asr_text(
+        self,
+        *,
+        text: str,
+        language: str,
+        context: list[str] | None = None,
+    ) -> str:
+        if not text.strip():
+            return ""
+        self._last_raw_response = ""
+        self._last_cleaned_response = ""
+        self._last_error = ""
+        language_label = _language_label(language or "")
+        context_text = "\n".join((context or [])[-4:])
+        system_prompt = (
+            "You are an ASR post-editor.\n"
+            f"Correct the transcript in {language_label}.\n"
+            "Return JSON only in this exact format: {\"correction\":\"...\"}.\n"
+            "Correct only obvious ASR mistakes.\n"
+            "Do not translate.\n"
+            "Do not summarize.\n"
+            "Do not continue incomplete sentences.\n"
+            "Do not add missing facts.\n"
+            "Keep names, code, numbers, and product terms accurate.\n"
+            "If uncertain, keep the original wording.\n"
+            "Keep the output length close to the input."
+        )
+        if context_text.strip():
+            user_prompt = (
+                f"Reference context:\n{context_text}\n\n"
+                "Correct this ASR text only:\n"
+                f"{text}"
+            )
+        else:
+            user_prompt = (
+                "Correct this ASR text only:\n"
+                f"{text}"
+            )
+        response = self._chat_completion(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=max(48, min(192, int(self.max_output_tokens))),
+            response_format=_correction_response_format(),
+        )
+        cleaned = self._extract_correction_text(response)
+        self._last_raw_response = response
+        self._last_cleaned_response = cleaned
+        return cleaned or text.strip()
+
     def debug_snapshot(self) -> dict[str, str]:
         return {
             "raw_response": self._trim_debug_text(self._last_raw_response),
@@ -168,6 +219,14 @@ class LmStudioClient:
         if json_translation:
             return LmStudioClient._clean_translation_output(json_translation, target_lang=target_lang)
         return LmStudioClient._clean_translation_output(stripped, target_lang=target_lang)
+
+    @staticmethod
+    def _extract_correction_text(text: str) -> str:
+        stripped = _strip_thinking_sections(text)
+        json_correction = _extract_json_field(stripped, "correction")
+        if json_correction:
+            return _sanitize_surface_text(json_correction)
+        return _sanitize_surface_text(stripped)
 
     @staticmethod
     def _clean_translation_output(text: str, *, target_lang: str) -> str:
@@ -319,6 +378,10 @@ def _strip_thinking_sections(text: str) -> str:
 
 
 def _extract_translation_from_json(text: str) -> str:
+    return _extract_json_field(text, "translation")
+
+
+def _extract_json_field(text: str, field_name: str) -> str:
     value = text.strip()
     if not value:
         return ""
@@ -333,9 +396,9 @@ def _extract_translation_from_json(text: str) -> str:
         except Exception:
             continue
         if isinstance(payload, dict):
-            translation = payload.get("translation")
-            if isinstance(translation, str):
-                return translation.strip()
+            candidate = payload.get(field_name)
+            if isinstance(candidate, str):
+                return candidate.strip()
     return ""
 
 
@@ -404,6 +467,23 @@ def _translation_response_format() -> dict[str, object]:
                     "translation": {"type": "string"},
                 },
                 "required": ["translation"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def _correction_response_format() -> dict[str, object]:
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "asr_correction_payload",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "correction": {"type": "string"},
+                },
+                "required": ["correction"],
                 "additionalProperties": False,
             },
         },

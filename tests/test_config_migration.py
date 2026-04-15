@@ -18,6 +18,12 @@ from app.infra.config.schema import AppConfig
 
 
 class ConfigMigrationTests(unittest.TestCase):
+    def test_runtime_defaults_start_with_legacy_pipeline_and_v2_placeholders(self) -> None:
+        cfg = AppConfig()
+        self.assertEqual(cfg.runtime.asr_pipeline, "v2")
+        self.assertEqual(cfg.runtime.asr_v2_backend, "funasr_v2")
+        self.assertEqual(cfg.runtime.asr_v2_endpointing, "neural_endpoint")
+
     def test_runtime_defaults_prefer_auto_asr_language_mode(self) -> None:
         cfg = AppConfig()
         self.assertEqual(cfg.runtime.asr_language_mode, "auto")
@@ -135,21 +141,25 @@ class ConfigMigrationTests(unittest.TestCase):
 
     def test_present_external_keeps_canonical_and_drops_aliases(self) -> None:
         raw = {
+            "direction": {"mode": "bidirectional"},
+            "asr": {"model": "shared"},
             "asr_channels": {
                 "local": {"model": "l"},
                 "remote": {"model": "r"},
                 "chinese": {"model": "old-c"},
                 "english": {"model": "old-e"},
             },
+            "llm": {"model": "shared"},
             "llm_channels": {
                 "local": {"model": "l"},
                 "remote": {"model": "r"},
                 "zh_to_en": {"model": "old-z2e"},
                 "en_to_zh": {"model": "old-e2z"},
             },
+            "tts": {"voice_name": "base", "sample_rate": 24000, "noise_w": 0.65},
             "tts_channels": {
-                "local": {"voice_name": "l"},
-                "remote": {"voice_name": "r"},
+                "local": {"voice_name": "base", "sample_rate": 24000, "noise_w": 0.65},
+                "remote": {"voice_name": "r", "sample_rate": 24000, "noise_w": 0.65},
                 "chinese": {"voice_name": "old-c"},
                 "english": {"voice_name": "old-e"},
             },
@@ -170,10 +180,22 @@ class ConfigMigrationTests(unittest.TestCase):
                 "llm_queue_maxsize_en_to_zh": 41,
                 "tts_queue_maxsize_chinese": 51,
                 "tts_queue_maxsize_english": 61,
+                "translation_enabled": True,
+                "remote_translation_enabled": True,
+                "local_translation_enabled": False,
+                "passthrough_gain": 1.0,
+                "tts_gain": 1.0,
+                "config_schema_version": 5,
+                "last_migration_note": "",
             },
+            "health_last_success": {"asr": "", "llm": "", "tts": ""},
         }
 
         presented = _present_external_config_keys(raw)
+
+        self.assertNotIn("direction", presented)
+        self.assertNotIn("asr", presented)
+        self.assertNotIn("llm", presented)
 
         self.assertIn("local", presented["asr_channels"])
         self.assertIn("remote", presented["asr_channels"])
@@ -189,9 +211,11 @@ class ConfigMigrationTests(unittest.TestCase):
         self.assertIn("remote", presented["tts_channels"])
         self.assertNotIn("chinese", presented["tts_channels"])
         self.assertNotIn("english", presented["tts_channels"])
+        self.assertEqual(presented["tts_channels"]["local"], {})
+        self.assertEqual(presented["tts_channels"]["remote"], {"voice_name": "r"})
 
-        self.assertIn("meeting_tts", presented)
-        self.assertIn("local_tts", presented)
+        self.assertNotIn("meeting_tts", presented)
+        self.assertNotIn("local_tts", presented)
         self.assertNotIn("chinese_tts", presented)
         self.assertNotIn("english_tts", presented)
 
@@ -207,6 +231,17 @@ class ConfigMigrationTests(unittest.TestCase):
         self.assertNotIn("llm_queue_maxsize_en_to_zh", presented["runtime"])
         self.assertNotIn("tts_queue_maxsize_chinese", presented["runtime"])
         self.assertNotIn("tts_queue_maxsize_english", presented["runtime"])
+        self.assertNotIn("asr_queue_maxsize", presented["runtime"])
+        self.assertNotIn("llm_queue_maxsize", presented["runtime"])
+        self.assertNotIn("tts_queue_maxsize", presented["runtime"])
+        self.assertNotIn("translation_enabled", presented["runtime"])
+        self.assertNotIn("remote_translation_enabled", presented["runtime"])
+        self.assertNotIn("local_translation_enabled", presented["runtime"])
+        self.assertNotIn("passthrough_gain", presented["runtime"])
+        self.assertNotIn("tts_gain", presented["runtime"])
+        self.assertNotIn("config_schema_version", presented["runtime"])
+        self.assertNotIn("last_migration_note", presented["runtime"])
+        self.assertNotIn("health_last_success", presented)
 
     def test_save_config_writes_canonical_keys_only(self) -> None:
         cfg = AppConfig()
@@ -248,8 +283,11 @@ class ConfigMigrationTests(unittest.TestCase):
         self.assertNotIn("chinese", tts_channels)
         self.assertNotIn("english", tts_channels)
 
-        self.assertIn("meeting_tts", payload)
-        self.assertIn("local_tts", payload)
+        self.assertNotIn("direction", payload)
+        self.assertNotIn("asr", payload)
+        self.assertNotIn("llm", payload)
+        self.assertNotIn("meeting_tts", payload)
+        self.assertNotIn("local_tts", payload)
         self.assertNotIn("chinese_tts", payload)
         self.assertNotIn("english_tts", payload)
 
@@ -257,6 +295,14 @@ class ConfigMigrationTests(unittest.TestCase):
         self.assertEqual(runtime.get("asr_queue_maxsize_remote"), 222)
         self.assertNotIn("asr_queue_maxsize_chinese", runtime)
         self.assertNotIn("asr_queue_maxsize_english", runtime)
+        self.assertNotIn("asr_queue_maxsize", runtime)
+        self.assertNotIn("llm_queue_maxsize", runtime)
+        self.assertNotIn("tts_queue_maxsize", runtime)
+        self.assertNotIn("remote_translation_enabled", runtime)
+        self.assertNotIn("local_translation_enabled", runtime)
+        self.assertNotIn("translation_enabled", runtime)
+        self.assertNotIn("config_schema_version", runtime)
+        self.assertNotIn("last_migration_note", runtime)
 
     def test_load_config_creates_missing_file_with_canonical_keys(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -284,6 +330,53 @@ class ConfigMigrationTests(unittest.TestCase):
         self.assertNotIn("asr_queue_maxsize_english", runtime)
         self.assertNotIn("llm_queue_maxsize_zh_to_en", runtime)
         self.assertNotIn("llm_queue_maxsize_en_to_zh", runtime)
+        self.assertNotIn("direction", payload)
+        self.assertNotIn("asr", payload)
+        self.assertNotIn("llm", payload)
+        self.assertNotIn("meeting_tts", payload)
+        self.assertNotIn("local_tts", payload)
+
+    def test_load_config_supports_compact_external_shape(self) -> None:
+        compact = {
+            "audio": {},
+            "language": {
+                "remote_translation_target": "de",
+                "local_translation_target": "it",
+            },
+            "asr_channels": {
+                "local": {"model": "local-asr"},
+                "remote": {"model": "remote-asr"},
+            },
+            "llm_channels": {
+                "local": {"base_url": "http://127.0.0.1:1234", "caption_profile": "technical_meeting"},
+                "remote": {"base_url": "http://127.0.0.1:1234", "request_timeout_sec": 12},
+            },
+            "tts": {
+                "engine": "edge_tts",
+                "voice_name": "zh-TW-HsiaoChenNeural",
+                "sample_rate": 24000,
+            },
+            "tts_channels": {
+                "remote": {"voice_name": "en-US-JennyNeural"},
+            },
+            "runtime": {
+                "sample_rate": 48000,
+                "chunk_ms": 40,
+                "remote_asr_language": "zh-TW",
+                "local_asr_language": "en",
+                "remote_translation_target": "de",
+                "local_translation_target": "it",
+            },
+        }
+
+        cfg = AppConfig.from_dict(_normalize_external_config_keys(compact))
+
+        self.assertEqual(cfg.asr.model, "local-asr")
+        self.assertEqual(cfg.asr_channels.remote.model, "remote-asr")
+        self.assertEqual(cfg.llm.caption_profile, "technical_meeting")
+        self.assertEqual(cfg.llm_channels.remote.request_timeout_sec, 12)
+        self.assertEqual(cfg.meeting_tts.voice_name, "zh-TW-HsiaoChenNeural")
+        self.assertEqual(cfg.local_tts.voice_name, "en-US-JennyNeural")
 
     def test_load_config_uses_fallback_when_primary_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

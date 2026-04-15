@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -35,11 +36,13 @@ class LanguageConfig:
 @dataclass(slots=True)
 class VadSettings:
     enabled: bool = True
+    backend: str = "fsmn_vad"
     min_speech_duration_ms: int = 150
     min_silence_duration_ms: int = 520
     max_speech_duration_s: float = 10.0
     speech_pad_ms: int = 450
     rms_threshold: float = 0.02
+    neural_threshold: float = 0.5
 
 
 @dataclass(slots=True)
@@ -204,6 +207,9 @@ class TtsChannelsConfig:
 
 @dataclass(slots=True)
 class RuntimeConfig:
+    asr_pipeline: str = "v2"
+    asr_v2_backend: str = "funasr_v2"
+    asr_v2_endpointing: str = "neural_endpoint"
     sample_rate: int = 48000
     chunk_ms: int = 100
     passthrough_gain: float = 1.0
@@ -241,6 +247,13 @@ class RuntimeConfig:
     tts_drop_backlog_threshold: int = 6
     llm_streaming_tokens: int = 16
     max_pipeline_latency_ms: int = 3000
+    asr_final_correction_enabled: bool = False
+    asr_final_correction_context_items: int = 3
+    asr_final_correction_max_chars: int = 120
+    speaker_diarization_enabled: bool = False
+    speaker_diarization_min_audio_ms: int = 1200
+    speaker_diarization_max_speakers: int = 2
+    speaker_diarization_similarity_threshold: float = 0.88
     local_echo_guard_enabled: bool = False
     local_echo_guard_resume_delay_ms: int = 300
     remote_echo_guard_resume_delay_ms: int = 300
@@ -376,6 +389,8 @@ class AppConfig:
                 streaming=AsrStreamingSettings(**(asr_remote_raw.get("streaming") or asdict(asr.streaming))),
             ),
         )
+        if not asr_raw and asr_channels_raw:
+            asr = deepcopy(asr_channels.local)
 
         llm_raw = raw.get("llm") or {}
         llm = LlmConfig(
@@ -475,6 +490,8 @@ class AppConfig:
                 speech_profile=str(llm_remote_raw.get("speech_profile", llm.speech_profile)),
             ),
         )
+        if not llm_raw and llm_channels_raw:
+            llm = deepcopy(llm_channels.local)
 
         tts = TtsConfig(**(raw.get("tts") or {}))
         meeting_tts = TtsConfig(**(raw.get("meeting_tts") or raw.get("tts") or {}))

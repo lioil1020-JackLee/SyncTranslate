@@ -4,11 +4,18 @@ import unittest
 import numpy as np
 import sys
 from types import ModuleType
+from unittest.mock import patch
 
 from app.infra.asr.streaming_pipeline import ASRManager
 from app.infra.asr.language_policy import VadSegmenter
 from app.infra.config.schema import AppConfig
-from app.infra.asr.stream_worker import StreamingAsr, _looks_like_silence_hallucination
+from app.infra.asr.stream_worker import (
+    StreamingAsr,
+    _looks_like_known_non_speech_text,
+    _looks_like_script_mismatch_junk,
+    _looks_like_silence_hallucination,
+    _transcript_drop_reason,
+)
 from app.infra.asr.faster_whisper_adapter import FasterWhisperEngine, _clear_model_cache_for_tests
 from app.infra.translation.engine import TranslatorManager
 from app.infra.translation.lm_studio_adapter import LmStudioClient
@@ -294,6 +301,12 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
             _looks_like_silence_hallucination("Thank you all.", audio_ms=900, vad_rms=0.01)
         )
         self.assertTrue(
+            _looks_like_silence_hallucination("\u8b1d\u8b1d\u5927\u5bb6", audio_ms=900, vad_rms=0.01)
+        )
+        self.assertTrue(
+            _looks_like_silence_hallucination("by bwd6", audio_ms=900, vad_rms=0.0)
+        )
+        self.assertTrue(
             _looks_like_silence_hallucination("晚安", audio_ms=1200, vad_rms=0.01)
         )
         self.assertFalse(
@@ -304,6 +317,84 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
         )
         self.assertTrue(
             _looks_like_silence_hallucination("感謝您的收看", audio_ms=1200, vad_rms=0.01)
+        )
+
+    def test_known_non_speech_overlay_lines_are_filtered(self) -> None:
+        self.assertTrue(
+            _looks_like_known_non_speech_text("優優獨播劇場——YoYo Television Series Exclusive")
+        )
+        self.assertTrue(
+            _looks_like_known_non_speech_text("字幕由 Amara.org 社群提供")
+        )
+        self.assertTrue(
+            _looks_like_known_non_speech_text("請不吝點贊 訂閱 轉發 打賞支援明鏡與點點欄目")
+        )
+        self.assertTrue(
+            _looks_like_known_non_speech_text("MING PAO CANADA MING PAO TORONTO")
+        )
+        self.assertFalse(
+            _looks_like_known_non_speech_text("你趕快修煉我來處理船上的黑衣樓殺手")
+        )
+
+    def test_short_foreign_script_junk_is_filtered_when_language_is_pinned(self) -> None:
+        self.assertTrue(
+            _looks_like_script_mismatch_junk("Ак", expected_language="zh")
+        )
+        self.assertTrue(
+            _looks_like_script_mismatch_junk("Ак", expected_language="en")
+        )
+        self.assertFalse(
+            _looks_like_script_mismatch_junk("你好", expected_language="zh")
+        )
+        self.assertFalse(
+            _looks_like_script_mismatch_junk("OK", expected_language="en")
+        )
+
+    def test_transcript_drop_reason_prioritizes_overlay_and_script_junk(self) -> None:
+        self.assertEqual(
+            _transcript_drop_reason(
+                "謝謝觀看,下次見!",
+                audio_ms=2400,
+                vad_rms=0.08,
+                expected_language="zh",
+            ),
+            "non-speech-overlay",
+        )
+        self.assertEqual(
+            _transcript_drop_reason(
+                "Ак",
+                audio_ms=900,
+                vad_rms=0.01,
+                expected_language="zh",
+            ),
+            "script-mismatch",
+        )
+        self.assertEqual(
+            _transcript_drop_reason(
+                "by bwd6",
+                audio_ms=900,
+                vad_rms=0.0,
+                expected_language="zh",
+            ),
+            "hallucinated",
+        )
+
+    def test_effective_pre_roll_ms_keeps_enough_lead_in_for_soft_sentence_starts(self) -> None:
+        self.assertEqual(
+            ASRManager._effective_pre_roll_ms(
+                configured_pre_roll_ms=220,
+                min_speech_duration_ms=150,
+                speech_pad_ms=320,
+            ),
+            310,
+        )
+        self.assertEqual(
+            ASRManager._effective_pre_roll_ms(
+                configured_pre_roll_ms=480,
+                min_speech_duration_ms=150,
+                speech_pad_ms=320,
+            ),
+            480,
         )
 
     def test_streaming_asr_keeps_segment_helpers_on_class(self) -> None:
@@ -386,6 +477,79 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
         self.assertIn("load_shed", stats.adaptive_mode)
         self.assertGreater(stats.adaptive_partial_interval_ms, 800)
         self.assertLess(stats.adaptive_soft_final_audio_ms, 4200)
+
+    def test_vad_reports_short_pause_before_full_finalize(self) -> None:
+        vad = VadSegmenter(type("Cfg", (), {
+            "enabled": True,
+            "min_speech_duration_ms": 80,
+            "min_silence_duration_ms": 900,
+            "max_speech_duration_s": 10.0,
+            "speech_pad_ms": 520,
+            "rms_threshold": 0.02,
+        })())
+
+        speech = np.full((1600,), 0.05, dtype=np.float32)
+        silence = np.zeros((3200,), dtype=np.float32)
+
+        vad.update(speech, 16000)
+        active = vad.update(speech, 16000)
+        paused = vad.update(silence, 16000)
+
+        self.assertTrue(active.speech_active)
+        self.assertGreater(paused.pause_ms, 0.0)
+        self.assertFalse(paused.finalize)
+
+    def test_streaming_asr_soft_split_prefers_pause_over_fixed_length(self) -> None:
+        class _DummyVad:
+            last_rms = 0.0
+            effective_rms_threshold = 0.02
+            effective_min_silence_duration_ms = 900
+
+            def reset(self) -> None:
+                pass
+
+            def set_runtime_tuning(self, *, min_silence_duration_ms: int | None = None) -> None:
+                pass
+
+        stream = StreamingAsr(
+            engine=object(),  # type: ignore[arg-type]
+            vad=_DummyVad(),  # type: ignore[arg-type]
+            soft_final_audio_ms=4200,
+            adaptive_enabled=False,
+        )
+        stream._segment_sample_rate = 16000
+        stream._segment_chunks = [np.zeros((16000 * 5,), dtype=np.float32)]
+
+        self.assertFalse(stream._should_emit_soft_split(type("Decision", (), {"pause_ms": 0.0})()))
+        self.assertTrue(stream._should_emit_soft_split(type("Decision", (), {"pause_ms": 240.0})()))
+
+    def test_speaker_diarization_is_disabled_by_default(self) -> None:
+        cfg = AppConfig()
+        manager = ASRManager(cfg)
+
+        self.assertIsNone(manager._speaker_diarizer_for_source("local"))
+
+    @patch("app.infra.asr.language_policy._SileroStreamingVad")
+    def test_neural_vad_backend_can_drive_speech_detection(self, mock_vad_cls) -> None:
+        backend = mock_vad_cls.return_value
+        backend.available = True
+        backend.probability.return_value = 0.92
+
+        vad = VadSegmenter(type("Cfg", (), {
+            "enabled": True,
+            "backend": "silero_vad",
+            "min_speech_duration_ms": 80,
+            "min_silence_duration_ms": 900,
+            "max_speech_duration_s": 10.0,
+            "speech_pad_ms": 520,
+            "rms_threshold": 0.02,
+            "neural_threshold": 0.5,
+        })())
+
+        decision = vad.update(np.zeros((1600,), dtype=np.float32), 16000)
+
+        self.assertTrue(decision.speech_active)
+        backend.probability.assert_called()
 
     def test_tts_queue_can_accept_stable_partial_before_final(self) -> None:
         cfg = AppConfig()

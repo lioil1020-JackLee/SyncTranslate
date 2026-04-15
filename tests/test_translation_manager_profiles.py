@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from app.infra.asr.streaming_pipeline import ASREventWithSource
+from app.infra.asr.text_correction import AsrCorrectionResult
 from app.infra.config.schema import AppConfig
 from app.infra.translation.engine import TranslatorManager
 
@@ -102,6 +103,68 @@ class _ScriptedProvider(_FakeProvider):
 
 
 class TranslatorManagerProfileTests(unittest.TestCase):
+    @patch("app.infra.translation.engine.AsrTextCorrector.correct")
+    @patch("app.infra.translation.engine.create_translation_provider")
+    def test_correct_asr_event_rewrites_final_text_for_downstream_use(self, mock_factory, mock_correct) -> None:
+        providers = [_FakeProvider(), _FakeProvider()]
+        mock_factory.side_effect = providers
+        mock_correct.return_value = AsrCorrectionResult(text="修正後文字", raw_text="修正前文字", applied=True)
+
+        config = AppConfig()
+        config.runtime.asr_final_correction_enabled = True
+        manager = TranslatorManager(config)
+        event = ASREventWithSource(
+            source="local",
+            utterance_id="u-correct",
+            revision=2,
+            pipeline_revision=1,
+            config_fingerprint="fp",
+            created_at=0.0,
+            text="修正前文字",
+            is_final=True,
+            is_early_final=False,
+            start_ms=0,
+            end_ms=900,
+            latency_ms=50,
+            detected_language="zh-TW",
+        )
+
+        corrected = manager.correct_asr_event(event)
+
+        self.assertEqual(corrected.text, "修正後文字")
+        self.assertEqual(corrected.raw_text, "修正前文字")
+        self.assertTrue(corrected.correction_applied)
+
+    @patch("app.infra.translation.engine.AsrTextCorrector.correct")
+    @patch("app.infra.translation.engine.create_translation_provider")
+    def test_correct_asr_event_leaves_partial_text_unchanged(self, mock_factory, mock_correct) -> None:
+        providers = [_FakeProvider(), _FakeProvider()]
+        mock_factory.side_effect = providers
+
+        config = AppConfig()
+        config.runtime.asr_final_correction_enabled = True
+        manager = TranslatorManager(config)
+        event = ASREventWithSource(
+            source="remote",
+            utterance_id="u-partial",
+            revision=1,
+            pipeline_revision=1,
+            config_fingerprint="fp",
+            created_at=0.0,
+            text="draft text",
+            is_final=False,
+            is_early_final=False,
+            start_ms=0,
+            end_ms=500,
+            latency_ms=30,
+            detected_language="en",
+        )
+
+        corrected = manager.correct_asr_event(event)
+
+        self.assertIs(corrected, event)
+        mock_correct.assert_not_called()
+
     @patch("app.infra.translation.engine.create_translation_provider")
     def test_tts_speaks_caption_translation_text_directly(self, mock_factory) -> None:
         providers = [_FakeProvider(), _FakeProvider()]

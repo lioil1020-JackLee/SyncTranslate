@@ -4,6 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from queue import Empty, Queue
 import sys
+import time
 from threading import Lock
 from threading import Thread
 
@@ -66,6 +67,8 @@ class MainWindow(QMainWindow):
         self.transcript_buffer = TranscriptBuffer(max_items=None)
         self.recent_errors: list[str] = []
         self._error_lock = Lock()
+        self._error_throttle_state: dict[str, dict[str, float | int]] = {}
+        self._error_throttle_window_sec = 2.5
         self._asr_detected_lock = Lock()
         self._latest_asr_detected_lang: dict[str, str] = {"local": "", "remote": ""}
         self.audio_router: AudioRouter | None = None
@@ -699,27 +702,32 @@ class MainWindow(QMainWindow):
         self._apply_output_switches_to_router()
 
     @staticmethod
-    def _format_transcript_line(text: str, is_final: bool) -> str:
+    def _format_transcript_line(text: str, is_final: bool, speaker_label: str = "") -> str:
         if _S2T_CONVERTER is not None:
             try:
                 text = _S2T_CONVERTER.convert(text)
             except Exception:
                 pass
         state = "final" if is_final else "partial"
-        return f"[{state}] {text}"
+        speaker_prefix = f"{speaker_label}: " if speaker_label else ""
+        return f"[{state}] {speaker_prefix}{text}"
 
     @classmethod
     def _build_transcript_lines(cls, items) -> list[str]:
         # newest first: 讓最新字幕顯示在畫面最上方
-        return [cls._format_transcript_line(item.text, item.is_final) for item in reversed(items)]
+        return [
+            cls._format_transcript_line(item.text, item.is_final, getattr(item, "speaker_label", ""))
+            for item in reversed(items)
+        ]
 
     def _report_error(self, message: str | ErrorEvent) -> None:
+        text = message.to_log_line() if isinstance(message, ErrorEvent) else str(message)
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         log_path = runtime_logs_dir() / "runtime_events.log"
-        text = message.to_log_line() if isinstance(message, ErrorEvent) else str(message)
         with self._error_lock:
-            line = f"{timestamp} {text}"
-            self.recent_errors.append(line)
+            line = self._record_error_line_locked(text=text, timestamp=timestamp)
+            if not line:
+                return
         try:
             with log_path.open("a", encoding="utf-8") as fp:
                 fp.write(line + "\n")
@@ -945,7 +953,39 @@ class MainWindow(QMainWindow):
 
     def _get_recent_errors(self) -> list[str]:
         with self._error_lock:
+            self._flush_error_summaries_locked()
             return list(self.recent_errors)
+
+    def _record_error_line_locked(self, *, text: str, timestamp: str) -> str:
+        now = time.monotonic()
+        state = self._error_throttle_state.setdefault(
+            text,
+            {"last_emit_ts": 0.0, "suppressed_count": 0},
+        )
+        last_emit_ts = float(state.get("last_emit_ts", 0.0))
+        if last_emit_ts > 0.0 and (now - last_emit_ts) <= self._error_throttle_window_sec:
+            state["suppressed_count"] = int(state.get("suppressed_count", 0)) + 1
+            return ""
+        self._flush_single_error_summary_locked(text=text, timestamp=timestamp)
+        line = f"{timestamp} {text}"
+        self.recent_errors.append(line)
+        state["last_emit_ts"] = now
+        return line
+
+    def _flush_error_summaries_locked(self) -> None:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for text in list(self._error_throttle_state.keys()):
+            self._flush_single_error_summary_locked(text=text, timestamp=timestamp)
+
+    def _flush_single_error_summary_locked(self, *, text: str, timestamp: str) -> None:
+        state = self._error_throttle_state.get(text)
+        if not state:
+            return
+        suppressed = int(state.get("suppressed_count", 0))
+        if suppressed <= 0:
+            return
+        self.recent_errors.append(f"{timestamp} [dedup] '{text}' repeated {suppressed} more times")
+        state["suppressed_count"] = 0
 
     def _build_runtime_stats_text(self) -> str:
         lines = [
@@ -990,13 +1030,21 @@ class MainWindow(QMainWindow):
                     f"adaptive={asr.get('adaptive_mode', '-')} "
                     f"partial_ms={asr.get('adaptive_partial_interval_ms', '-')} "
                     f"silence_ms={asr.get('adaptive_min_silence_duration_ms', '-')} "
-                    f"soft_final_ms={asr.get('adaptive_soft_final_audio_ms', '-')}"
+                    f"soft_final_ms={asr.get('adaptive_soft_final_audio_ms', '-')} "
+                    f"backend={asr.get('resolved_backend', '-')} "
+                    f"lang_family={asr.get('resolved_language_family', '-')} "
+                    f"device={asr.get('device_effective', '-')} "
+                    f"init={asr.get('model_init_mode', '-')}"
                 )
             )
             if capture["last_error"]:
                 lines.append(f"{label}: capture_error={capture['last_error']}")
             if asr["last_debug"]:
                 lines.append(f"{label}: asr_last={asr['last_debug']}")
+            if asr.get("backend_resolution_reason"):
+                lines.append(f"{label}: backend_reason={asr['backend_resolution_reason']}")
+            if asr.get("init_failure"):
+                lines.append(f"{label}: init_failure={asr['init_failure']}")
         tts = router_stats.tts
         lines.append(
             "tts: "

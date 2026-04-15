@@ -25,6 +25,9 @@ synctranslate = "main:main"
 [project.optional-dependencies]
 local = [
     "faster-whisper>=1.2.1",
+    "funasr>=1.3.0",
+    "modelscope>=1.18.0",
+    "silero-vad>=6.2.1",
 ]
 
 [dependency-groups]

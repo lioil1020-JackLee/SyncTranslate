@@ -9,7 +9,7 @@ from app.domain.events import ErrorEvent
 from app.infra.audio.capture import AudioCapture
 from app.infra.audio.playback import AudioPlayback
 from app.infra.audio.routing import AudioInputManager
-from app.infra.asr.streaming_pipeline import ASRManager
+from app.infra.asr.factory import create_asr_manager
 from app.infra.translation.engine import TranslatorManager
 from app.infra.tts.playback_queue import TTSManager
 from app.infra.config.schema import AppConfig
@@ -40,7 +40,7 @@ def build_pipeline_bundle(
     on_translation_event: Callable[[object], None] | None = None,
 ) -> PipelineBundle:
     input_manager = AudioInputManager(local_capture=local_capture, remote_capture=meeting_capture)
-    asr_manager = ASRManager(config, on_error=on_error, pipeline_revision=pipeline_revision)
+    asr_manager = create_asr_manager(config, on_error=on_error, pipeline_revision=pipeline_revision)
     translator_manager = TranslatorManager(config, on_error=on_error)
     state_manager = StateManager(
         local_echo_guard_enabled=config.runtime.local_echo_guard_enabled,

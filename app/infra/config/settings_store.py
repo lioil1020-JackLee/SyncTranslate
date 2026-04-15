@@ -144,13 +144,22 @@ def _normalize_external_config_keys(raw: dict[str, Any]) -> dict[str, Any]:
             remote_tts_enabled = bool(runtime.get("remote_tts_enabled", False))
             local_tts_enabled = bool(runtime.get("local_tts_enabled", False))
             runtime["tts_output_mode"] = "tts" if (remote_tts_enabled or local_tts_enabled) else "subtitle_only"
-        legacy_translation_enabled = bool(runtime.get("translation_enabled", True))
+        language_remote_target = ""
+        language_local_target = ""
+        if isinstance(language, dict):
+            language_remote_target = str(language.get("meeting_target") or "").strip()
+            language_local_target = str(language.get("local_target") or "").strip()
+        remote_target = str(runtime.get("remote_translation_target") or language_remote_target or "").strip()
+        local_target = str(runtime.get("local_translation_target") or language_local_target or "").strip()
+        remote_enabled_default = remote_target.lower() != "none" if remote_target else True
+        local_enabled_default = local_target.lower() != "none" if local_target else True
+        legacy_translation_enabled = bool(runtime.get("translation_enabled", remote_enabled_default or local_enabled_default))
         if "translation_enabled" not in runtime:
             runtime["translation_enabled"] = legacy_translation_enabled
         if "remote_translation_enabled" not in runtime:
-            runtime["remote_translation_enabled"] = legacy_translation_enabled
+            runtime["remote_translation_enabled"] = remote_enabled_default
         if "local_translation_enabled" not in runtime:
-            runtime["local_translation_enabled"] = legacy_translation_enabled
+            runtime["local_translation_enabled"] = local_enabled_default
 
         # 新增 vNext 欄位
         if "remote_asr_language" not in runtime:
@@ -159,11 +168,11 @@ def _normalize_external_config_keys(raw: dict[str, Any]) -> dict[str, Any]:
             runtime["local_asr_language"] = "auto"
 
         if "remote_translation_target" not in runtime:
-            enabled = bool(runtime.get("remote_translation_enabled", legacy_translation_enabled))
-            runtime["remote_translation_target"] = "zh-TW" if enabled else "none"
+            enabled = bool(runtime.get("remote_translation_enabled", remote_enabled_default))
+            runtime["remote_translation_target"] = remote_target or ("zh-TW" if enabled else "none")
         if "local_translation_target" not in runtime:
-            enabled = bool(runtime.get("local_translation_enabled", legacy_translation_enabled))
-            runtime["local_translation_target"] = "en" if enabled else "none"
+            enabled = bool(runtime.get("local_translation_enabled", local_enabled_default))
+            runtime["local_translation_target"] = local_target or ("en" if enabled else "none")
 
         if "remote_tts_voice" not in runtime:
             runtime["remote_tts_voice"] = "none"
@@ -176,12 +185,19 @@ def _normalize_external_config_keys(raw: dict[str, Any]) -> dict[str, Any]:
 
 def _present_external_config_keys(raw: dict[str, Any]) -> dict[str, Any]:
     data = deepcopy(raw)
+    direction = data.get("direction")
+    if isinstance(direction, dict) and str(direction.get("mode") or "bidirectional") == "bidirectional":
+        data.pop("direction", None)
     language = data.get("language")
     if isinstance(language, dict):
         language["remote_translation_target"] = language.pop("meeting_target", language.get("remote_translation_target", "zh-TW"))
         language["local_translation_target"] = language.pop("local_target", language.get("local_translation_target", "en"))
         language.pop("meeting_source", None)
         language.pop("local_source", None)
+    if "asr_channels" in data:
+        data.pop("asr", None)
+    if "llm_channels" in data:
+        data.pop("llm", None)
     asr_channels = data.get("asr_channels")
     if isinstance(asr_channels, dict):
         # Keep canonical vNext keys when writing config.
@@ -195,22 +211,55 @@ def _present_external_config_keys(raw: dict[str, Any]) -> dict[str, Any]:
     if isinstance(tts_channels, dict):
         tts_channels.pop("chinese", None)
         tts_channels.pop("english", None)
-    # Drop deprecated aliases; canonical keys are meeting_tts/local_tts.
+    base_tts = data.get("tts")
+    if isinstance(base_tts, dict) and isinstance(tts_channels, dict):
+        for channel_key in ("local", "remote"):
+            override = tts_channels.get(channel_key)
+            if not isinstance(override, dict):
+                continue
+            cleaned_override: dict[str, Any] = {}
+            for key, value in override.items():
+                if value is None:
+                    continue
+                if base_tts.get(key) == value:
+                    continue
+                cleaned_override[key] = value
+            tts_channels[channel_key] = cleaned_override
+    # Drop deprecated aliases and derived channel configs; canonical external keys are tts + tts_channels.
     data.pop("chinese_tts", None)
     data.pop("english_tts", None)
+    data.pop("meeting_tts", None)
+    data.pop("local_tts", None)
     runtime = data.get("runtime")
     if isinstance(runtime, dict):
+        if not bool(runtime.get("remote_translation_enabled", True)):
+            runtime["remote_translation_target"] = "none"
+        if not bool(runtime.get("local_translation_enabled", True)):
+            runtime["local_translation_target"] = "none"
         runtime.pop("asr_queue_maxsize_chinese", None)
         runtime.pop("asr_queue_maxsize_english", None)
         runtime.pop("llm_queue_maxsize_zh_to_en", None)
         runtime.pop("llm_queue_maxsize_en_to_zh", None)
         runtime.pop("tts_queue_maxsize_chinese", None)
         runtime.pop("tts_queue_maxsize_english", None)
+        runtime.pop("asr_queue_maxsize", None)
+        runtime.pop("llm_queue_maxsize", None)
+        runtime.pop("tts_queue_maxsize", None)
         runtime.pop("translation_enabled", None)
+        runtime.pop("remote_translation_enabled", None)
+        runtime.pop("local_translation_enabled", None)
         runtime.pop("asr_language_mode", None)
         runtime.pop("warmup_on_start", None)
         runtime.pop("use_channel_specific_asr", None)
         runtime.pop("use_channel_specific_llm", None)
+        runtime.pop("passthrough_gain", None)
+        runtime.pop("tts_gain", None)
+        runtime.pop("config_schema_version", None)
+        runtime.pop("last_migration_note", None)
+    health_last_success = data.get("health_last_success")
+    if isinstance(health_last_success, dict):
+        if not any(str(value or "").strip() for value in health_last_success.values()):
+            data.pop("health_last_success", None)
     return data
 
 
@@ -414,13 +463,9 @@ def migrate_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
 def is_legacy_config(raw: dict[str, Any]) -> bool:
     if "openai" in raw or "model" in raw or "session_mode" in raw:
         return True
-    if (
-        "direction" not in raw
-        or "asr" not in raw
-        or "llm" not in raw
-        or "tts" not in raw
-        or "runtime" not in raw
-    ):
+    has_asr = "asr" in raw or "asr_channels" in raw
+    has_llm = "llm" in raw or "llm_channels" in raw
+    if (not has_asr) or (not has_llm) or "tts" not in raw or "runtime" not in raw:
         return True
     audio = raw.get("audio") or {}
     if any(key in audio for key in ("remote_in", "local_mic_in", "local_tts_out", "meeting_tts_out")):

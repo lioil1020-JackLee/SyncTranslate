@@ -16,6 +16,7 @@ class TranscriptItem:
     is_stable_partial: bool
     latency_ms: int | None
     created_at: datetime
+    speaker_label: str = ""
 
 
 __all__ = ["TranscriptItem"]

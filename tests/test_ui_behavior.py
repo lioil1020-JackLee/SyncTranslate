@@ -186,10 +186,12 @@ class LiveCaptionPageUiTests(_QtTestCase):
         router = _Router()
         window.audio_router = router  # type: ignore[assignment]
 
+        remote_asr_zh_index = window.live_caption_page.remote_asr_combo.findData("zh-TW")
         remote_zh_index = window.live_caption_page.remote_lang_combo.findData("zh-TW")
         local_en_index = window.live_caption_page.local_lang_combo.findData("en")
         local_asr_en_index = window.live_caption_page.local_asr_combo.findData("en")
 
+        window.live_caption_page.remote_asr_combo.setCurrentIndex(remote_asr_zh_index)
         window.live_caption_page.remote_lang_combo.setCurrentIndex(remote_zh_index)
         window.live_caption_page.local_asr_combo.setCurrentIndex(local_asr_en_index)
         window.live_caption_page.local_lang_combo.setCurrentIndex(local_en_index)
@@ -351,11 +353,15 @@ class LocalAiPageUiTests(_QtTestCase):
         self.assertFalse(page.remote_asr_condition_prev_check.isChecked())
         self.assertEqual(page.asr_partial_interval_spin.value(), 800)
         self.assertEqual(page.remote_asr_partial_interval_spin.value(), 800)
-        self.assertAlmostEqual(page.asr_rms_threshold_spin.value(), 0.02, places=3)
-        self.assertAlmostEqual(page.remote_asr_rms_threshold_spin.value(), 0.02, places=3)
+        self.assertAlmostEqual(page.asr_rms_threshold_spin.value(), 0.025, places=3)
+        self.assertAlmostEqual(page.remote_asr_rms_threshold_spin.value(), 0.025, places=3)
+        self.assertEqual(page.asr_min_silence_spin.value(), 900)
+        self.assertEqual(page.asr_speech_pad_spin.value(), 520)
         self.assertEqual(page.runtime_sample_rate_spin.currentData(), 48000)
         self.assertEqual(page.runtime_chunk_spin.value(), 40)
-        self.assertEqual(page.runtime_asr_partial_min_audio_spin.value(), 520)
+        self.assertEqual(page.runtime_asr_pre_roll_spin.value(), 520)
+        self.assertEqual(page.runtime_asr_partial_min_audio_spin.value(), 1000)
+        self.assertFalse(page.runtime_early_final_check.isChecked())
         self.assertEqual(page.runtime_tts_max_wait_spin.value(), 2200)
         self.assertEqual(page.runtime_tts_cancel_policy_combo.currentData(), "older_only")
 

@@ -1,45 +1,78 @@
 # SyncTranslate
 
-SyncTranslate 是一個在 Windows 上運作的雙向即時翻譯桌面工具，整合本地 ASR、LM Studio LLM 與 TTS，讓會議遠端音訊與本地麥克風都能各自完成辨識、翻譯、字幕顯示與語音播報。
+SyncTranslate 是一個以 Windows 桌面為主的即時雙向字幕 / 翻譯 / 語音輸出工具。它可以同時處理本地與遠端兩條音訊通道，將音訊送進 ASR、翻譯與 TTS，並在 UI 中即時顯示原文與譯文。
 
-## 專案概覽
+目前專案的主線已切換到 `ASR v2`。新的 ASR 架構重點是：
 
-- `app/application/`：session、audio router、設定套用、匯出與健康檢查流程
-- `app/infra/`：音訊擷取、ASR、翻譯、TTS、設定讀寫等基礎設施
-- `app/ui/`：PySide6 桌面介面
-- `tests/`：UI、設定 migration、路由與整合測試
-- `main.py`：CLI 與桌面程式入口
-- `SyncTranslate-onedir.spec`：PyInstaller onedir 打包設定
+- 中文 ASR 自動使用 `FunASR + FSMN-VAD`
+- 非中文與 `auto` 自動使用 `faster-whisper`
+- `none` 會直接停用該通道 ASR
+- 模型採懶載入與共享 registry，避免啟動時重複初始化
+- diagnostics / session report 會輸出每通道實際使用的 backend、effective device、初始化狀態
 
-## 依賴管理
+舊版 `legacy` ASR 仍暫時保留作為 fallback，但已停止擴充。後續功能與調整都以 `ASR v2` 為主。
 
-此專案現在完全由 `uv` 管理依賴：
+## 目前功能
 
-- 依賴來源：`pyproject.toml`
-- 鎖定檔：`uv.lock`
-- 開發群組：`dev`
-- 打包群組：`build`
-- 可選本地 ASR 依賴：`local`
+- 雙通道音訊路由
+  - `remote` 與 `local` 可同時存在
+  - 可對應 VoiceMeeter / 實體裝置 / 虛擬裝置
+- 即時 ASR
+  - 中文走 FunASR
+  - 非中文走 faster-whisper
+  - 每通道可獨立指定 ASR 語言
+- 即時翻譯
+  - 目前以 LM Studio 為主要本地 LLM backend
+- TTS / passthrough 輸出
+  - 每通道可獨立設定翻譯目標與輸出語音
+- 診斷與匯出
+  - runtime stats
+  - session report
+  - 字幕原文 / 譯文匯出
 
-安裝基本環境：
+## 架構摘要
 
-```powershell
-uv sync --locked
-```
+主要資料流如下：
 
-安裝完整開發與本地 ASR 環境：
+1. `AudioCapture` 收到本地或遠端音訊
+2. `AudioRouter` 將 chunk 分流到 ASR / translation / TTS
+3. `ASRManagerV2` 依通道語言解析 backend
+4. `EndpointingRuntime` 執行 VAD / endpointing
+5. `SourceRuntimeV2` 負責 partial / final 事件發送
+6. 翻譯與 TTS 消費 final transcript
+7. `MainWindow` / `LiveCaptionPage` 顯示字幕與 diagnostics
+
+重要模組：
+
+- `app/application/`
+  - `audio_router.py`
+  - `transcript_service.py`
+- `app/infra/asr/`
+  - `factory.py`
+  - `manager_v2.py`
+  - `worker_v2.py`
+  - `backend_resolution.py`
+  - `backend_v2.py`
+  - `endpointing_v2.py`
+  - `funasr_registry.py`
+- `app/infra/translation/`
+- `app/infra/tts/`
+- `app/ui/`
+
+更完整內容請看：
+
+- [docs/架構說明.md](docs/架構說明.md)
+- [docs/設定說明.md](docs/設定說明.md)
+- [docs/測試說明.md](docs/測試說明.md)
+- [docs/ASR重構藍圖.md](docs/ASR重構藍圖.md)
+
+## 安裝與執行
+
+建議使用 `uv`：
 
 ```powershell
 uv sync --locked --extra local
 ```
-
-安裝包含 PyInstaller 的打包環境：
-
-```powershell
-uv sync --locked --extra local --group build
-```
-
-## 常用命令
 
 啟動程式：
 
@@ -47,7 +80,7 @@ uv sync --locked --extra local --group build
 uv run python .\main.py
 ```
 
-檢查設定與裝置：
+執行系統檢查：
 
 ```powershell
 uv run python .\main.py --check
@@ -56,34 +89,49 @@ uv run python .\main.py --check
 執行測試：
 
 ```powershell
-uv run pytest -q
+uv run python -m unittest discover -s tests -p "test_*.py" -v
 ```
 
-建立 onedir：
-
-```powershell
-uv run pyinstaller .\SyncTranslate-onedir.spec --noconfirm --clean
-```
-
-輸出目錄位於 `dist/SyncTranslate-onedir/`。
-
-## 打包與發行
-
-本機打包建議流程：
+如果要打包 onedir：
 
 ```powershell
 uv sync --locked --extra local --group build
-uv run pytest -q
 uv run pyinstaller .\SyncTranslate-onedir.spec --noconfirm --clean
 ```
 
-GitHub Actions 也使用相同的 `uv` 流程，對應設定在 `.github/workflows/build-release.yml`。
+## 設定重點
 
-## 相關文件
+目前最重要的 runtime 設定包括：
 
-- `docs/架構說明.md`
-- `docs/設定說明.md`
-- `docs/測試說明.md`
-- `docs/快速安裝手冊.md`
-- `docs/更新紀錄.md`
-- `docs/音訊裝置建議配置.md`
+- `runtime.asr_pipeline`
+  - 預設為 `v2`
+- `runtime.local_asr_language`
+- `runtime.remote_asr_language`
+- `runtime.asr_v2_endpointing`
+- `runtime.asr_final_correction_enabled`
+- `runtime.speaker_diarization_enabled`
+- `runtime.asr_queue_maxsize_local`
+- `runtime.asr_queue_maxsize_remote`
+
+ASR 路由規則：
+
+- `zh` / `zh-TW` / `zh-CN` / `cmn` / `yue` -> `funasr_v2`
+- 其他語言 -> `faster_whisper_v2`
+- `auto` -> `faster_whisper_v2`
+- `none` -> disabled
+
+## 目前已知限制
+
+- 若實際 `effective device` 為 `CPU`，雙通道同時中文發話時仍可能因吞吐量不足而增加延遲
+- speaker diarization 目前仍屬實驗性功能，預設關閉
+- `runtime.asr_v2_backend` 目前主要作為相容欄位保留；實際 backend 以通道語言解析結果為準
+- legacy ASR 尚未完全刪除，但不再作為主要維護路線
+
+## 文件索引
+
+- [docs/架構說明.md](docs/架構說明.md)
+- [docs/設定說明.md](docs/設定說明.md)
+- [docs/測試說明.md](docs/測試說明.md)
+- [docs/音訊裝置建議配置.md](docs/音訊裝置建議配置.md)
+- [docs/快速安裝手冊.md](docs/快速安裝手冊.md)
+- [docs/更新紀錄.md](docs/更新紀錄.md)

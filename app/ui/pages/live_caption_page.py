@@ -247,6 +247,7 @@ class LiveCaptionPage(QWidget):
                 combo.currentIndexChanged.connect(self._handle_output_mode_changed)
             else:
                 combo.currentIndexChanged.connect(self._notify_settings_changed)
+        self._refresh_asr_backend_hints()
         self.remote_lang_combo.currentIndexChanged.connect(self._on_translation_target_changed)
         self.local_lang_combo.currentIndexChanged.connect(self._on_translation_target_changed)
 
@@ -366,6 +367,7 @@ class LiveCaptionPage(QWidget):
             self._suspend_notify = False
         self._update_source_language_controls()
         self._refresh_panel_labels()
+        self._refresh_asr_backend_hints()
 
     def update_config(self, config: AppConfig) -> None:
         config.direction.mode = "bidirectional"
@@ -478,8 +480,30 @@ class LiveCaptionPage(QWidget):
             return
         self._update_source_language_controls()
         self._refresh_panel_labels()
+        self._refresh_asr_backend_hints()
         if self._on_settings_changed:
             self._on_settings_changed()
+
+    def _refresh_asr_backend_hints(self) -> None:
+        for channel in _CHANNELS:
+            combo = self._channel_combo(channel, "asr")
+            hint = self._backend_hint_for_asr_language(self._selected_asr_language(channel))
+            combo.setToolTip(hint)
+            combo.setStatusTip(hint)
+
+    @staticmethod
+    def _backend_hint_for_asr_language(language: str) -> str:
+        normalized = (language or "").strip().lower().replace("_", "-")
+        if normalized == "none":
+            return "此通道已停用 ASR。"
+        if normalized in {"zh", "zh-tw", "zh-cn", "cmn", "yue"}:
+            return (
+                "此通道會使用 FunASR + FSMN-VAD。適合中文；若兩個通道都走中文且 effective device 為 CPU，"
+                "同時發話時仍可能因吞吐量不足而增加延遲。"
+            )
+        if normalized == "auto":
+            return "auto 目前固定走 faster-whisper。"
+        return "此通道會使用 faster-whisper。"
 
     def _handle_clear_clicked(self) -> None:
         self.clear()

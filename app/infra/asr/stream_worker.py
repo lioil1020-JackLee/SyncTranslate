@@ -1,3 +1,10 @@
+"""Legacy segment worker for the Whisper-based ASR path.
+
+This worker remains as the frozen compatibility path while the new ASR v2 stack
+is introduced. Avoid adding new product features here unless they are required
+to keep the existing pipeline functioning during migration.
+"""
+
 from __future__ import annotations
 
 import time
@@ -7,11 +14,13 @@ from queue import Empty, Full, Queue
 from threading import Event, Lock, Thread
 from typing import Callable
 import re
+import unicodedata
 
 import numpy as np
 
 from app.infra.asr.faster_whisper_adapter import FasterWhisperEngine
 from app.infra.asr.language_policy import VadSegmenter
+from app.infra.asr.speaker_diarizer import OnlineSpeakerDiarizer
 
 
 @dataclass(slots=True)
@@ -23,6 +32,7 @@ class AsrEvent:
     end_ms: int
     latency_ms: int
     detected_language: str = ""
+    speaker_label: str = ""
 
 
 @dataclass(slots=True)
@@ -56,6 +66,7 @@ class StreamingAsr:
         early_final_enabled: bool = True,
         adaptive_enabled: bool = True,
         queue_maxsize: int = 128,
+        speaker_diarizer: OnlineSpeakerDiarizer | None = None,
         on_event: Callable[[AsrEvent], None] | None = None,
         on_debug: Callable[[str], None] | None = None,
     ) -> None:
@@ -85,6 +96,7 @@ class StreamingAsr:
         self._soft_final_audio_ms = self._base_soft_final_audio_ms
         self._early_final_enabled = bool(early_final_enabled)
         self._adaptive_enabled = bool(adaptive_enabled)
+        self._speaker_diarizer = speaker_diarizer
         self._base_min_silence_duration_ms = int(
             max(120.0, float(getattr(vad, "effective_min_silence_duration_ms", 240.0)))
         )
@@ -103,6 +115,7 @@ class StreamingAsr:
         self._pre_roll_sample_count = 0
         self._pre_roll_sample_rate = 16000
         self._in_speech_segment = False
+        self._soft_split_pause_ms = 220.0
         self._partial_count = 0
         self._final_count = 0
         self._last_debug = ""
@@ -155,6 +168,8 @@ class StreamingAsr:
         self._adaptive_load_backoff_until_ms = 0
         self._final_error_cooldown_until_ms = 0
         self._last_final_error_text = ""
+        if self._speaker_diarizer is not None:
+            self._speaker_diarizer.reset()
         self._apply_adaptive_tuning(
             mode="baseline",
             partial_interval_ms=self._base_partial_interval_ms,
@@ -272,7 +287,7 @@ class StreamingAsr:
                 self._queue.qsize() >= self._force_final_queue_size
                 and segment_audio_ms >= self._force_final_audio_ms
             )
-            should_soft_split = self._queue.qsize() == 0 and segment_audio_ms >= self._soft_final_audio_ms
+            should_soft_split = self._should_emit_soft_split(decision)
             if should_force_final:
                 self._debug(
                     "asr backlog: force final "
@@ -282,7 +297,8 @@ class StreamingAsr:
                 self._reset_segment()
                 return
             if should_soft_split:
-                self._debug(f"asr long speech: soft final audio_ms={segment_audio_ms}")
+                pause_ms = int(round(float(getattr(decision, "pause_ms", 0.0))))
+                self._debug(f"asr long speech: soft final audio_ms={segment_audio_ms} pause_ms={pause_ms}")
                 self._emit_final(now_ms=now_ms, is_early_final=False)
                 self._reset_segment()
                 return
@@ -335,8 +351,14 @@ class StreamingAsr:
             return
         if self._stop_event.is_set():
             return
-        if _looks_like_silence_hallucination(text, audio_ms=audio_ms, vad_rms=self._vad.last_rms):
-            self._debug(f"drop hallucinated partial text={text.strip()[:80]}")
+        drop_reason = _transcript_drop_reason(
+            text,
+            audio_ms=audio_ms,
+            vad_rms=self._vad.last_rms,
+            expected_language=str(getattr(self._engine, "language", "") or ""),
+        )
+        if drop_reason:
+            self._debug(f"drop {drop_reason} partial text={text.strip()[:80]}")
             return
         latency_ms = int((time.perf_counter() - start) * 1000)
         if latency_ms >= 1500:
@@ -396,8 +418,14 @@ class StreamingAsr:
             )
             return
         audio_ms = int(len(audio) * 1000 / max(1, self._segment_sample_rate))
-        if _looks_like_silence_hallucination(text, audio_ms=audio_ms, vad_rms=self._vad.last_rms):
-            self._debug(f"drop hallucinated final text={text.strip()[:80]}")
+        drop_reason = _transcript_drop_reason(
+            text,
+            audio_ms=audio_ms,
+            vad_rms=self._vad.last_rms,
+            expected_language=str(getattr(self._engine, "language", "") or ""),
+        )
+        if drop_reason:
+            self._debug(f"drop {drop_reason} final text={text.strip()[:80]}")
             return
         latency_ms = int((time.perf_counter() - start) * 1000)
         if latency_ms >= 1500:
@@ -409,6 +437,13 @@ class StreamingAsr:
             return
         if self._stop_event.is_set():
             return
+        speaker_label = ""
+        if self._speaker_diarizer is not None:
+            speaker_label = self._speaker_diarizer.assign(
+                audio=audio,
+                sample_rate=self._segment_sample_rate,
+                now_ms=now_ms,
+            )
         self._on_event(
             AsrEvent(
                 text=text.strip(),
@@ -418,6 +453,7 @@ class StreamingAsr:
                 end_ms=now_ms,
                 latency_ms=latency_ms,
                 detected_language=result.detected_language,
+                speaker_label=speaker_label,
             )
         )
         with self._stats_lock:
@@ -436,11 +472,28 @@ class StreamingAsr:
         if speech_ms <= 0 or silence_ms <= 0:
             return False
         segment_audio_ms = self._segment_audio_ms()
-        if segment_audio_ms < 300 or segment_audio_ms > 2600:
+        if segment_audio_ms < 700 or segment_audio_ms > 2200:
+            return False
+        if speech_ms < 520:
             return False
         configured_silence_ms = float(getattr(self._vad, "effective_min_silence_duration_ms", 240.0))
-        early_silence_ms = max(120.0, min(220.0, configured_silence_ms * 0.7))
+        early_silence_ms = max(320.0, min(420.0, configured_silence_ms * 0.75))
         return silence_ms >= early_silence_ms
+
+    def _should_emit_soft_split(self, decision) -> bool:
+        if self._queue.qsize() != 0 or not self._segment_chunks:
+            return False
+        segment_audio_ms = self._segment_audio_ms()
+        if segment_audio_ms < self._soft_final_audio_ms:
+            return False
+        pause_ms = float(getattr(decision, "pause_ms", 0.0))
+        if pause_ms >= self._soft_split_pause_ms:
+            return True
+        absolute_cap_ms = max(
+            int(round(self._soft_final_audio_ms * 1.75)),
+            self._soft_final_audio_ms + 3200,
+        )
+        return segment_audio_ms >= absolute_cap_ms
 
     def _record_partial_adaptation(self, *, latency_ms: int) -> None:
         if not self._adaptive_enabled:
@@ -612,6 +665,62 @@ _HALLUCINATION_PATTERNS = (
     re.compile(r"^\s*晚安[。！! ]*$"),
 )
 
+_SHORT_HALLUCINATION_NORMALIZED = {
+    "bybwd6",
+    "thankyou",
+    "thanks",
+    "thankyouall",
+    "thankyoueveryone",
+    "thankseveryone",
+    "thanksall",
+    "goodnight",
+    "byebye",
+    "\u8b1d\u8b1d\u5927\u5bb6",
+    "\u8c22\u8c22\u5927\u5bb6",
+    "\u611f\u8b1d\u5927\u5bb6",
+    "\u611f\u8c22\u5927\u5bb6",
+    "\u665a\u5b89",
+    "\u62dc\u62dc",
+    "\u6380\u6380",
+    "\u611f\u8b1d\u6536\u770b",
+    "\u611f\u8c22\u6536\u770b",
+    "\u8b1d\u8b1d\u6536\u770b",
+    "\u8c22\u8c22\u6536\u770b",
+    "\u611f\u8b1d\u60a8\u7684\u6536\u770b",
+    "\u611f\u8c22\u60a8\u7684\u6536\u770b",
+    "\u8b1d\u8b1d\u60a8\u7684\u6536\u770b",
+    "\u8c22\u8c22\u60a8\u7684\u6536\u770b",
+    "\u611f\u8b1d\u89c0\u770b",
+    "\u611f\u8c22\u89c2\u770b",
+    "\u8b1d\u8b1d\u89c0\u770b",
+    "\u8c22\u8c22\u89c2\u770b",
+}
+
+_NON_SPEECH_TEXT_PATTERNS = (
+    re.compile(r"amara\.org", re.IGNORECASE),
+    re.compile(r"yoyo\s+television\s+series\s+exclusive", re.IGNORECASE),
+    re.compile(r"\bming\s*pao\b", re.IGNORECASE),
+    re.compile(r"字幕.{0,8}(志願者|志愿者|由|提供)"),
+    re.compile(r"中文.{0,4}(字幕|字暮).{0,4}(提供|製作|制作)"),
+    re.compile(r"(請不吝|请不吝).{0,12}(點贊|点赞|訂閱|订阅|轉發|转发|打賞|打赏)"),
+    re.compile(r"(明鏡與點點欄目|明镜与点点栏目)"),
+)
+
+_NON_SPEECH_NORMALIZED_SUBSTRINGS = (
+    "優優獨播劇場yoyotelevisionseriesexclusive",
+    "谢谢观看下次见",
+    "謝謝觀看下次見",
+    "感谢观看下次见",
+    "感謝觀看下次見",
+    "感謝觀看",
+    "感谢观看",
+    "感謝收看",
+    "感谢收看",
+    "字幕由amaraorg社群提供",
+    "中文字幕提供",
+    "請不吝點贊訂閱轉發打賞支援明鏡與點點欄目",
+)
+
 
 def _format_asr_exception_message(exc: Exception) -> str:
     message = str(exc).strip() or exc.__class__.__name__
@@ -634,4 +743,94 @@ def _looks_like_silence_hallucination(text: str, *, audio_ms: int, vad_rms: floa
     if vad_rms >= 0.035:
         return False
     compact = re.sub(r"\s+", " ", value)
+    normalized = "".join(ch.lower() for ch in value if ch.isalnum())
+    if normalized in _SHORT_HALLUCINATION_NORMALIZED:
+        return True
     return any(pattern.match(compact) for pattern in _HALLUCINATION_PATTERNS)
+
+
+def _transcript_drop_reason(
+    text: str,
+    *,
+    audio_ms: int,
+    vad_rms: float,
+    expected_language: str,
+) -> str:
+    if _looks_like_known_non_speech_text(text):
+        return "non-speech-overlay"
+    if _looks_like_silence_hallucination(text, audio_ms=audio_ms, vad_rms=vad_rms):
+        return "hallucinated"
+    if _looks_like_script_mismatch_junk(text, expected_language=expected_language):
+        return "script-mismatch"
+    return ""
+
+
+def _looks_like_known_non_speech_text(text: str) -> bool:
+    value = (text or "").strip()
+    if not value:
+        return False
+    compact = re.sub(r"\s+", " ", value)
+    normalized = "".join(ch.lower() for ch in value if ch.isalnum())
+    if any(token in normalized for token in _NON_SPEECH_NORMALIZED_SUBSTRINGS):
+        return True
+    return any(pattern.search(compact) for pattern in _NON_SPEECH_TEXT_PATTERNS)
+
+
+def _looks_like_script_mismatch_junk(text: str, *, expected_language: str) -> bool:
+    normalized_language = (expected_language or "").strip().lower()
+    if not normalized_language:
+        return False
+    if "-" in normalized_language:
+        normalized_language = normalized_language.split("-", 1)[0]
+
+    compact = [ch for ch in (text or "").strip() if ch.isalpha()]
+    if not compact or len(compact) > 6:
+        return False
+    if not _contains_cyrillic_or_greek(compact):
+        return False
+
+    if normalized_language == "zh":
+        return not any(_is_cjk(ch) or _is_latin(ch) for ch in compact)
+    if normalized_language == "en":
+        return not all(_is_latin(ch) for ch in compact)
+    if normalized_language == "ja":
+        return not any(_is_japanese(ch) or _is_latin(ch) for ch in compact)
+    if normalized_language == "ko":
+        return not any(_is_hangul(ch) or _is_latin(ch) for ch in compact)
+    return False
+
+
+def _contains_cyrillic_or_greek(chars: list[str]) -> bool:
+    for ch in chars:
+        name = unicodedata.name(ch, "")
+        if "CYRILLIC" in name or "GREEK" in name:
+            return True
+    return False
+
+
+def _is_latin(ch: str) -> bool:
+    codepoint = ord(ch)
+    return (
+        0x0041 <= codepoint <= 0x005A
+        or 0x0061 <= codepoint <= 0x007A
+        or 0x00C0 <= codepoint <= 0x024F
+    )
+
+
+def _is_cjk(ch: str) -> bool:
+    codepoint = ord(ch)
+    return (
+        0x3400 <= codepoint <= 0x4DBF
+        or 0x4E00 <= codepoint <= 0x9FFF
+        or 0xF900 <= codepoint <= 0xFAFF
+    )
+
+
+def _is_hangul(ch: str) -> bool:
+    codepoint = ord(ch)
+    return 0xAC00 <= codepoint <= 0xD7AF
+
+
+def _is_japanese(ch: str) -> bool:
+    codepoint = ord(ch)
+    return _is_cjk(ch) or 0x3040 <= codepoint <= 0x30FF

@@ -1,3 +1,10 @@
+"""Legacy Whisper-based ASR pipeline.
+
+This module is frozen for compatibility while ASR v2 is being built. New ASR
+capabilities should be added under the v2 modules and wired through the ASR
+factory instead of extending this pipeline further.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -10,28 +17,13 @@ from uuid import uuid4
 
 import numpy as np
 
+from app.infra.asr.contracts import ASREventWithSource
 from app.domain.events import ErrorEvent
 from app.infra.asr.faster_whisper_adapter import FasterWhisperEngine
 from app.infra.asr.language_policy import VadSegmenter
+from app.infra.asr.speaker_diarizer import OnlineSpeakerDiarizer
 from app.infra.asr.stream_worker import AsrEvent, StreamingAsr
 from app.infra.config.schema import AppConfig
-
-
-@dataclass(slots=True)
-class ASREventWithSource:
-    source: str
-    utterance_id: str
-    revision: int
-    pipeline_revision: int
-    config_fingerprint: str
-    created_at: float
-    text: str
-    is_final: bool
-    is_early_final: bool
-    start_ms: int
-    end_ms: int
-    latency_ms: int
-    detected_language: str
 
 
 class ASRManager:
@@ -102,6 +94,9 @@ class ASRManager:
                     end_ms=event.end_ms,
                     latency_ms=event.latency_ms,
                     detected_language=event.detected_language,
+                    raw_text=event.text,
+                    correction_applied=False,
+                    speaker_label=event.speaker_label,
                 )
             )
 
@@ -241,7 +236,11 @@ class ASRManager:
         stream_cfg = asr_cfg.streaming
         model_name = self._resolve_model_for_language(asr_cfg.model, language)
         queue_maxsize = self._asr_queue_maxsize_for_source(key)
-        pre_roll_ms = int(getattr(runtime_cfg, "asr_pre_roll_ms", 500))
+        pre_roll_ms = self._effective_pre_roll_ms(
+            configured_pre_roll_ms=int(getattr(runtime_cfg, "asr_pre_roll_ms", 500)),
+            min_speech_duration_ms=int(getattr(vad_cfg, "min_speech_duration_ms", 150)),
+            speech_pad_ms=int(getattr(vad_cfg, "speech_pad_ms", 320)),
+        )
 
         stream = StreamingAsr(
             engine=FasterWhisperEngine(
@@ -267,11 +266,27 @@ class ASRManager:
             early_final_enabled=bool(getattr(runtime_cfg, "early_final_enabled", True)),
             adaptive_enabled=bool(getattr(runtime_cfg, "adaptive_asr_enabled", True)),
             queue_maxsize=queue_maxsize,
+            speaker_diarizer=self._speaker_diarizer_for_source(key),
             on_debug=self._on_error,
         )
         self._streams[key] = stream
         self._stream_fingerprints[key] = fingerprint
         return stream
+
+    @staticmethod
+    def _effective_pre_roll_ms(
+        *,
+        configured_pre_roll_ms: int,
+        min_speech_duration_ms: int,
+        speech_pad_ms: int,
+    ) -> int:
+        configured = max(0, int(configured_pre_roll_ms))
+        # Keep enough lead-in audio to survive the time it takes VAD to confirm speech.
+        recommended = max(
+            int(min_speech_duration_ms) + 160,
+            int(round(max(0, int(speech_pad_ms)) * 0.75)),
+        )
+        return max(configured, min(1200, recommended))
 
     def _retire_stream(self, stream: StreamingAsr) -> None:
         stream.request_stop()
@@ -302,6 +317,17 @@ class ASRManager:
             value = int(getattr(runtime, "asr_queue_maxsize_local", runtime.asr_queue_maxsize))
         # Avoid too-small queues that can trigger aggressive overflow churn.
         return max(24, value)
+
+    def _speaker_diarizer_for_source(self, source: str) -> OnlineSpeakerDiarizer | None:
+        runtime = self._config.runtime
+        if not bool(getattr(runtime, "speaker_diarization_enabled", False)):
+            return None
+        return OnlineSpeakerDiarizer(
+            enabled=True,
+            min_audio_ms=int(getattr(runtime, "speaker_diarization_min_audio_ms", 900)),
+            max_speakers=int(getattr(runtime, "speaker_diarization_max_speakers", 3)),
+            similarity_threshold=float(getattr(runtime, "speaker_diarization_similarity_threshold", 0.82)),
+        )
 
     def _resolve_model_for_language(self, model: str, language: str) -> str:
         normalized_model = (model or "").strip()
@@ -368,11 +394,13 @@ class ASRManager:
                     "no_speech_threshold": self._config.asr_channels.local.no_speech_threshold,
                     "vad": {
                         "enabled": self._config.asr_channels.local.vad.enabled,
+                        "backend": self._config.asr_channels.local.vad.backend,
                         "min_speech_duration_ms": self._config.asr_channels.local.vad.min_speech_duration_ms,
                         "min_silence_duration_ms": self._config.asr_channels.local.vad.min_silence_duration_ms,
                         "max_speech_duration_s": self._config.asr_channels.local.vad.max_speech_duration_s,
                         "speech_pad_ms": self._config.asr_channels.local.vad.speech_pad_ms,
                         "rms_threshold": self._config.asr_channels.local.vad.rms_threshold,
+                        "neural_threshold": self._config.asr_channels.local.vad.neural_threshold,
                     },
                     "streaming": {
                         "partial_interval_ms": self._config.asr_channels.local.streaming.partial_interval_ms,
@@ -393,11 +421,13 @@ class ASRManager:
                     "no_speech_threshold": self._config.asr_channels.remote.no_speech_threshold,
                     "vad": {
                         "enabled": self._config.asr_channels.remote.vad.enabled,
+                        "backend": self._config.asr_channels.remote.vad.backend,
                         "min_speech_duration_ms": self._config.asr_channels.remote.vad.min_speech_duration_ms,
                         "min_silence_duration_ms": self._config.asr_channels.remote.vad.min_silence_duration_ms,
                         "max_speech_duration_s": self._config.asr_channels.remote.vad.max_speech_duration_s,
                         "speech_pad_ms": self._config.asr_channels.remote.vad.speech_pad_ms,
                         "rms_threshold": self._config.asr_channels.remote.vad.rms_threshold,
+                        "neural_threshold": self._config.asr_channels.remote.vad.neural_threshold,
                     },
                     "streaming": {
                         "partial_interval_ms": self._config.asr_channels.remote.streaming.partial_interval_ms,
@@ -421,6 +451,13 @@ class ASRManager:
                 "asr_partial_min_audio_ms": int(getattr(self._config.runtime, "asr_partial_min_audio_ms", 280)),
                 "asr_partial_interval_floor_ms": int(getattr(self._config.runtime, "asr_partial_interval_floor_ms", 280)),
                 "early_final_enabled": bool(getattr(self._config.runtime, "early_final_enabled", True)),
+                "asr_final_correction_enabled": bool(getattr(self._config.runtime, "asr_final_correction_enabled", False)),
+                "asr_final_correction_context_items": int(getattr(self._config.runtime, "asr_final_correction_context_items", 3)),
+                "asr_final_correction_max_chars": int(getattr(self._config.runtime, "asr_final_correction_max_chars", 120)),
+                "speaker_diarization_enabled": bool(getattr(self._config.runtime, "speaker_diarization_enabled", False)),
+                "speaker_diarization_min_audio_ms": int(getattr(self._config.runtime, "speaker_diarization_min_audio_ms", 900)),
+                "speaker_diarization_max_speakers": int(getattr(self._config.runtime, "speaker_diarization_max_speakers", 3)),
+                "speaker_diarization_similarity_threshold": float(getattr(self._config.runtime, "speaker_diarization_similarity_threshold", 0.82)),
             },
         }
         raw = json.dumps(payload, sort_keys=True, ensure_ascii=True)

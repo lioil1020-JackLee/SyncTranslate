@@ -219,6 +219,7 @@ class AudioRouter:
                 revision=event.revision,
                 latency_ms=event.latency_ms,
                 created_at=datetime.fromtimestamp(event.created_at),
+                speaker_label=getattr(event, "speaker_label", ""),
             )
             translation_checker = getattr(self._translator_manager, "translation_enabled", lambda *_args: True)
             try:
@@ -226,31 +227,48 @@ class AudioRouter:
             except TypeError:
                 translation_enabled = bool(translation_checker())
             if not translation_enabled:
+                correct_event = getattr(self._translator_manager, "correct_asr_event", lambda value: value)
+                corrected_event = correct_event(event) if event.is_final else event
+                if corrected_event is not event:
+                    self._maybe_store_transcript(
+                        source=original_channel,
+                        channel=original_channel,
+                        kind="original",
+                        text=corrected_event.text,
+                        is_final=corrected_event.is_final,
+                        is_stable_partial=not corrected_event.is_final,
+                        utterance_id=corrected_event.utterance_id,
+                        revision=corrected_event.revision,
+                        latency_ms=corrected_event.latency_ms,
+                        created_at=datetime.fromtimestamp(corrected_event.created_at),
+                        speaker_label=getattr(corrected_event, "speaker_label", ""),
+                    )
                 self._maybe_store_transcript(
                     source=translated_channel,
                     channel=translated_channel,
                     kind="translated",
-                    text=event.text,
-                    is_final=event.is_final,
-                    is_stable_partial=not event.is_final,
-                    utterance_id=event.utterance_id,
-                    revision=event.revision,
-                    latency_ms=event.latency_ms,
-                    created_at=datetime.fromtimestamp(event.created_at),
+                    text=corrected_event.text,
+                    is_final=corrected_event.is_final,
+                    is_stable_partial=not corrected_event.is_final,
+                    utterance_id=corrected_event.utterance_id,
+                    revision=corrected_event.revision,
+                    latency_ms=corrected_event.latency_ms,
+                    created_at=datetime.fromtimestamp(corrected_event.created_at),
+                    speaker_label=getattr(corrected_event, "speaker_label", ""),
                 )
-                should_speak = event.is_final or bool(getattr(event, "is_early_final", False))
+                should_speak = corrected_event.is_final or bool(getattr(corrected_event, "is_early_final", False))
                 if should_speak and self._tts_manager.output_mode(tts_channel) == OUTPUT_MODE_TTS:
-                    speak_text = event.text.strip()
+                    speak_text = corrected_event.text.strip()
                     if speak_text:
                         self._emit_tts_request(tts_channel, speak_text)
                         self._tts_manager.enqueue(
                             tts_channel,
                             speak_text,
-                            utterance_id=event.utterance_id,
-                            revision=event.revision,
-                            is_final=event.is_final,
-                            is_stable_partial=not event.is_final,
-                            is_early_final=bool(getattr(event, "is_early_final", False)),
+                            utterance_id=corrected_event.utterance_id,
+                            revision=corrected_event.revision,
+                            is_final=corrected_event.is_final,
+                            is_stable_partial=not corrected_event.is_final,
+                            is_early_final=bool(getattr(corrected_event, "is_early_final", False)),
                         )
                 return
             if self._async_translation:
@@ -271,7 +289,24 @@ class AudioRouter:
                 )
 
     def _process_translation_event(self, event: ASREventWithSource) -> None:
-        translated = self._translator_manager.process(event)
+        correct_event = getattr(self._translator_manager, "correct_asr_event", lambda value: value)
+        corrected_event = correct_event(event)
+        if corrected_event is not event:
+            original_channel, _, _ = self._channels_of(corrected_event.source)
+            self._maybe_store_transcript(
+                source=original_channel,
+                channel=original_channel,
+                kind="original",
+                text=corrected_event.text,
+                is_final=corrected_event.is_final,
+                is_stable_partial=not corrected_event.is_final,
+                utterance_id=corrected_event.utterance_id,
+                revision=corrected_event.revision,
+                latency_ms=corrected_event.latency_ms,
+                created_at=datetime.fromtimestamp(corrected_event.created_at),
+                speaker_label=getattr(corrected_event, "speaker_label", ""),
+            )
+        translated = self._translator_manager.process(corrected_event)
         if not translated:
             skip_reason = ""
             try:
@@ -280,12 +315,12 @@ class AudioRouter:
                 skip_reason = ""
             self._emit_diagnostic_event(
                 "translation_skipped "
-                f"source={event.source} utterance_id={event.utterance_id} revision={event.revision}"
+                f"source={corrected_event.source} utterance_id={corrected_event.utterance_id} revision={corrected_event.revision}"
                 + (f" reason={skip_reason}" if skip_reason else "")
             )
             return
         self._emit_translation_event(translated)
-        self._record_translation_latency(event, translated)
+        self._record_translation_latency(corrected_event, translated)
         self._maybe_store_transcript(
             source=translated.translated_channel,
             channel=translated.translated_channel,
@@ -297,6 +332,7 @@ class AudioRouter:
             revision=translated.revision,
             latency_ms=event.latency_ms,
             created_at=datetime.fromtimestamp(translated.created_at),
+            speaker_label=getattr(translated, "speaker_label", ""),
         )
         if translated.should_speak and self._tts_manager.output_mode(translated.tts_channel) == OUTPUT_MODE_TTS:
             self._emit_tts_request(translated.tts_channel, translated.speak_text)
@@ -457,6 +493,7 @@ class AudioRouter:
         revision: int,
         latency_ms: int | None,
         created_at: datetime,
+        speaker_label: str = "",
     ) -> None:
         should_display, is_stable_partial = self._should_display_partial(
             channel=channel,
@@ -477,6 +514,7 @@ class AudioRouter:
             is_stable_partial=is_stable_partial and not is_final,
             latency_ms=latency_ms,
             created_at=created_at,
+            speaker_label=speaker_label,
         )
 
     def _should_display_partial(

@@ -103,6 +103,8 @@ class TTSManager:
         self._passthrough_gate_timeout_sec = 0.60
         self._passthrough_gate_rms = 0.0055
         self._passthrough_gate_until: dict[str, float] = {"local": 0.0, "remote": 0.0}
+        self._passthrough_backoff_until: dict[str, float] = {"local": 0.0, "remote": 0.0}
+        self._passthrough_failure_backoff_sec = 1.2
         self._passthrough_drop_count = {"local": 0, "remote": 0}
         self._passthrough_stop = Event()
         self._passthrough_workers: dict[str, Thread | None] = {"local": None, "remote": None}
@@ -264,9 +266,11 @@ class TTSManager:
         if normalized == "passthrough":
             self._passthrough_warmup_until[key] = time.time() + self._passthrough_warmup_sec
             self._passthrough_gate_until[key] = time.time() + self._passthrough_gate_timeout_sec
+            self._passthrough_backoff_until[key] = 0.0
         else:
             self._passthrough_warmup_until[key] = 0.0
             self._passthrough_gate_until[key] = 0.0
+            self._passthrough_backoff_until[key] = 0.0
 
     def is_passthrough_enabled(self, channel: str) -> bool:
         key = channel if channel in ("local", "remote") else "local"
@@ -281,6 +285,8 @@ class TTSManager:
         if self._output_mode.get(key) != "passthrough":
             return
         now = time.time()
+        if now < self._passthrough_backoff_until.get(key, 0.0):
+            return
         if now < self._passthrough_warmup_until.get(key, 0.0):
             return
         if audio.size == 0 or sample_rate <= 0:
@@ -345,6 +351,9 @@ class TTSManager:
                     )
                     self._queue_changed.notify_all()
             except Exception as exc:
+                self._passthrough_backoff_until[channel] = time.time() + self._passthrough_failure_backoff_sec
+                with self._queue_changed:
+                    self._passthrough_pending[channel].clear()
                 if self._on_error:
                     self._on_error(
                         ErrorEvent(
