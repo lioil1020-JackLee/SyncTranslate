@@ -80,6 +80,66 @@ SyncTranslate 是一個以 Windows 桌面為主的即時雙向字幕 / 翻譯 / 
 - [docs/測試說明.md](docs/測試說明.md)
 - [docs/ASR重構藍圖.md](docs/ASR重構藍圖.md)
 
+## 外部 AI 運行時架構
+
+本專案採用**外部化運行時**設計，將重量級 AI 依賴（PyTorch / FunASR / faster-whisper）與主程式解耦：
+
+### 目標
+
+- **輕量化主包**：`SyncTranslate.exe` 與 UI 依賴獨立，不含 AI 套件（~200MB 而非 2GB+）
+- **模組化管理**：三層隔離運行時（shared CUDA、中文 ASR、非中文 ASR）
+- **靈活部署**：可選離線/CUDA，支援獨立升級各 AI 套件
+- **超大資產支援**：GitHub Release 自動分片超過 2GB 的打包結果
+
+### 最終目錄結構（發行版）
+
+```text
+SyncTranslate-onedir/
+  SyncTranslate.exe                 # 主應用
+  config.yaml
+  _internal/                        # PyInstaller 主程式依賴
+    app/
+    PySide6/
+    ...（無 torch/funasr/faster-whisper）
+  
+  runtimes/                         # 外部 AI 運行時（從開發環境複製）
+    shared/Lib/site-packages/       # torch / torchaudio / onnxruntime / modelscope
+    funasr/Lib/site-packages/       # funasr / silero-vad（中文 ASR）
+    faster_whisper/Lib/site-packages/  # faster-whisper / ctranslate2（非中文 ASR）
+  
+  models/                           # 可選：離線模型快取
+```
+
+### 啟動時的自動掛載
+
+應用啟動時，`app/bootstrap/external_runtime.py` 會：
+1. 掃描 `runtimes/{shared,funasr,faster_whisper}/Lib/site-packages`
+2. 將路徑加入 `sys.path`
+3. 自動註冊 Windows DLL 目錄（torch/lib、onnxruntime/capi、nvidia CUDA bins）
+4. 設定模型快取環境變數（`MODELSCOPE_CACHE` / `HF_HOME`）
+
+這樣 ASR 初始化時能直接找到外部運行時中的套件。
+
+### 核心程式碼改動
+
+| 檔案 | 用途 |
+|---|---|
+| `app/bootstrap/external_runtime.py` | 啟動期外部運行時掛載 |
+| `main.py` | 在 import `app_factory` 前呼叫 `configure_external_ai_runtime()` |
+| `SyncTranslate-onedir.spec` | 排除 AI 套件，改由 relocate 腳本複製 |
+| `app/infra/asr/faster_whisper_adapter.py` | 錯誤訊息導向外部運行時路徑 |
+| `app/infra/asr/funasr_registry.py` | 錯誤訊息導向外部運行時路徑 |
+| `pyproject.toml` | 移除 AI 套件依賴（輕量化 .venv） |
+| `conftest.py` | pytest 自動配置外部運行時 |
+
+### 風險與對策
+
+| 風險 | 對策 |
+|---|---|
+| 外部 runtime 缺套件 | 重跑 `prepare_external_runtimes.ps1` 或補齊對應套件 |
+| CUDA DLL 未被解析 | 確認 `runtimes/shared/Lib/site-packages/torch/lib` 與 nvidia 路徑存在 |
+| Release 資產超過 2GB | 工作流程自動分片為 `.part001/.part002...`，使用者可用附帶腳本重組 |
+
 ## 安裝與執行
 
 建議使用 `uv`：
@@ -201,5 +261,4 @@ Benchmark 結果存於 `downloads/benchmark_results/`。
 - [docs/音訊裝置建議配置.md](docs/音訊裝置建議配置.md)
 - [docs/快速安裝手冊.md](docs/快速安裝手冊.md)
 - [docs/更新紀錄.md](docs/更新紀錄.md)
-- [docs/代碼修改.md](docs/代碼修改.md)
 - [docs/ASR重構藍圖.md](docs/ASR重構藍圖.md)
