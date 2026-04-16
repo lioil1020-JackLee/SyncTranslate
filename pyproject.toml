@@ -12,9 +12,11 @@ dependencies = [
     "edge-tts>=7.2.7",
     "miniaudio>=1.61",
     "numpy>=2.4.3",
+    "onnxruntime>=1.24.4",
     "opencc-python-reimplemented>=0.1.7",
     "pyside6>=6.10.2",
     "pyyaml>=6.0.3",
+    "silero-vad>=5.1.2",
     "soundcard>=0.4.5",
     "sounddevice>=0.5.5",
 ]
