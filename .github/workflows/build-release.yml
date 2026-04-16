@@ -68,12 +68,88 @@ jobs:
           Copy-Item .\dist\SyncTranslate-onedir .\release_staging\SyncTranslate-onedir -Recurse
           Compress-Archive -Path .\release_staging\SyncTranslate-onedir -DestinationPath .\dist\SyncTranslate-onedir-windows.zip -Force
 
+      - name: Split oversized release asset
+        shell: pwsh
+        run: |
+          $zipPath = ".\dist\SyncTranslate-onedir-windows.zip"
+          $chunkSize = 1900MB
+
+          if (!(Test-Path $zipPath)) {
+            throw "Missing archive: $zipPath"
+          }
+
+          $zipFile = Get-Item $zipPath
+          Write-Host "Archive size bytes: $($zipFile.Length)"
+
+          # Keep single zip if under GitHub release asset limit.
+          if ($zipFile.Length -le $chunkSize) {
+            Write-Host "Archive is under chunk threshold; split not required."
+            return
+          }
+
+          Write-Host "Archive exceeds threshold; splitting into chunks of $chunkSize bytes."
+          $bufferSize = 4MB
+          $buffer = New-Object byte[] $bufferSize
+          $index = 1
+
+          $input = [System.IO.File]::OpenRead($zipPath)
+          try {
+            while ($input.Position -lt $input.Length) {
+              $partPath = "$zipPath.part{0:d3}" -f $index
+              $output = [System.IO.File]::Create($partPath)
+              try {
+                $remaining = [int64]$chunkSize
+                while ($remaining -gt 0 -and $input.Position -lt $input.Length) {
+                  $toRead = [Math]::Min($bufferSize, [int]$remaining)
+                  $read = $input.Read($buffer, 0, $toRead)
+                  if ($read -le 0) {
+                    break
+                  }
+                  $output.Write($buffer, 0, $read)
+                  $remaining -= $read
+                }
+              }
+              finally {
+                $output.Dispose()
+              }
+              Write-Host "Created chunk: $partPath"
+              $index += 1
+            }
+          }
+          finally {
+            $input.Dispose()
+          }
+
+          # Remove oversized source archive so release upload uses only legal-size parts.
+          Remove-Item $zipPath -Force
+          @'
+          # Rebuild archive from parts (PowerShell)
+          $parts = Get-ChildItem .\SyncTranslate-onedir-windows.zip.part* | Sort-Object Name
+          $out = [System.IO.File]::Create("SyncTranslate-onedir-windows.zip")
+          try {
+            foreach ($p in $parts) {
+              $in = [System.IO.File]::OpenRead($p.FullName)
+              try {
+                $in.CopyTo($out)
+              }
+              finally {
+                $in.Dispose()
+              }
+            }
+          }
+          finally {
+            $out.Dispose()
+          }
+          '@ | Set-Content .\dist\rebuild-zip-from-parts.ps1 -Encoding utf8
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: SyncTranslate-onedir-windows
           path: |
-            dist/SyncTranslate-onedir-windows.zip
+            dist/SyncTranslate-onedir-windows.zip*
+            dist/SyncTranslate-onedir-windows.zip.part*
+            dist/rebuild-zip-from-parts.ps1
           if-no-files-found: error
 
   release:
@@ -92,6 +168,8 @@ jobs:
         run: |
           mkdir -p final_assets
           find raw_artifacts -type f -name "SyncTranslate-onedir-windows.zip" -exec cp {} final_assets/ \;
+          find raw_artifacts -type f -name "SyncTranslate-onedir-windows.zip.part*" -exec cp {} final_assets/ \;
+          find raw_artifacts -type f -name "rebuild-zip-from-parts.ps1" -exec cp {} final_assets/ \;
           ls -lh final_assets
 
       - name: Create release
