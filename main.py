@@ -13,6 +13,10 @@ _qt_rules = os.environ.get("QT_LOGGING_RULES", "")
 if "qt.qpa.fonts" not in _qt_rules:
     os.environ["QT_LOGGING_RULES"] = f"{_qt_rules};qt.qpa.fonts=false".strip(";")
 
+from app.bootstrap.external_runtime import configure_external_ai_runtime
+
+configure_external_ai_runtime()
+
 from app.bootstrap.app_factory import run_from_cli
 from app.bootstrap.runtime_paths import runtime_logs_dir
 

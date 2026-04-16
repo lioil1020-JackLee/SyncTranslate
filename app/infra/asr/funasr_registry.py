@@ -179,9 +179,16 @@ class FunASRModelRegistry:
         requested_device: str,
     ) -> FunASRModelHandle:
         device_effective = _normalize_funasr_device(requested_device)
-        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            from funasr import AutoModel  # type: ignore
+        try:
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                from funasr import AutoModel  # type: ignore
+        except Exception as exc:
+            raise RuntimeError(
+                "funasr not available. Install optional dependency (uv sync --extra local) "
+                "or provide external runtime under runtimes/funasr and runtimes/shared."
+            ) from exc
 
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             postprocess = None
             if kind == "asr":
                 try:

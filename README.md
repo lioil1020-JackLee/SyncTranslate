@@ -85,7 +85,11 @@ SyncTranslate 是一個以 Windows 桌面為主的即時雙向字幕 / 翻譯 / 
 建議使用 `uv`：
 
 ```powershell
-uv sync --locked --extra local
+# 1. 安裝主程式依賴（輕量級，不含 torch/funasr 等）
+uv sync --locked
+
+# 2. 準備外部 AI 運行時（torch, funasr, faster-whisper 等）
+powershell -ExecutionPolicy Bypass -File .\tools\runtime_setup\prepare_external_runtimes.ps1
 ```
 
 啟動程式：
@@ -100,7 +104,7 @@ uv run python .\main.py
 uv run python .\main.py --check
 ```
 
-執行測試（全套 319 tests）：
+執行測試（全套 324 tests，透過 conftest.py 自動配置外部運行時）：
 
 ```powershell
 uv run pytest -q
@@ -109,8 +113,17 @@ uv run pytest -q
 如果要打包 onedir：
 
 ```powershell
-uv sync --locked --extra local --group build
+# 1. 確保外部運行時已準備
+powershell -ExecutionPolicy Bypass -File .\tools\runtime_setup\prepare_external_runtimes.ps1
+
+# 2. 安裝 build 工具
+uv sync --locked --group build
+
+# 3. 構建 onedir
 uv run pyinstaller .\SyncTranslate-onedir.spec --noconfirm --clean
+
+# 4. 複製外部運行時到 dist 根目錄
+powershell -ExecutionPolicy Bypass -File .\tools\runtime_setup\relocate_ai_runtime_artifacts.ps1
 ```
 
 ## 設定重點

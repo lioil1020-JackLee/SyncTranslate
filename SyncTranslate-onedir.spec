@@ -1,19 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
 import os
 import sys
-from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules
+from PyInstaller.utils.hooks import collect_all, collect_data_files
 
 
 datas = collect_data_files("opencc") + collect_data_files("PySide6") + collect_data_files("sounddevice") + collect_data_files("soundcard")
 icon = None
 binaries = []
 hidden_imports = []
-
-for pkg in ("funasr", "faster_whisper", "modelscope", "addict", "torch", "torchaudio"):
-    pkg_datas, pkg_binaries, pkg_hiddenimports = collect_all(pkg)
-    datas += pkg_datas
-    binaries += pkg_binaries
-    hidden_imports += pkg_hiddenimports
 
 
 def collect_openssl_binaries():
@@ -26,6 +20,11 @@ def collect_openssl_binaries():
             found.append((candidate, "."))
     return found
 
+
+# NOTE: External runtimes (runtimes/shared, runtimes/faster_whisper, runtimes/funasr)
+# are copied by the relocate_ai_runtime_artifacts.ps1 script after PyInstaller build.
+# This keeps AI packages isolated from .venv and makes rebuilds faster - they're copied
+# directly from the pre-built runtimes/ directory in the dev environment.
 
 binaries.extend(collect_openssl_binaries())
 
@@ -48,6 +47,14 @@ endpoint_volume_script = os.path.join(here, "app", "infra", "audio", "windows_en
 if os.path.exists(endpoint_volume_script):
     datas.append((endpoint_volume_script, os.path.join("app", "infra", "audio")))
 
+prepare_external_runtime_script = os.path.join(here, "tools", "runtime_setup", "prepare_external_runtimes.ps1")
+if os.path.exists(prepare_external_runtime_script):
+    datas.append((prepare_external_runtime_script, os.path.join("tools", "runtime_setup")))
+
+relocate_runtime_script = os.path.join(here, "tools", "runtime_setup", "relocate_ai_runtime_artifacts.ps1")
+if os.path.exists(relocate_runtime_script):
+    datas.append((relocate_runtime_script, os.path.join("tools", "runtime_setup")))
+
 a = Analysis(
     ["main.py"],
     pathex=["."],
@@ -62,12 +69,6 @@ a = Analysis(
         "opencc",
         "soundcard",
         "sounddevice",
-        "tiktoken",
-        "addict",
-        "modelscope",
-        "onnxruntime",
-        "torch",
-        "torchaudio",
         # app sub-packages (Phase 1-4 new modules)
         "app.application.transcript_postprocessor",
         "app.application.asr_event_processor",
@@ -94,11 +95,21 @@ a = Analysis(
         "app.ui.controllers.live_caption_refresh_controller",
         "app.ui.controllers.config_hot_apply_controller",
         "app.ui.controllers.healthcheck_controller",
-    ] + hidden_imports + collect_submodules("funasr") + collect_submodules("modelscope") + collect_submodules("faster_whisper"),
+    ] + hidden_imports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        "torch",
+        "torchaudio",
+        "funasr",
+        "faster_whisper",
+        "modelscope",
+        "onnxruntime",
+        "ctranslate2",
+        "tiktoken",
+        "silero_vad",
+    ],
     noarchive=False,
     optimize=0,
 )

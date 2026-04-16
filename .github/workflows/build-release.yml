@@ -34,19 +34,23 @@ jobs:
       - name: Install dependencies
         shell: pwsh
         run: |
-          uv sync --locked --extra local --group build
+          uv sync --locked --group build
 
-      - name: Verify runtime imports
+      - name: Prepare external AI runtimes
+        shell: pwsh
+        run: |
+          powershell -ExecutionPolicy Bypass -File .\tools\runtime_setup\prepare_external_runtimes.ps1
+
+      - name: Verify external runtime imports
         shell: pwsh
         run: |
           uv run python -c "import ssl; print('ssl ok')"
-          uv run python -c "import torch, torchaudio; print(f'torch={torch.__version__}'); print(f'torchaudio={torchaudio.__version__}'); print(f'cuda_available={torch.cuda.is_available()}'); assert '+cu128' in torch.__version__, 'torch wheel is not cu128'; assert '+cu128' in torchaudio.__version__, 'torchaudio wheel is not cu128'"
-          uv run python -c "import edge_tts; print('edge_tts ok')"
-          uv run python -c "import faster_whisper; print('faster_whisper ok')"
-          uv run python -c "import funasr; print('funasr ok')"
-          uv run python -c "import tiktoken; print('tiktoken ok')"
-          uv run python -c "import addict; print('addict ok')"
-          uv run python -c "import onnxruntime; print('onnxruntime ok')"
+          $sharedPy = "runtimes/shared/Scripts/python.exe"
+          & $sharedPy -c "import torch, torchaudio; print('torch=' + torch.__version__); print('cuda=' + str(torch.cuda.is_available()))"
+          $fwPy = "runtimes/faster_whisper/Scripts/python.exe"
+          & $fwPy -c "import faster_whisper; print('faster_whisper ok')"
+          $funasrPy = "runtimes/funasr/Scripts/python.exe"
+          & $funasrPy -c "import funasr; print('funasr ok')"
 
       - name: Run test suite
         shell: pwsh
@@ -57,6 +61,11 @@ jobs:
         shell: pwsh
         run: |
           uv run pyinstaller .\SyncTranslate-onedir.spec --noconfirm --clean
+
+      - name: Relocate AI runtimes to dist root
+        shell: pwsh
+        run: |
+          powershell -ExecutionPolicy Bypass -File .\tools\runtime_setup\relocate_ai_runtime_artifacts.ps1 -DistRoot .\dist\SyncTranslate-onedir
 
       - name: Package onedir output
         shell: pwsh

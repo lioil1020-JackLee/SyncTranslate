@@ -243,7 +243,8 @@ class FasterWhisperEngine:
             from faster_whisper import WhisperModel  # type: ignore
         except Exception as exc:
             raise ValueError(
-                "faster-whisper not available. Install optional dependency: uv sync --extra local"
+                "faster-whisper not available. Install optional dependency (uv sync --extra local) "
+                "or provide external runtime under runtimes/faster_whisper and runtimes/shared."
             ) from exc
         self._runtime_device = self._runtime_device or (self.device or "auto")
         self._runtime_compute_type = self._runtime_compute_type or self._resolve_compute_type(self._runtime_device)

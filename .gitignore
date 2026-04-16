@@ -26,6 +26,7 @@ diagnostics_*.txt
 *.pid
 
 # Local runtime assets
+runtimes/
 models/
 logs/
 
