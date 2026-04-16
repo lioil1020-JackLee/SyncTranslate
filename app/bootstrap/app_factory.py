@@ -6,7 +6,7 @@ from pathlib import Path
 import shutil
 import sys
 
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QFont, QFontDatabase, QIcon
 from PySide6.QtWidgets import QApplication
 
 from app.infra.audio.device_registry import DeviceManager
@@ -88,6 +88,7 @@ def run_from_cli(argv: list[str] | None = None) -> int:
 
     _apply_windows_app_id()
     app = QApplication(sys.argv)
+    _apply_default_ui_font(app)
     app.setApplicationName("SyncTranslate")
     app.setApplicationDisplayName("SyncTranslate")
     app.setOrganizationName("lioil")
@@ -142,6 +143,23 @@ def _resolve_icon_path() -> str | None:
     if repo_root_candidate.exists():
         return str(repo_root_candidate)
     return None
+
+
+def _apply_default_ui_font(app: QApplication) -> None:
+    # Avoid Qt trying legacy bitmap fonts (e.g., Fixedsys) on some Windows setups.
+    preferred_families = [
+        "Microsoft JhengHei UI",
+        "Microsoft JhengHei",
+        "Segoe UI",
+        "Arial",
+    ]
+    try:
+        available = set(QFontDatabase.families())
+        chosen = next((family for family in preferred_families if family in available), "")
+        if chosen:
+            app.setFont(QFont(chosen, 10))
+    except Exception:
+        return
 
 
 __all__ = ["create_cli_parser", "run_from_cli"]

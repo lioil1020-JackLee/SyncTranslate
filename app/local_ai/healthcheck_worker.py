@@ -27,6 +27,10 @@ def main(argv: list[str] | None = None) -> int:
             final_beam_size=config.asr.final_beam_size,
             condition_on_previous_text=config.asr.condition_on_previous_text,
             final_condition_on_previous_text=config.asr.final_condition_on_previous_text,
+            initial_prompt=config.asr.initial_prompt,
+            hotwords=config.asr.hotwords,
+            speculative_draft_model=config.asr.speculative_draft_model,
+            speculative_num_beams=config.asr.speculative_num_beams,
             language="",
         )
         llm = create_translation_provider(config.llm)

@@ -141,6 +141,45 @@ ASR 路由規則：
 - `runtime.asr_v2_backend` 目前主要作為相容欄位保留；實際 backend 以通道語言解析結果為準
 - legacy ASR 尚未完全刪除，但不再作為主要維護路線
 
+## 開發工具
+
+### ASR Benchmark（`tools/asr_benchmark/`）
+
+離線 ASR 品質量測工具，不打包進發行版：
+
+```powershell
+# 跑 benchmark（輸出 jsonl）
+uv run python tools/asr_benchmark/run_benchmark.py \
+  --audio <音訊檔> --profile default --reference <參考文字> \
+  --chunk-ms 40 --output downloads/benchmark_results/result.jsonl
+
+# 產生報表（table / csv / json）
+uv run python tools/asr_benchmark/report.py \
+  --input downloads/benchmark_results/result.jsonl --format table
+```
+
+### YouTube SRT 工具（`tools/youtube_srt/`）
+
+下載 YouTube 字幕並與 ASR 結果做 CER/WER 比對，可用於評估辨識品質：
+
+```powershell
+# 下載中文字幕參考集
+uv run python tools/youtube_srt/download_chinese.py
+
+# 下載英文字幕參考集
+uv run python tools/youtube_srt/download_english.py
+
+# 對指定 YouTube 影片進行 ASR benchmark
+uv run python tools/youtube_srt/benchmark_against_yt.py \
+  --url "https://www.youtube.com/watch?v=<VIDEO_ID>" \
+  --source remote --lang en --profile default \
+  --out-dir downloads/benchmark \
+  --output downloads/benchmark_results/result.json
+```
+
+字幕下載結果存於 `downloads/chinese_srt/` 與 `downloads/english_srt/`。  
+Benchmark 結果存於 `downloads/benchmark_results/`。
+
 ## 文件索引
 
 - [docs/架構說明.md](docs/架構說明.md)
@@ -149,3 +188,5 @@ ASR 路由規則：
 - [docs/音訊裝置建議配置.md](docs/音訊裝置建議配置.md)
 - [docs/快速安裝手冊.md](docs/快速安裝手冊.md)
 - [docs/更新紀錄.md](docs/更新紀錄.md)
+- [docs/代碼修改.md](docs/代碼修改.md)
+- [docs/ASR重構藍圖.md](docs/ASR重構藍圖.md)

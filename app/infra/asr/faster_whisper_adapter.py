@@ -14,13 +14,17 @@ _MODEL_CACHE: dict[tuple[str, str, str], tuple[object, Lock]] = {}
 
 @dataclass(slots=True)
 class FasterWhisperEngine:
-    model: str = "large-v3"
+    model: str = "large-v3-turbo"
     device: str = "cuda"
     compute_type: str = "float16"
     beam_size: int = 1
     final_beam_size: int = 3
     condition_on_previous_text: bool = True
     final_condition_on_previous_text: bool = False
+    initial_prompt: str = ""
+    hotwords: str = ""
+    speculative_draft_model: str = ""
+    speculative_num_beams: int = 1
     temperature_fallback: str = "0.0,0.2,0.4"
     no_speech_threshold: float = 0.55
     language: str = ""
@@ -29,6 +33,10 @@ class FasterWhisperEngine:
     _runtime_compute_type: str | None = field(default=None, init=False, repr=False)
     _fallback_reason: str = field(default="", init=False, repr=False)
     _transcribe_lock: Lock | None = field(default=None, init=False, repr=False)
+    _context_window: list[str] = field(default_factory=list, init=False, repr=False)
+    _context_max_chars: int = field(default=200, init=False, repr=False)
+    _draft_model: object | None = field(default=None, init=False, repr=False)
+    _draft_failed: bool = field(default=False, init=False, repr=False)
 
     def transcribe_partial(self, audio: np.ndarray, sample_rate: int) -> str:
         return self.transcribe_partial_result(audio, sample_rate).text
@@ -90,6 +98,23 @@ class FasterWhisperEngine:
             return f"{device}{suffix} fallback: {self._fallback_reason}"
         return f"{device}{suffix}"
 
+    def push_context(self, text: str) -> None:
+        stripped = str(text or "").strip()
+        if not stripped:
+            return
+        self._context_window.append(stripped)
+        while len(self._context_window) > 1 and sum(len(item) for item in self._context_window) > self._context_max_chars:
+            self._context_window.pop(0)
+
+    def _effective_initial_prompt(self) -> str:
+        parts: list[str] = []
+        base_prompt = self.initial_prompt.strip()
+        if base_prompt:
+            parts.append(base_prompt)
+        if self._context_window:
+            parts.append(" ".join(self._context_window))
+        return " ".join(parts).strip()
+
     def _transcribe(
         self,
         *,
@@ -113,6 +138,14 @@ class FasterWhisperEngine:
             normalized_language = _normalize_lang(self.language)
             if normalized_language:
                 kwargs["language"] = normalized_language
+            effective_prompt = self._effective_initial_prompt()
+            if effective_prompt:
+                kwargs["initial_prompt"] = effective_prompt
+            if self.hotwords.strip():
+                kwargs["hotwords"] = self.hotwords.strip()
+            draft_model = self._get_draft_model()
+            if draft_model is not None:
+                kwargs["assistant_model"] = draft_model
             # Pass audio as an in-memory BinaryIO to avoid temp-file I/O while
             # still using the stable BinaryIO code path in faster_whisper.
             # Engines with the same runtime share a model and lock so we avoid
@@ -121,7 +154,24 @@ class FasterWhisperEngine:
             transcribe_lock = self._transcribe_lock or Lock()
             self._transcribe_lock = transcribe_lock
             with transcribe_lock:
-                segments, info = model.transcribe(audio_bio, **kwargs)
+                try:
+                    segments, info = model.transcribe(audio_bio, **kwargs)
+                except TypeError as exc:
+                    # Keep compatibility with older faster-whisper versions.
+                    message = str(exc)
+                    retriable = False
+                    if "assistant_model" in message and "assistant_model" in kwargs:
+                        kwargs.pop("assistant_model", None)
+                        self._draft_failed = True
+                        retriable = True
+                    if "hotwords" in message and "hotwords" in kwargs:
+                        kwargs.pop("hotwords", None)
+                        retriable = True
+                    if retriable:
+                        audio_bio.seek(0)
+                        segments, info = model.transcribe(audio_bio, **kwargs)
+                    else:
+                        raise
             detected_language = ""
             if isinstance(info, dict):
                 detected_language = str(info.get("language", "")).strip()
@@ -198,7 +248,7 @@ class FasterWhisperEngine:
         self._runtime_device = self._runtime_device or (self.device or "auto")
         self._runtime_compute_type = self._runtime_compute_type or self._resolve_compute_type(self._runtime_device)
         cache_key = (
-            self.model or "large-v3",
+            self.model or "large-v3-turbo",
             self._runtime_device,
             self._runtime_compute_type,
         )
@@ -233,8 +283,33 @@ class FasterWhisperEngine:
     def _fallback_to_cpu(self, reason: str) -> None:
         self._fallback_reason = reason
         self._model = None
+        self._draft_model = None
         self._runtime_device = "cpu"
         self._runtime_compute_type = "int8"
+
+    def _get_draft_model(self):
+        if self._draft_failed:
+            return None
+        if self._draft_model is not None:
+            return self._draft_model
+        draft_name = self.speculative_draft_model.strip()
+        if not draft_name:
+            return None
+        try:
+            from faster_whisper import WhisperModel  # type: ignore
+        except Exception:
+            self._draft_failed = True
+            return None
+        try:
+            self._draft_model = WhisperModel(
+                draft_name,
+                device=self._runtime_device or self.device or "auto",
+                compute_type=self._runtime_compute_type or self.compute_type,
+            )
+        except Exception:
+            self._draft_failed = True
+            self._draft_model = None
+        return self._draft_model
 
 
 def _clear_model_cache_for_tests() -> None:

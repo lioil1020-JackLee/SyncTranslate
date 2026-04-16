@@ -133,6 +133,8 @@ class FasterWhisperStreamingBackend:
             )
             text = processed.text
             confidence = processed.confidence
+        if text:
+            self._engine.push_context(text)
         return BackendTranscript(
             text=text,
             is_final=True,
@@ -192,12 +194,24 @@ class FunASRStreamingBackend:
 
 
 class _FunASRRunner:
-    def __init__(self, *, model_name: str, device: str, language: str, post_processor: BackendPostProcessor | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        model_name: str,
+        device: str,
+        language: str,
+        hotwords: str = "",
+        funasr_settings: object | None = None,
+        post_processor: BackendPostProcessor | None = None,
+    ) -> None:
         self._model_name = model_name
         self._device = str(device or "cpu")
         self._language = _normalize_funasr_language(language)
+        self._hotwords = str(hotwords or "").strip()
+        self._settings = funasr_settings
         self._registry = get_funasr_registry()
         self._post_processor = post_processor
+        self._online_cache: object | None = None
 
     def warmup(self) -> None:
         self._registry.get_asr(model_name=self._model_name, requested_device=self._device)
@@ -207,20 +221,40 @@ class _FunASRRunner:
         audio: np.ndarray,
         sample_rate: int,
         *,
+        is_final: bool = True,
+        online_mode: bool = False,
         frontend_stats: dict[str, object] | None = None,
     ) -> BackendTranscript:
         normalized = _prepare_audio16k(audio, sample_rate)
         if normalized.size == 0:
-            return BackendTranscript(text="", is_final=True, detected_language=self._language)
+            if is_final:
+                self._online_cache = None
+            return BackendTranscript(text="", is_final=is_final, detected_language=self._language)
         handle = self._registry.get_asr(model_name=self._model_name, requested_device=self._device)
         kwargs = {
             "input": normalized,
-            "cache": {},
             "language": self._language,
-            "use_itn": True,
-            "batch_size_s": 0,
+            "use_itn": bool(getattr(self._settings, "use_itn", True)),
             "progress_callback": None,
         }
+        if self._hotwords:
+            kwargs["hotword"] = self._hotwords
+        if online_mode:
+            kwargs["cache"] = self._online_cache
+            kwargs["batch_size_s"] = max(0.0, float(getattr(self._settings, "batch_size_s_online", 60.0)))
+            kwargs["is_final"] = bool(is_final)
+            chunk_size = _parse_online_chunk_size(str(getattr(self._settings, "online_chunk_size", "") or ""))
+            if chunk_size:
+                kwargs["chunk_size"] = chunk_size
+                kwargs["encoder_chunk_look_back"] = int(
+                    getattr(self._settings, "online_encoder_chunk_look_back", 4)
+                )
+                kwargs["decoder_chunk_look_back"] = int(
+                    getattr(self._settings, "online_decoder_chunk_look_back", 1)
+                )
+        else:
+            kwargs["cache"] = {}
+            kwargs["batch_size_s"] = max(0.0, float(getattr(self._settings, "batch_size_s_offline", 0.0)))
         invoke_lock = handle.invoke_lock
         if invoke_lock is None:
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
@@ -229,6 +263,10 @@ class _FunASRRunner:
             with invoke_lock:
                 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                     result = handle.model.generate(**kwargs)
+        if online_mode:
+            self._online_cache = _extract_funasr_cache(result, self._online_cache)
+            if is_final:
+                self._online_cache = None
         text = _extract_funasr_text(result)
         if handle.postprocess is not None and text:
             try:
@@ -236,7 +274,16 @@ class _FunASRRunner:
             except Exception:
                 text = str(text).strip()
         text = _sanitize_funasr_text(text)
-        if _should_drop_funasr_text(text, audio=normalized):
+        if _should_drop_funasr_text(
+            text,
+            audio=normalized,
+            suppress_low_confidence_short=bool(getattr(self._settings, "suppress_low_confidence_short", True)),
+            short_text_max_chars=int(getattr(self._settings, "short_text_max_chars", 10)),
+            min_speech_ratio_for_short_text=float(
+                getattr(self._settings, "min_speech_ratio_for_short_text", 0.12)
+            ),
+            low_peak_threshold=float(getattr(self._settings, "low_peak_threshold", 0.003)),
+        ):
             text = ""
         confidence = 0.0
         if self._post_processor is not None and text:
@@ -250,7 +297,7 @@ class _FunASRRunner:
             confidence = processed.confidence
         return BackendTranscript(
             text=text,
-            is_final=True,
+            is_final=is_final,
             detected_language=self._language,
             confidence=confidence,
         )
@@ -258,6 +305,10 @@ class _FunASRRunner:
     def runtime_info(self) -> dict[str, object]:
         info = self._registry.snapshot_asr(model_name=self._model_name, requested_device=self._device)
         info["language_effective"] = self._language
+        info["funasr_model_effective"] = self._model_name
+        info["funasr_use_itn"] = bool(getattr(self._settings, "use_itn", True))
+        info["funasr_batch_size_s_offline"] = float(getattr(self._settings, "batch_size_s_offline", 0.0))
+        info["funasr_batch_size_s_online"] = float(getattr(self._settings, "batch_size_s_online", 60.0))
         return info
 
 
@@ -270,7 +321,7 @@ def build_backend_pair(
     resolution = resolve_backend_for_language(language)
     if resolution.disabled:
         raise ValueError("ASR runtime must not be created when language is set to none")
-    profile = config.asr_channels.remote if source == "remote" else config.asr_channels.local
+    profile = config.asr_channels.local if resolution.backend_name == "funasr_v2" else config.asr_channels.remote
     post_processor = _build_post_processor(config, language=language)
     if resolution.backend_name == "funasr_v2":
         partial, final = _build_funasr_backend_pair(profile, language=language, post_processor=post_processor)
@@ -312,10 +363,15 @@ def _build_funasr_backend_pair(
     language: str,
     post_processor: BackendPostProcessor | None = None,
 ) -> tuple[FunASRStreamingBackend, FunASRStreamingBackend]:
+    online_mode = bool(getattr(profile, "funasr_online_mode", False))
+    funasr_cfg = getattr(profile, "funasr", None)
+    model_name = str(getattr(funasr_cfg, "model", "iic/SenseVoiceSmall") or "iic/SenseVoiceSmall")
     runner = _FunASRRunner(
-        model_name="iic/SenseVoiceSmall",
+        model_name=model_name,
         device=profile.device,
         language=language,
+        hotwords=profile.hotwords,
+        funasr_settings=funasr_cfg,
         post_processor=post_processor,
     )
     partial = FunASRStreamingBackend(
@@ -329,6 +385,8 @@ def _build_funasr_backend_pair(
         transcribe=lambda audio, sample_rate, frontend_stats=None: runner.transcribe(
             audio,
             sample_rate,
+            is_final=False,
+            online_mode=online_mode,
             frontend_stats=frontend_stats,
         ),
         frontend_stats=lambda: {},
@@ -344,6 +402,8 @@ def _build_funasr_backend_pair(
         transcribe=lambda audio, sample_rate, frontend_stats=None: runner.transcribe(
             audio,
             sample_rate,
+            is_final=True,
+            online_mode=False,
             frontend_stats=frontend_stats,
         ),
         frontend_stats=lambda: {},
@@ -376,6 +436,10 @@ def _build_engine(profile: AsrConfig, *, language: str) -> FasterWhisperEngine:
         final_beam_size=profile.final_beam_size,
         condition_on_previous_text=profile.condition_on_previous_text,
         final_condition_on_previous_text=profile.final_condition_on_previous_text,
+        initial_prompt=profile.initial_prompt,
+        hotwords=profile.hotwords,
+        speculative_draft_model=profile.speculative_draft_model,
+        speculative_num_beams=profile.speculative_num_beams,
         temperature_fallback=profile.temperature_fallback,
         no_speech_threshold=profile.no_speech_threshold,
         language=language,
@@ -445,6 +509,16 @@ def _extract_funasr_text(result: object) -> str:
     return ""
 
 
+def _extract_funasr_cache(result: object, fallback: object | None) -> object | None:
+    if isinstance(result, dict):
+        return result.get("cache", fallback)
+    if isinstance(result, list):
+        for item in result:
+            if isinstance(item, dict) and "cache" in item:
+                return item.get("cache")
+    return fallback
+
+
 def _sanitize_funasr_text(text: str) -> str:
     value = str(text or "").strip()
     if not value:
@@ -455,17 +529,47 @@ def _sanitize_funasr_text(text: str) -> str:
     return value.strip()
 
 
-def _should_drop_funasr_text(text: str, *, audio: np.ndarray) -> bool:
+def _should_drop_funasr_text(
+    text: str,
+    *,
+    audio: np.ndarray,
+    suppress_low_confidence_short: bool = True,
+    short_text_max_chars: int = 10,
+    min_speech_ratio_for_short_text: float = 0.12,
+    low_peak_threshold: float = 0.003,
+) -> bool:
     normalized = str(text or "").strip()
     if not normalized:
         return True
     peak = float(np.max(np.abs(audio))) if audio.size else 0.0
     speech_ratio = _estimate_speech_ratio(audio)
-    if peak < 0.003 and normalized in {"嗯", "嗯。", "啊", "啊。", "噢", "哦"}:
+    if peak < max(0.0, float(low_peak_threshold)) and normalized in {"嗯", "嗯。", "啊", "啊。", "噢", "哦"}:
         return True
-    if speech_ratio < 0.12 and len(normalized) <= 10:
+    if (
+        suppress_low_confidence_short
+        and speech_ratio < max(0.0, float(min_speech_ratio_for_short_text))
+        and len(normalized) <= max(1, int(short_text_max_chars))
+    ):
         return True
     return False
+
+
+def _parse_online_chunk_size(raw: str) -> list[int]:
+    text = str(raw or "").strip()
+    if not text:
+        return []
+    values: list[int] = []
+    for token in text.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            value = int(token)
+        except Exception:
+            continue
+        if value > 0:
+            values.append(value)
+    return values
 
 
 def _estimate_speech_ratio(audio: np.ndarray, *, sample_rate: int = 16000) -> float:

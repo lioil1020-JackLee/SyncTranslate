@@ -104,6 +104,7 @@ class StreamingAsr:
         self._adaptive_recent_audio_ms: deque[int] = deque(maxlen=10)
         self._adaptive_partial_latencies: deque[int] = deque(maxlen=10)
         self._adaptive_final_latencies: deque[int] = deque(maxlen=10)
+        self._adaptive_cps_samples: deque[float] = deque(maxlen=8)
         self._adaptive_load_backoff_until_ms = 0
         self._final_error_cooldown_until_ms = 0
         self._last_final_error_text = ""
@@ -165,6 +166,7 @@ class StreamingAsr:
         self._adaptive_recent_audio_ms.clear()
         self._adaptive_partial_latencies.clear()
         self._adaptive_final_latencies.clear()
+        self._adaptive_cps_samples.clear()
         self._adaptive_load_backoff_until_ms = 0
         self._final_error_cooldown_until_ms = 0
         self._last_final_error_text = ""
@@ -432,7 +434,10 @@ class StreamingAsr:
             now_ms = int(time.monotonic() * 1000)
             self._partial_cooldown_until_ms = max(self._partial_cooldown_until_ms, now_ms + 6000)
             self._debug(f"asr partial backoff: latency={latency_ms}ms")
-        self._record_final_adaptation(audio_ms=audio_ms, latency_ms=latency_ms, now_ms=now_ms)
+        cps = 0.0
+        if text and audio_ms > 0:
+            cps = len(text.strip()) / (audio_ms / 1000.0)
+        self._record_final_adaptation(audio_ms=audio_ms, latency_ms=latency_ms, now_ms=now_ms, cps=cps)
         if not text.strip():
             return
         if self._stop_event.is_set():
@@ -501,11 +506,13 @@ class StreamingAsr:
         self._adaptive_partial_latencies.append(max(0, int(latency_ms)))
         self._recompute_adaptive_tuning(now_ms=int(time.monotonic() * 1000))
 
-    def _record_final_adaptation(self, *, audio_ms: int, latency_ms: int, now_ms: int) -> None:
+    def _record_final_adaptation(self, *, audio_ms: int, latency_ms: int, now_ms: int, cps: float = 0.0) -> None:
         if not self._adaptive_enabled:
             return
         self._adaptive_recent_audio_ms.append(max(0, int(audio_ms)))
         self._adaptive_final_latencies.append(max(0, int(latency_ms)))
+        if cps > 0.0:
+            self._adaptive_cps_samples.append(float(cps))
         self._recompute_adaptive_tuning(now_ms=now_ms)
 
     def _recompute_adaptive_tuning(self, *, now_ms: int) -> None:
@@ -525,6 +532,11 @@ class StreamingAsr:
         avg_final_latency_ms = (
             sum(self._adaptive_final_latencies) / len(self._adaptive_final_latencies)
             if self._adaptive_final_latencies
+            else 0.0
+        )
+        avg_cps = (
+            sum(self._adaptive_cps_samples) / len(self._adaptive_cps_samples)
+            if self._adaptive_cps_samples
             else 0.0
         )
 
@@ -551,6 +563,10 @@ class StreamingAsr:
             partial_interval_ms = min(2000, max(partial_interval_ms, self._base_partial_interval_ms + 360))
             soft_final_audio_ms = max(self._force_final_audio_ms, min(3600, self._base_soft_final_audio_ms - 600))
             mode_parts.append("load_shed")
+
+        if avg_cps > 8.0 and "short_turn" in mode_parts:
+            min_silence_duration_ms = max(160, int(min_silence_duration_ms * 0.85))
+            mode_parts.append("fast_speaker")
 
         mode = "+".join(mode_parts) if mode_parts else "baseline"
         self._apply_adaptive_tuning(

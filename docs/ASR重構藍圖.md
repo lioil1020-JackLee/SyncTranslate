@@ -68,6 +68,41 @@ ASR 重構已進入第二階段：
 - device / effective device 認知同步
 - 舊式 engine 選項淡出
 
+### 6. Phase 1-4 商品化重構（2026-04-16）
+
+已完成：
+
+**Phase 1：ASR 後處理與可觀測性**
+- `TranscriptPostProcessor`（partial 穩定前綴、text normalization、glossary）
+- `GlossaryStore` / `GlossaryLoader`（YAML / JSON 術語表）
+- `RuntimeLogger`（背景 jsonl 結構化日誌）
+- `UtteranceLatency` / `PipelineMetrics` / `MetricsCollector`
+
+**Phase 2：StreamingPolicy 與 ASR Profiles**
+- `StreamingPolicy`（normal / congested / degraded 三段降級保護）
+- 6 個內建 endpoint profile（default / meeting_room / headset / noisy_environment / max_accuracy / low_latency）
+
+**Phase 3：音訊前處理鏈與 Benchmark 工具**
+- `AudioFrontendChain`（HighpassStage / LoudnessStage / NoiseReductionStage / MusicSuppressionStage）
+- `tools/asr_benchmark/`（離線 CER / WER benchmark CLI）
+- `tools/youtube_srt/`（YouTube SRT 基準測試工具）
+
+**Phase 4：AudioRouter 責任分離 & UI Controller 化**
+- `ASREventProcessor` / `TranslationDispatcher` / `TTSDispatcher` / `PipelineMetricsCollector`
+- `SessionActionController` / `LiveCaptionRefreshController` / `ConfigHotApplyController` / `HealthcheckController`
+
+**Config 擴充（全向後相容）**
+- `enable_postprocessor` / `enable_partial_stabilization`
+- `glossary_enabled` / `glossary_path` / `glossary_apply_on_partial` / `glossary_apply_on_final`
+- `enable_structured_logging` / `runtime_log_format`
+- `asr_profile_local` / `asr_profile_remote`
+- `streaming_profile_local` / `streaming_profile_remote`
+- `degradation_policy_enabled`
+
+**FunASR 專屬參數化**
+- 從共用 ASR 欄位拆出 `funasr.*` 子區塊
+- `use_itn`、`batch_size_s_offline`、`batch_size_s_online`、`online_encoder_chunk_look_back`、`online_decoder_chunk_look_back`
+
 ## 尚未完成
 
 ### 1. legacy 清理
@@ -142,3 +177,13 @@ ASR 重構已進入第二階段：
 - UI、diagnostics、config 都以這個模型為準
 
 接下來的工作重點，不再是「要不要重構」，而是「把 v2 驗收穩、把 legacy 刪乾淨」。
+
+## FunASR 專屬參數化（2026-04-16）
+
+已將 FunASR 從共用 ASR 欄位拆出專屬參數：
+- 辨識推論：`use_itn`、`batch_size_s_offline`、`batch_size_s_online`
+- online 模式：`online_chunk_size`、`online_encoder_chunk_look_back`、`online_decoder_chunk_look_back`
+- 後處理抑制：`suppress_low_confidence_short`、`short_text_max_chars`、`min_speech_ratio_for_short_text`、`low_peak_threshold`
+- benchmark：`benchmark_window_ms`、`benchmark_overlap_ms`
+
+並新增 `tools/asr_benchmark/tune_funasr.py` 進行中文調參回圈，輸出最佳候選與完整排序結果 JSON。

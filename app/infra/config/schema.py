@@ -49,24 +49,47 @@ class VadSettings:
 class AsrStreamingSettings:
     partial_interval_ms: int = 800
     partial_history_seconds: int = 2
-    final_history_seconds: int = 6
+    final_history_seconds: int = 12
     soft_final_audio_ms: int = 4200
+
+
+@dataclass(slots=True)
+class FunAsrSettings:
+    model: str = "iic/SenseVoiceSmall"
+    use_itn: bool = True
+    batch_size_s_offline: float = 0.0
+    batch_size_s_online: float = 60.0
+    online_chunk_size: str = ""
+    online_encoder_chunk_look_back: int = 4
+    online_decoder_chunk_look_back: int = 1
+    benchmark_window_ms: int = 15000
+    benchmark_overlap_ms: int = 400
+    suppress_low_confidence_short: bool = True
+    short_text_max_chars: int = 10
+    min_speech_ratio_for_short_text: float = 0.12
+    low_peak_threshold: float = 0.003
 
 
 @dataclass(slots=True)
 class AsrConfig:
     engine: str = "faster_whisper"
-    model: str = "large-v3"
+    model: str = "large-v3-turbo"
     device: str = "cuda"
     compute_type: str = "float16"
     beam_size: int = 1
     final_beam_size: int = 3
     condition_on_previous_text: bool = True
     final_condition_on_previous_text: bool = False
+    initial_prompt: str = ""
+    hotwords: str = ""
+    funasr_online_mode: bool = False
+    speculative_draft_model: str = ""
+    speculative_num_beams: int = 1
     temperature_fallback: str = "0.0,0.2,0.4"
     no_speech_threshold: float = 0.55
     vad: VadSettings = field(default_factory=VadSettings)
     streaming: AsrStreamingSettings = field(default_factory=AsrStreamingSettings)
+    funasr: FunAsrSettings = field(default_factory=FunAsrSettings)
 
 
 @dataclass(slots=True)
@@ -367,10 +390,16 @@ class AppConfig:
             final_beam_size=int(asr_raw.get("final_beam_size", max(_asr_d.final_beam_size, int(asr_raw.get("beam_size", _asr_d.beam_size))))),
             condition_on_previous_text=bool(asr_raw.get("condition_on_previous_text", _asr_d.condition_on_previous_text)),
             final_condition_on_previous_text=bool(asr_raw.get("final_condition_on_previous_text", _asr_d.final_condition_on_previous_text)),
+            initial_prompt=str(asr_raw.get("initial_prompt", _asr_d.initial_prompt)),
+            hotwords=str(asr_raw.get("hotwords", _asr_d.hotwords)),
+            funasr_online_mode=bool(asr_raw.get("funasr_online_mode", _asr_d.funasr_online_mode)),
+            speculative_draft_model=str(asr_raw.get("speculative_draft_model", _asr_d.speculative_draft_model)),
+            speculative_num_beams=int(asr_raw.get("speculative_num_beams", _asr_d.speculative_num_beams)),
             temperature_fallback=str(asr_raw.get("temperature_fallback", _asr_d.temperature_fallback)),
             no_speech_threshold=float(asr_raw.get("no_speech_threshold", _asr_d.no_speech_threshold)),
             vad=VadSettings(**(asr_raw.get("vad") or {})),
             streaming=AsrStreamingSettings(**(asr_raw.get("streaming") or {})),
+            funasr=FunAsrSettings(**(asr_raw.get("funasr") or {})),
         )
         asr_channels_raw = raw.get("asr_channels") or {}
         asr_local_raw = asr_channels_raw.get("local") or asr_raw
@@ -392,10 +421,20 @@ class AppConfig:
                         asr.final_condition_on_previous_text,
                     )
                 ),
+                initial_prompt=str(asr_local_raw.get("initial_prompt", asr.initial_prompt)),
+                hotwords=str(asr_local_raw.get("hotwords", asr.hotwords)),
+                funasr_online_mode=bool(asr_local_raw.get("funasr_online_mode", asr.funasr_online_mode)),
+                speculative_draft_model=str(
+                    asr_local_raw.get("speculative_draft_model", asr.speculative_draft_model)
+                ),
+                speculative_num_beams=int(
+                    asr_local_raw.get("speculative_num_beams", asr.speculative_num_beams)
+                ),
                 temperature_fallback=str(asr_local_raw.get("temperature_fallback", asr.temperature_fallback)),
                 no_speech_threshold=float(asr_local_raw.get("no_speech_threshold", asr.no_speech_threshold)),
                 vad=VadSettings(**(asr_local_raw.get("vad") or asdict(asr.vad))),
                 streaming=AsrStreamingSettings(**(asr_local_raw.get("streaming") or asdict(asr.streaming))),
+                funasr=FunAsrSettings(**(asr_local_raw.get("funasr") or asdict(asr.funasr))),
             ),
             remote=AsrConfig(
                 engine=str(asr_remote_raw.get("engine", asr.engine)),
@@ -413,10 +452,20 @@ class AppConfig:
                         asr.final_condition_on_previous_text,
                     )
                 ),
+                initial_prompt=str(asr_remote_raw.get("initial_prompt", asr.initial_prompt)),
+                hotwords=str(asr_remote_raw.get("hotwords", asr.hotwords)),
+                funasr_online_mode=bool(asr_remote_raw.get("funasr_online_mode", asr.funasr_online_mode)),
+                speculative_draft_model=str(
+                    asr_remote_raw.get("speculative_draft_model", asr.speculative_draft_model)
+                ),
+                speculative_num_beams=int(
+                    asr_remote_raw.get("speculative_num_beams", asr.speculative_num_beams)
+                ),
                 temperature_fallback=str(asr_remote_raw.get("temperature_fallback", asr.temperature_fallback)),
                 no_speech_threshold=float(asr_remote_raw.get("no_speech_threshold", asr.no_speech_threshold)),
                 vad=VadSettings(**(asr_remote_raw.get("vad") or asdict(asr.vad))),
                 streaming=AsrStreamingSettings(**(asr_remote_raw.get("streaming") or asdict(asr.streaming))),
+                funasr=FunAsrSettings(**(asr_remote_raw.get("funasr") or asdict(asr.funasr))),
             ),
         )
         if not asr_raw and asr_channels_raw:

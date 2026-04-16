@@ -12,16 +12,35 @@ language:
   local_translation_target: en
 asr_channels:
   local:
-    engine: faster_whisper
-    model: large-v3
+    engine: funasr
+    model: iic/SenseVoiceSmall
     device: cuda
     compute_type: float16
     beam_size: 1
-    final_beam_size: 3
+    final_beam_size: 4
     condition_on_previous_text: false
     final_condition_on_previous_text: false
+    initial_prompt: ''
+    hotwords: ''
+    funasr_online_mode: false
+    speculative_draft_model: ''
+    speculative_num_beams: 1
     temperature_fallback: 0.0,0.2,0.4
-    no_speech_threshold: 0.72
+    no_speech_threshold: 0.3
+    funasr:
+      model: iic/SenseVoiceSmall
+      use_itn: true
+      batch_size_s_offline: 0.0
+      batch_size_s_online: 60.0
+      online_chunk_size: ''
+      online_encoder_chunk_look_back: 4
+      online_decoder_chunk_look_back: 1
+      benchmark_window_ms: 15000
+      benchmark_overlap_ms: 400
+      suppress_low_confidence_short: false
+      short_text_max_chars: 14
+      min_speech_ratio_for_short_text: 0.08
+      low_peak_threshold: 0.003
     vad:
       enabled: true
       backend: fsmn_vad
@@ -32,21 +51,40 @@ asr_channels:
       rms_threshold: 0.025
       neural_threshold: 0.5
     streaming:
-      partial_interval_ms: 800
+      partial_interval_ms: 500
       partial_history_seconds: 2
-      final_history_seconds: 6
-      soft_final_audio_ms: 7200
+      final_history_seconds: 12
+      soft_final_audio_ms: 4000
   remote:
     engine: faster_whisper
-    model: large-v3
+    model: large-v3-turbo
     device: cuda
     compute_type: float16
     beam_size: 1
-    final_beam_size: 3
+    final_beam_size: 5
     condition_on_previous_text: false
     final_condition_on_previous_text: false
+    initial_prompt: ''
+    hotwords: ''
+    funasr_online_mode: false
+    speculative_draft_model: ''
+    speculative_num_beams: 1
     temperature_fallback: 0.0,0.2,0.4
-    no_speech_threshold: 0.72
+    no_speech_threshold: 0.3
+    funasr:
+      model: iic/SenseVoiceSmall
+      use_itn: true
+      batch_size_s_offline: 0.0
+      batch_size_s_online: 60.0
+      online_chunk_size: ''
+      online_encoder_chunk_look_back: 4
+      online_decoder_chunk_look_back: 1
+      benchmark_window_ms: 15000
+      benchmark_overlap_ms: 400
+      suppress_low_confidence_short: false
+      short_text_max_chars: 14
+      min_speech_ratio_for_short_text: 0.08
+      low_peak_threshold: 0.003
     vad:
       enabled: true
       backend: fsmn_vad
@@ -57,10 +95,10 @@ asr_channels:
       rms_threshold: 0.025
       neural_threshold: 0.5
     streaming:
-      partial_interval_ms: 800
+      partial_interval_ms: 500
       partial_history_seconds: 2
-      final_history_seconds: 6
-      soft_final_audio_ms: 7200
+      final_history_seconds: 12
+      soft_final_audio_ms: 4000
 llm_channels:
   local:
     backend: lm_studio
@@ -186,7 +224,7 @@ tts_channels:
     voice_name: ko-KR-SunHiNeural
 runtime:
   asr_pipeline: v2
-  asr_v2_backend: funasr_v2
+  asr_v2_backend: faster_whisper_v2
   asr_v2_endpointing: neural_endpoint
   sample_rate: 48000
   chunk_ms: 40

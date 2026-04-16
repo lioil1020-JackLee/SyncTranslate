@@ -300,28 +300,52 @@ def migrate_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
 
     asr = raw.get("asr") or {}
     openai = raw.get("openai") or {}
-    result["asr"]["model"] = str(asr.get("model") or openai.get("asr_model") or "large-v3")
+    result["asr"]["model"] = str(asr.get("model") or openai.get("asr_model") or "large-v3-turbo")
     result["asr"]["device"] = str(asr.get("device") or "cuda")
     result["asr"]["compute_type"] = str(asr.get("compute_type") or "float16")
     result["asr"]["beam_size"] = int(asr.get("beam_size", 1))
     result["asr"]["final_beam_size"] = int(asr.get("final_beam_size", max(3, result["asr"]["beam_size"])))
     result["asr"]["condition_on_previous_text"] = bool(asr.get("condition_on_previous_text", True))
-    result["asr"]["final_condition_on_previous_text"] = bool(asr.get("final_condition_on_previous_text", False))
+    result["asr"]["final_condition_on_previous_text"] = bool(asr.get("final_condition_on_previous_text", True))
+    result["asr"]["initial_prompt"] = str(asr.get("initial_prompt", result["asr"]["initial_prompt"]))
+    result["asr"]["hotwords"] = str(asr.get("hotwords", result["asr"]["hotwords"]))
+    result["asr"]["funasr_online_mode"] = bool(asr.get("funasr_online_mode", result["asr"]["funasr_online_mode"]))
+    result["asr"]["speculative_draft_model"] = str(
+        asr.get("speculative_draft_model", result["asr"]["speculative_draft_model"])
+    )
+    result["asr"]["speculative_num_beams"] = int(
+        asr.get("speculative_num_beams", result["asr"]["speculative_num_beams"])
+    )
     result["asr"]["temperature_fallback"] = str(asr.get("temperature_fallback", result["asr"]["temperature_fallback"]))
     result["asr"]["no_speech_threshold"] = float(asr.get("no_speech_threshold", result["asr"]["no_speech_threshold"]))
     if isinstance(asr.get("vad"), dict):
         result["asr"]["vad"].update(asr["vad"])
     if isinstance(asr.get("streaming"), dict):
         result["asr"]["streaming"].update(asr["streaming"])
+    if isinstance(asr.get("funasr"), dict):
+        result["asr"]["funasr"].update(asr["funasr"])
     result["asr_channels"]["local"] = deepcopy(result["asr"])
     result["asr_channels"]["remote"] = deepcopy(result["asr"])
     for channel in ("local", "remote"):
         profile = result["asr_channels"][channel]
         profile["temperature_fallback"] = str(result["asr"]["temperature_fallback"])
         profile["final_beam_size"] = max(3, int(profile["beam_size"]))
-        profile["final_condition_on_previous_text"] = False
+        profile["final_condition_on_previous_text"] = bool(
+            profile.get("final_condition_on_previous_text", result["asr"]["final_condition_on_previous_text"])
+        )
+        profile["initial_prompt"] = str(profile.get("initial_prompt", result["asr"]["initial_prompt"]))
+        profile["hotwords"] = str(profile.get("hotwords", result["asr"]["hotwords"]))
+        profile["funasr_online_mode"] = bool(profile.get("funasr_online_mode", result["asr"]["funasr_online_mode"]))
+        profile["speculative_draft_model"] = str(
+            profile.get("speculative_draft_model", result["asr"]["speculative_draft_model"])
+        )
+        profile["speculative_num_beams"] = int(
+            profile.get("speculative_num_beams", result["asr"]["speculative_num_beams"])
+        )
         profile["no_speech_threshold"] = float(result["asr"]["no_speech_threshold"])
         profile["streaming"]["soft_final_audio_ms"] = int(result["asr"]["streaming"]["soft_final_audio_ms"])
+        if not isinstance(profile.get("funasr"), dict):
+            profile["funasr"] = deepcopy(result["asr"]["funasr"])
 
     llm = raw.get("llm") or {}
     result["llm"]["backend"] = "lm_studio"

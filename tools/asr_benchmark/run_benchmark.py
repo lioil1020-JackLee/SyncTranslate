@@ -39,6 +39,7 @@ import re
 import sys
 import time
 import wave
+from copy import deepcopy
 from pathlib import Path
 from threading import Event
 from typing import Any
@@ -234,6 +235,9 @@ def _run_file(
     reference_text: str | None,
     language_override: str | None = None,
     chunk_ms: int = 100,
+    accuracy_mode: str = "quality",
+    funasr_window_ms: int | None = None,
+    funasr_overlap_ms: int | None = None,
 ) -> dict[str, Any]:
     """Run ASR on a single audio file and return metrics.
 
@@ -271,8 +275,16 @@ def _run_file(
     if language_override:
         asr_language = str(language_override).strip()
 
+    # Benchmark should prioritize recognition quality and reproducibility.
+    # If profile explicitly uses faster-whisper, keep that backend regardless of language family.
+    engine_name = str(getattr(asr_profile, "engine", "faster_whisper") or "faster_whisper").strip().lower()
+    if "funasr" in engine_name:
+        backend_name = "funasr_v2"
+    else:
+        backend_name = "faster_whisper_v2"
+
+    # Keep resolution object for reporting even when benchmark backend is overridden.
     resolution = resolve_backend_for_language(asr_language)
-    backend_name = resolution.backend_name
     model_name = "iic/SenseVoiceSmall" if backend_name == "funasr_v2" else asr_profile.model
     print(f"[benchmark] Backend    : {backend_name}", flush=True)
     print(f"[benchmark] ASR model  : {model_name}", flush=True)
@@ -283,10 +295,32 @@ def _run_file(
     t0 = time.monotonic()
     chunk_count = 1
     if backend_name == "funasr_v2":
-        _, final_backend = _build_funasr_backend_pair(asr_profile, language=asr_language)
+        tuned_profile = deepcopy(asr_profile)
+        if accuracy_mode == "quality":
+            tuned_profile.funasr_online_mode = False
+            tuned_profile.funasr.use_itn = True
+            tuned_profile.funasr.suppress_low_confidence_short = False
+            tuned_profile.funasr.batch_size_s_offline = max(
+                0.0,
+                float(getattr(tuned_profile.funasr, "batch_size_s_offline", 0.0)),
+            )
+        _, final_backend = _build_funasr_backend_pair(tuned_profile, language=asr_language)
         final_backend.warmup()
     else:
-        engine = _build_engine(asr_profile, language=asr_language)
+        tuned_profile = deepcopy(asr_profile)
+        if accuracy_mode == "quality":
+            tuned_profile.condition_on_previous_text = False
+            tuned_profile.final_condition_on_previous_text = False
+            tuned_profile.speculative_draft_model = ""
+            tuned_profile.final_beam_size = max(
+                int(getattr(tuned_profile, "final_beam_size", 3)),
+                4 if _is_cjk_language(asr_language) else 5,
+            )
+            tuned_profile.no_speech_threshold = min(
+                float(getattr(tuned_profile, "no_speech_threshold", 0.55)),
+                0.3,
+            )
+        engine = _build_engine(tuned_profile, language=asr_language)
         engine.warmup()
     load_ms = round((time.monotonic() - t0) * 1000)
     print(f"[benchmark] Model ready in {load_ms}ms", flush=True)
@@ -295,7 +329,19 @@ def _run_file(
     print("[benchmark] Transcribing...", flush=True)
     t1 = time.monotonic()
     if backend_name == "funasr_v2":
-        windows = _iter_audio_windows(audio, sample_rate, window_ms=15000, overlap_ms=400)
+        window_ms = int(
+            funasr_window_ms
+            if funasr_window_ms is not None
+            else getattr(asr_profile.funasr, "benchmark_window_ms", 15000)
+        )
+        overlap_ms = int(
+            funasr_overlap_ms
+            if funasr_overlap_ms is not None
+            else getattr(asr_profile.funasr, "benchmark_overlap_ms", 400)
+        )
+        window_ms = max(1000, window_ms)
+        overlap_ms = max(0, min(overlap_ms, max(0, window_ms - 200)))
+        windows = _iter_audio_windows(audio, sample_rate, window_ms=window_ms, overlap_ms=overlap_ms)
         chunk_count = len(windows)
         texts: list[str] = []
         detected_language = ""
@@ -321,6 +367,8 @@ def _run_file(
         "profile": profile_name,
         "source": source,
         "backend": backend_name,
+        "backend_resolution": resolution.backend_name,
+        "benchmark_accuracy_mode": accuracy_mode,
         "chunk_count": chunk_count,
         "transcript": transcript,
         "detected_language": detected_language,
@@ -352,6 +400,11 @@ def _run_file(
         )
         record["transcript_chars"] = len(transcript)
         record["reference_chars"] = len(reference_text)
+    if backend_name == "funasr_v2":
+        record["funasr_window_ms"] = int(window_ms)
+        record["funasr_overlap_ms"] = int(overlap_ms)
+        record["funasr_use_itn"] = bool(getattr(asr_profile.funasr, "use_itn", True))
+        record["funasr_batch_size_s_offline"] = float(getattr(asr_profile.funasr, "batch_size_s_offline", 0.0))
     return record
 
 
@@ -371,6 +424,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--source", default="remote", choices=["local", "remote"])
     p.add_argument("--output", default="results", help="Output directory for results")
     p.add_argument("--chunk-ms", type=int, default=100, help="Audio feed chunk size in ms")
+    p.add_argument("--funasr-window-ms", type=int, default=None, help="FunASR benchmark window size in ms")
+    p.add_argument("--funasr-overlap-ms", type=int, default=None, help="FunASR benchmark overlap size in ms")
+    p.add_argument(
+        "--accuracy-mode",
+        choices=["quality", "runtime_like"],
+        default="quality",
+        help="quality: force high-accuracy decoding params for offline benchmark; runtime_like: use profile as-is",
+    )
     return p
 
 
@@ -407,6 +468,9 @@ def main(argv: list[str] | None = None) -> int:
                 profile_name=args.profile,
                 reference_text=reference_lines[i],
                 chunk_ms=args.chunk_ms,
+                accuracy_mode=args.accuracy_mode,
+                funasr_window_ms=args.funasr_window_ms,
+                funasr_overlap_ms=args.funasr_overlap_ms,
             )
             all_results.append(record)
             print(json.dumps(record, ensure_ascii=False))

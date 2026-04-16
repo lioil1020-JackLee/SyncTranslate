@@ -9,7 +9,7 @@ icon = None
 binaries = []
 hidden_imports = []
 
-for pkg in ("funasr", "faster_whisper", "modelscope", "addict"):
+for pkg in ("funasr", "faster_whisper", "modelscope", "addict", "torch", "torchaudio"):
     pkg_datas, pkg_binaries, pkg_hiddenimports = collect_all(pkg)
     datas += pkg_datas
     binaries += pkg_binaries
@@ -66,6 +66,8 @@ a = Analysis(
         "addict",
         "modelscope",
         "onnxruntime",
+        "torch",
+        "torchaudio",
         # app sub-packages (Phase 1-4 new modules)
         "app.application.transcript_postprocessor",
         "app.application.asr_event_processor",

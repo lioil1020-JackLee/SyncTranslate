@@ -214,10 +214,11 @@ class ASRManagerV2:
         runtime = self._runtimes.get(key)
         if runtime is None:
             resolution = resolve_backend_for_language(self._asr_language_for_source(key))
+            profile = self._profile_for_source(key)
             endpoint_runtime = build_endpointing_runtime(
                 str(getattr(self._config.runtime, "asr_v2_endpointing", "neural_endpoint")),
-                self._profile_for_source(key).vad,
-                device=self._profile_for_source(key).device,
+                profile.vad,
+                device=profile.device,
                 resolved_backend_name=resolution.backend_name,
             )
             return endpoint_runtime.snapshot()
@@ -227,8 +228,9 @@ class ASRManagerV2:
         runtime = self._runtimes.get(source)
         if runtime is not None:
             return runtime
-        profile = self._profile_for_source(source)
         language = self._asr_language_for_source(source)
+        resolution = resolve_backend_for_language(language)
+        profile = self._profile_for_source(source)
         build_result = build_backend_pair(self._config, source=source, language=language)
         if isinstance(build_result, tuple):
             partial_backend, final_backend = build_result
@@ -252,9 +254,9 @@ class ASRManagerV2:
         }
         # Resolve endpoint profile for this source channel
         _profile_name = (
-            getattr(self._config.runtime, "asr_profile_remote", None)
-            if source == "remote"
-            else getattr(self._config.runtime, "asr_profile_local", None)
+            getattr(self._config.runtime, "asr_profile_local", None)
+            if resolution.backend_name == "funasr_v2"
+            else getattr(self._config.runtime, "asr_profile_remote", None)
         )
         _ep_profile = get_endpoint_profile(_profile_name)
         _ep_kwargs = _ep_profile.to_worker_kwargs()
@@ -291,7 +293,19 @@ class ASRManagerV2:
         return runtime
 
     def _profile_for_source(self, source: str):
-        return self._config.asr_channels.remote if source == "remote" else self._config.asr_channels.local
+        language = self._asr_language_for_source(source)
+        resolution = resolve_backend_for_language(language)
+        if resolution.normalized_language in {"auto", ""}:
+            return self._config.asr_channels.remote if source == "remote" else self._config.asr_channels.local
+        if resolution.backend_name == "funasr_v2":
+            return self._config.asr_channels.local
+        return self._config.asr_channels.remote
+
+    def _profile_for_language(self, language: str):
+        resolution = resolve_backend_for_language(language)
+        if resolution.backend_name == "funasr_v2":
+            return self._config.asr_channels.local
+        return self._config.asr_channels.remote
 
     def _queue_maxsize_for_source(self, source: str) -> int:
         runtime = self._config.runtime

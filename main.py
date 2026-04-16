@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import atexit
 import faulthandler
+import os
 from pathlib import Path
 import sys
 import threading
 import traceback
+
+# Silence noisy Qt DirectWrite fallback warnings (e.g., Fixedsys) on Windows.
+_qt_rules = os.environ.get("QT_LOGGING_RULES", "")
+if "qt.qpa.fonts" not in _qt_rules:
+    os.environ["QT_LOGGING_RULES"] = f"{_qt_rules};qt.qpa.fonts=false".strip(";")
 
 from app.bootstrap.app_factory import run_from_cli
 from app.bootstrap.runtime_paths import runtime_logs_dir
