@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Protocol
 
-from app.infra.asr.faster_whisper_adapter import FasterWhisperEngine
 from app.infra.translation.provider import TranslationProvider
 from app.infra.tts.edge_tts_adapter import EdgeTtsProvider
+
+
+class AsrHealthCheckProvider(Protocol):
+    def health_check(self) -> tuple[bool, str]:
+        ...
 
 
 @dataclass(slots=True)
@@ -23,7 +28,7 @@ class LocalHealthReport:
 
 def run_local_healthcheck(
     *,
-    asr_engine: FasterWhisperEngine,
+    asr_engine: AsrHealthCheckProvider,
     llm_client: TranslationProvider,
     tts_engine: object,
 ) -> LocalHealthReport:

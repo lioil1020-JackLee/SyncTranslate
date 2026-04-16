@@ -74,10 +74,19 @@ def configure_external_ai_runtime() -> dict[str, list[str]]:
     added_site_packages: list[str] = []
     added_dll_dirs: list[str] = []
 
+    existing_site_packages: list[Path] = []
     for candidate in _site_packages_candidates(base):
+        if candidate.exists():
+            existing_site_packages.append(candidate)
+
+    # _prepend_sys_path inserts at sys.path[0], so iterate in reverse to preserve
+    # declared priority order: shared -> funasr -> faster_whisper.
+    for candidate in reversed(existing_site_packages):
+        _prepend_sys_path(candidate)
+
+    for candidate in existing_site_packages:
         if not candidate.exists():
             continue
-        _prepend_sys_path(candidate)
         added_site_packages.append(str(candidate))
         for dll_dir in _dll_dir_candidates(candidate):
             if not dll_dir.exists():
