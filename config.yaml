@@ -1,4 +1,4 @@
-audio:
+﻿audio:
   meeting_in: Windows WASAPI::Voicemeeter Out B1 (VB-Audio Voicemeeter VAIO)
   microphone_in: Windows WASAPI::Voicemeeter Out B2 (VB-Audio Voicemeeter VAIO)
   speaker_out: Windows WASAPI::Voicemeeter In 1 (VB-Audio Voicemeeter VAIO)
@@ -12,8 +12,8 @@ language:
   local_translation_target: en
 asr_channels:
   local:
-    engine: funasr
-    model: iic/SenseVoiceSmall
+    engine: faster_whisper
+    model: large-v3-turbo
     device: cuda
     compute_type: float16
     beam_size: 1
@@ -22,28 +22,13 @@ asr_channels:
     final_condition_on_previous_text: false
     initial_prompt: ''
     hotwords: ''
-    funasr_online_mode: false
     speculative_draft_model: ''
     speculative_num_beams: 1
     temperature_fallback: 0.0,0.2,0.4
     no_speech_threshold: 0.3
-    funasr:
-      model: iic/SenseVoiceSmall
-      use_itn: true
-      batch_size_s_offline: 0.0
-      batch_size_s_online: 60.0
-      online_chunk_size: ''
-      online_encoder_chunk_look_back: 4
-      online_decoder_chunk_look_back: 1
-      benchmark_window_ms: 15000
-      benchmark_overlap_ms: 400
-      suppress_low_confidence_short: false
-      short_text_max_chars: 14
-      min_speech_ratio_for_short_text: 0.08
-      low_peak_threshold: 0.003
     vad:
       enabled: true
-      backend: fsmn_vad
+      backend: silero_vad
       min_speech_duration_ms: 220
       min_silence_duration_ms: 900
       max_speech_duration_s: 24.0
@@ -66,38 +51,23 @@ asr_channels:
     final_condition_on_previous_text: false
     initial_prompt: ''
     hotwords: ''
-    funasr_online_mode: false
     speculative_draft_model: ''
     speculative_num_beams: 1
     temperature_fallback: 0.0,0.2,0.4
-    no_speech_threshold: 0.3
-    funasr:
-      model: iic/SenseVoiceSmall
-      use_itn: true
-      batch_size_s_offline: 0.0
-      batch_size_s_online: 60.0
-      online_chunk_size: ''
-      online_encoder_chunk_look_back: 4
-      online_decoder_chunk_look_back: 1
-      benchmark_window_ms: 15000
-      benchmark_overlap_ms: 400
-      suppress_low_confidence_short: false
-      short_text_max_chars: 14
-      min_speech_ratio_for_short_text: 0.08
-      low_peak_threshold: 0.003
+    no_speech_threshold: 0.35
     vad:
       enabled: true
-      backend: fsmn_vad
-      min_speech_duration_ms: 220
-      min_silence_duration_ms: 900
+      backend: silero_vad
+      min_speech_duration_ms: 200
+      min_silence_duration_ms: 760
       max_speech_duration_s: 24.0
-      speech_pad_ms: 520
-      rms_threshold: 0.025
+      speech_pad_ms: 420
+      rms_threshold: 0.02
       neural_threshold: 0.5
     streaming:
-      partial_interval_ms: 500
+      partial_interval_ms: 420
       partial_history_seconds: 2
-      final_history_seconds: 12
+      final_history_seconds: 10
       soft_final_audio_ms: 4000
 llm_channels:
   local:

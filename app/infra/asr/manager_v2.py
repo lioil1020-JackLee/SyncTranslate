@@ -254,9 +254,9 @@ class ASRManagerV2:
         }
         # Resolve endpoint profile for this source channel
         _profile_name = (
-            getattr(self._config.runtime, "asr_profile_local", None)
-            if resolution.backend_name == "funasr_v2"
-            else getattr(self._config.runtime, "asr_profile_remote", None)
+            getattr(self._config.runtime, "asr_profile_remote", None)
+            if source == "remote"
+            else getattr(self._config.runtime, "asr_profile_local", None)
         )
         _ep_profile = get_endpoint_profile(_profile_name)
         _ep_kwargs = _ep_profile.to_worker_kwargs()
@@ -293,19 +293,13 @@ class ASRManagerV2:
         return runtime
 
     def _profile_for_source(self, source: str):
-        language = self._asr_language_for_source(source)
-        resolution = resolve_backend_for_language(language)
-        if resolution.normalized_language in {"auto", ""}:
-            return self._config.asr_channels.remote if source == "remote" else self._config.asr_channels.local
-        if resolution.backend_name == "funasr_v2":
-            return self._config.asr_channels.local
-        return self._config.asr_channels.remote
+        return self._config.asr_channels.remote if source == "remote" else self._config.asr_channels.local
 
     def _profile_for_language(self, language: str):
         resolution = resolve_backend_for_language(language)
-        if resolution.backend_name == "funasr_v2":
-            return self._config.asr_channels.local
-        return self._config.asr_channels.remote
+        if resolution.language_family == "non_chinese":
+            return self._config.asr_channels.remote
+        return self._config.asr_channels.local
 
     def _queue_maxsize_for_source(self, source: str) -> int:
         runtime = self._config.runtime
@@ -319,7 +313,7 @@ class ASRManagerV2:
     def _threshold_for_source(self, source: str) -> float:
         vad = self._profile_for_source(source).vad
         backend = str(getattr(vad, "backend", "rms") or "rms").strip().lower()
-        if backend in {"silero", "silero_vad", "neural", "neural_endpoint", "funasr", "funasr_vad", "fsmn_vad", "fsmn-vad"}:
+        if backend in {"silero", "silero_vad", "neural", "neural_endpoint"}:
             return float(getattr(vad, "neural_threshold", 0.5))
         return float(getattr(vad, "rms_threshold", 0.02))
 

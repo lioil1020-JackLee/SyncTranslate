@@ -21,7 +21,7 @@ def collect_openssl_binaries():
     return found
 
 
-# NOTE: External runtimes (runtimes/shared, runtimes/faster_whisper, runtimes/funasr)
+# NOTE: External runtimes (runtimes/shared, runtimes/faster_whisper)
 # are copied by the relocate_ai_runtime_artifacts.ps1 script after PyInstaller build.
 # This keeps AI packages isolated from .venv and makes rebuilds faster - they're copied
 # directly from the pre-built runtimes/ directory in the dev environment.
@@ -102,13 +102,11 @@ a = Analysis(
     excludes=[
         "torch",
         "torchaudio",
-        "funasr",
         "faster_whisper",
         "modelscope",
         "onnxruntime",
         "ctranslate2",
         "tiktoken",
-        "silero_vad",
     ],
     noarchive=False,
     optimize=0,

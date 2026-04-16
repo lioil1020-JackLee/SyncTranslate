@@ -21,8 +21,30 @@ class ConfigMigrationTests(unittest.TestCase):
     def test_runtime_defaults_start_with_legacy_pipeline_and_v2_placeholders(self) -> None:
         cfg = AppConfig()
         self.assertEqual(cfg.runtime.asr_pipeline, "v2")
-        self.assertEqual(cfg.runtime.asr_v2_backend, "funasr_v2")
+        self.assertEqual(cfg.runtime.asr_v2_backend, "faster_whisper_v2")
         self.assertEqual(cfg.runtime.asr_v2_endpointing, "neural_endpoint")
+
+    def test_normalize_legacy_funasr_fields_to_new_defaults(self) -> None:
+        raw = {
+            "asr_channels": {
+                "local": {
+                    "engine": "funasr",
+                    "funasr_online_mode": True,
+                    "funasr": {"model": "iic/SenseVoiceSmall"},
+                    "vad": {"backend": "fsmn_vad"},
+                }
+            },
+            "runtime": {"asr_v2_backend": "funasr_v2"},
+        }
+
+        normalized = _normalize_external_config_keys(raw)
+        local = normalized["asr_channels"]["local"]
+
+        self.assertEqual(local["engine"], "faster_whisper")
+        self.assertEqual(local["vad"]["backend"], "silero_vad")
+        self.assertNotIn("funasr_online_mode", local)
+        self.assertNotIn("funasr", local)
+        self.assertEqual(normalized["runtime"]["asr_v2_backend"], "faster_whisper_v2")
 
     def test_runtime_defaults_prefer_auto_asr_language_mode(self) -> None:
         cfg = AppConfig()

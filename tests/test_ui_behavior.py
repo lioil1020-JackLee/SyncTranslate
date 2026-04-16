@@ -344,7 +344,7 @@ class LocalAiPageUiTests(_QtTestCase):
     def test_local_ai_page_uses_built_in_optimized_defaults(self) -> None:
         page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
 
-        self.assertEqual(page.asr_model_combo.text(), "FunASR (iic/SenseVoiceSmall)")
+        self.assertEqual(page.asr_model_combo.text(), "faster-whisper (large-v3-turbo)")
         self.assertEqual(page.remote_asr_model_combo.text(), "faster-whisper (large-v3-turbo)")
         self.assertEqual(page.llm_model_label.text(), "hy-mt1.5-7b")
         self.assertEqual(page.remote_llm_model_label.text(), "hy-mt1.5-7b")
@@ -352,11 +352,13 @@ class LocalAiPageUiTests(_QtTestCase):
         self.assertFalse(page.asr_condition_prev_check.isChecked())
         self.assertFalse(page.remote_asr_condition_prev_check.isChecked())
         self.assertEqual(page.asr_partial_interval_spin.value(), 500)
-        self.assertEqual(page.remote_asr_partial_interval_spin.value(), 500)
+        self.assertEqual(page.remote_asr_partial_interval_spin.value(), 420)
         self.assertAlmostEqual(page.asr_rms_threshold_spin.value(), 0.025, places=3)
-        self.assertAlmostEqual(page.remote_asr_rms_threshold_spin.value(), 0.025, places=3)
+        self.assertAlmostEqual(page.remote_asr_rms_threshold_spin.value(), 0.02, places=3)
         self.assertEqual(page.asr_min_silence_spin.value(), 900)
         self.assertEqual(page.asr_speech_pad_spin.value(), 520)
+        self.assertEqual(page.remote_asr_min_silence_spin.value(), 760)
+        self.assertEqual(page.remote_asr_speech_pad_spin.value(), 420)
         self.assertEqual(page.runtime_sample_rate_spin.currentData(), 48000)
         self.assertEqual(page.runtime_chunk_spin.value(), 40)
         self.assertEqual(page.runtime_asr_pre_roll_spin.value(), 520)
@@ -367,7 +369,7 @@ class LocalAiPageUiTests(_QtTestCase):
 
         updated = AppConfig()
         page.update_config(updated)
-        self.assertEqual(updated.asr_channels.local.engine, "funasr")
+        self.assertEqual(updated.asr_channels.local.engine, "faster_whisper")
         self.assertEqual(updated.asr_channels.remote.engine, "faster_whisper")
         self.assertEqual(updated.tts.style_preset, "broadcast_clear")
         self.assertEqual(updated.llm.caption_profile, "live_caption_fast")

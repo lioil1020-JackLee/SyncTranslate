@@ -1,10 +1,10 @@
-# SyncTranslate
+﻿# SyncTranslate
 
 SyncTranslate 是一個以 Windows 桌面為主的即時雙向字幕 / 翻譯 / 語音輸出工具。它可以同時處理本地與遠端兩條音訊通道，將音訊送進 ASR、翻譯與 TTS，並在 UI 中即時顯示原文與譯文。
 
 目前專案的主線已切換到 `ASR v2`。新的 ASR 架構重點是：
 
-- 中文 ASR 自動使用 `FunASR + FSMN-VAD`
+- 中文 ASR 自動使用 `faster-whisper + silero-vad`
 - 非中文與 `auto` 自動使用 `faster-whisper`
 - `none` 會直接停用該通道 ASR
 - 模型採懶載入與共享 registry，避免啟動時重複初始化
@@ -18,7 +18,7 @@ SyncTranslate 是一個以 Windows 桌面為主的即時雙向字幕 / 翻譯 / 
   - `remote` 與 `local` 可同時存在
   - 可對應 VoiceMeeter / 實體裝置 / 虛擬裝置
 - 即時 ASR
-  - 中文走 FunASR
+  - 中文走 faster-whisper
   - 非中文走 faster-whisper
   - 每通道可獨立指定 ASR 語言
 - 即時翻譯
@@ -62,7 +62,7 @@ SyncTranslate 是一個以 Windows 桌面為主的即時雙向字幕 / 翻譯 / 
   - `backend_resolution.py`
   - `backend_v2.py`
   - `endpointing_v2.py`
-  - `funasr_registry.py`
+  - `faster_whisper_adapter.py`
   - `streaming_policy.py`（Phase 2）
   - `endpoint_profiles.py`（Phase 2）
   - `audio_pipeline/`（Phase 3）
@@ -82,12 +82,12 @@ SyncTranslate 是一個以 Windows 桌面為主的即時雙向字幕 / 翻譯 / 
 
 ## 外部 AI 運行時架構
 
-本專案採用**外部化運行時**設計，將重量級 AI 依賴（PyTorch / FunASR / faster-whisper）與主程式解耦：
+本專案採用**外部化運行時**設計，將重量級 AI 依賴（PyTorch / faster-whisper）與主程式解耦：
 
 ### 目標
 
 - **輕量化主包**：`SyncTranslate.exe` 與 UI 依賴獨立，不含 AI 套件（~200MB 而非 2GB+）
-- **模組化管理**：三層隔離運行時（shared CUDA、中文 ASR、非中文 ASR）
+- **模組化管理**：兩層隔離運行時（shared CUDA、faster-whisper）
 - **靈活部署**：可選離線/CUDA，支援獨立升級各 AI 套件
 - **超大資產支援**：GitHub Release 自動分片超過 2GB 的打包結果
 
@@ -100,12 +100,11 @@ SyncTranslate-onedir/
   _internal/                        # PyInstaller 主程式依賴
     app/
     PySide6/
-    ...（無 torch/funasr/faster-whisper）
+    ...（無 torch/faster-whisper）
   
   runtimes/                         # 外部 AI 運行時（從開發環境複製）
-    shared/Lib/site-packages/       # torch / torchaudio / onnxruntime / modelscope
-    funasr/Lib/site-packages/       # funasr / silero-vad（中文 ASR）
-    faster_whisper/Lib/site-packages/  # faster-whisper / ctranslate2（非中文 ASR）
+    shared/Lib/site-packages/       # torch / torchaudio / onnxruntime
+    faster_whisper/Lib/site-packages/  # faster-whisper / ctranslate2 / tiktoken
   
   models/                           # 可選：離線模型快取
 ```
@@ -113,7 +112,7 @@ SyncTranslate-onedir/
 ### 啟動時的自動掛載
 
 應用啟動時，`app/bootstrap/external_runtime.py` 會：
-1. 掃描 `runtimes/{shared,funasr,faster_whisper}/Lib/site-packages`
+1. 掃描 `runtimes/{shared,faster_whisper}/Lib/site-packages`
 2. 將路徑加入 `sys.path`
 3. 自動註冊 Windows DLL 目錄（torch/lib、onnxruntime/capi、nvidia CUDA bins）
 4. 設定模型快取環境變數（`MODELSCOPE_CACHE` / `HF_HOME`）
@@ -128,7 +127,6 @@ SyncTranslate-onedir/
 | `main.py` | 在 import `app_factory` 前呼叫 `configure_external_ai_runtime()` |
 | `SyncTranslate-onedir.spec` | 排除 AI 套件，改由 relocate 腳本複製 |
 | `app/infra/asr/faster_whisper_adapter.py` | 錯誤訊息導向外部運行時路徑 |
-| `app/infra/asr/funasr_registry.py` | 錯誤訊息導向外部運行時路徑 |
 | `pyproject.toml` | 移除 AI 套件依賴（輕量化 .venv） |
 | `conftest.py` | pytest 自動配置外部運行時 |
 
@@ -145,10 +143,10 @@ SyncTranslate-onedir/
 建議使用 `uv`：
 
 ```powershell
-# 1. 安裝主程式依賴（輕量級，不含 torch/funasr 等）
+# 1. 安裝主程式依賴（輕量級，不含 torch/faster-whisper 等）
 uv sync --locked
 
-# 2. 準備外部 AI 運行時（torch, funasr, faster-whisper 等）
+# 2. 準備外部 AI 運行時（torch, faster-whisper 等）
 powershell -ExecutionPolicy Bypass -File .\tools\runtime_setup\prepare_external_runtimes.ps1
 ```
 
@@ -202,7 +200,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\runtime_setup\relocate_ai_runti
 
 ASR 路由規則：
 
-- `zh` / `zh-TW` / `zh-CN` / `cmn` / `yue` -> `funasr_v2`
+- `zh` / `zh-TW` / `zh-CN` / `cmn` / `yue` -> `faster_whisper_v2`
 - 其他語言 -> `faster_whisper_v2`
 - `auto` -> `faster_whisper_v2`
 - `none` -> disabled
@@ -262,3 +260,5 @@ Benchmark 結果存於 `downloads/benchmark_results/`。
 - [docs/快速安裝手冊.md](docs/快速安裝手冊.md)
 - [docs/更新紀錄.md](docs/更新紀錄.md)
 - [docs/ASR重構藍圖.md](docs/ASR重構藍圖.md)
+
+

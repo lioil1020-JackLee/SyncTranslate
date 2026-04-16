@@ -59,8 +59,8 @@ def resolve_backend_for_language(language: str) -> BackendResolution:
             requested_language=requested,
             normalized_language=normalized,
             language_family="chinese",
-            backend_name="funasr_v2",
-            reason=f"{requested or normalized} is treated as a Chinese-family ASR language",
+            backend_name="faster_whisper_v2",
+            reason=f"{requested or normalized} is treated as a Chinese-family ASR language on unified faster-whisper",
         )
     return BackendResolution(
         requested_language=requested,

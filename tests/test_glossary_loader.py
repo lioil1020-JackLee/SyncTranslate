@@ -52,11 +52,11 @@ class TestGlossaryStore:
 
     def test_multiple_entries(self):
         store = GlossaryStore([
-            GlossaryEntry(pattern="fun asr", replace="FunASR"),
             GlossaryEntry(pattern="faster whisper", replace="faster-whisper"),
+            GlossaryEntry(pattern="lm studio", replace="LM Studio"),
         ])
-        result = store.apply("fun asr and faster whisper")
-        assert result == "FunASR and faster-whisper"
+        result = store.apply("faster whisper and lm studio")
+        assert result == "faster-whisper and LM Studio"
 
     def test_load_replaces_previous(self):
         store = GlossaryStore([GlossaryEntry(pattern="old", replace="OLD")])

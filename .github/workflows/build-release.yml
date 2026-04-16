@@ -49,8 +49,6 @@ jobs:
           & $sharedPy -c "import torch, torchaudio; print('torch=' + torch.__version__); print('cuda=' + str(torch.cuda.is_available()))"
           $fwPy = "runtimes/faster_whisper/Scripts/python.exe"
           & $fwPy -c "import faster_whisper; print('faster_whisper ok')"
-          $funasrPy = "runtimes/funasr/Scripts/python.exe"
-          & $funasrPy -c "import funasr; print('funasr ok')"
 
       - name: Run test suite
         shell: pwsh

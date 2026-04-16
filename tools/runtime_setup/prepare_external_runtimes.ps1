@@ -36,11 +36,9 @@ function New-RuntimeVenv {
 
 New-Item -ItemType Directory -Path $RuntimeRoot -Force | Out-Null
 
-# Shared runtime for CUDA / model loading dependencies used by both ASR backends.
+# Shared runtime for CUDA / common dependencies.
 New-RuntimeVenv -Name "shared" -InstallCudaTorch -Packages @(
-    "onnxruntime>=1.22.0",
-    "modelscope>=1.18.0",
-    "addict>=2.4.0"
+    "onnxruntime>=1.22.0"
 )
 
 # Non-Chinese ASR runtime.
@@ -50,14 +48,7 @@ New-RuntimeVenv -Name "faster_whisper" -Packages @(
     "tiktoken>=0.11.0"
 )
 
-# Chinese ASR runtime.
-New-RuntimeVenv -Name "funasr" -Packages @(
-    "funasr>=1.3.0",
-    "silero-vad>=6.2.1"
-)
-
 Write-Host "External runtimes prepared under: $RuntimeRoot"
 Write-Host "Expected structure:"
 Write-Host "  runtimes/shared/Lib/site-packages"
 Write-Host "  runtimes/faster_whisper/Lib/site-packages"
-Write-Host "  runtimes/funasr/Lib/site-packages"

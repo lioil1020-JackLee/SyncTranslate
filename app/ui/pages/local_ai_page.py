@@ -220,24 +220,17 @@ class LocalAiPage(QWidget):
             zh_asr = config.asr_channels.local
             en_asr = config.asr_channels.remote
             self._select_combo_data(self.asr_engine_combo, zh_asr.engine)
-            funasr_model = str(getattr(zh_asr.funasr, "model", "iic/SenseVoiceSmall") or "iic/SenseVoiceSmall")
+            local_model = str(zh_asr.model or "large-v3-turbo")
             fw_model = str(en_asr.model or "large-v3-turbo")
-            self.asr_model_combo.setText(f"FunASR ({funasr_model})")
+            self.asr_model_combo.setText(f"faster-whisper ({local_model})")
             self.remote_asr_model_combo.setText(f"faster-whisper ({fw_model})")
             self._select_combo_data(self.asr_device_combo, zh_asr.device)
             self.asr_compute_label.setText(self._compute_type_for_device(zh_asr.device))
             self.asr_beam_spin.setValue(zh_asr.beam_size)
             self.remote_asr_beam_spin.setValue(en_asr.beam_size)
-            self.asr_condition_prev_check.setChecked(False)
+            self.asr_condition_prev_check.setChecked(zh_asr.condition_on_previous_text)
             self.remote_asr_condition_prev_check.setChecked(en_asr.condition_on_previous_text)
-            self.funasr_use_itn_check.setChecked(bool(getattr(zh_asr.funasr, "use_itn", True)))
-            self.funasr_online_mode_check.setChecked(bool(getattr(zh_asr, "funasr_online_mode", False)))
-            self.funasr_batch_size_s_offline_spin.setValue(float(getattr(zh_asr.funasr, "batch_size_s_offline", 0.0)))
-            self.funasr_short_text_max_chars_spin.setValue(int(getattr(zh_asr.funasr, "short_text_max_chars", 10)))
-            self.funasr_min_speech_ratio_spin.setValue(
-                float(getattr(zh_asr.funasr, "min_speech_ratio_for_short_text", 0.12))
-            )
-            self.asr_temperature_fallback_local_edit.setText("N/A (FunASR)")
+            self.asr_temperature_fallback_local_edit.setText(zh_asr.temperature_fallback)
             self.asr_temperature_fallback_remote_edit.setText(en_asr.temperature_fallback)
             self.asr_partial_interval_spin.setValue(zh_asr.streaming.partial_interval_ms)
             self.remote_asr_partial_interval_spin.setValue(en_asr.streaming.partial_interval_ms)
@@ -368,20 +361,15 @@ class LocalAiPage(QWidget):
         en_asr = config.asr_channels.remote
         shared_device = str(self.asr_device_combo.currentData() or "cuda")
         shared_compute = self._compute_type_for_device(shared_device)
-        zh_asr.engine = "funasr"
-        zh_asr.model = str(getattr(zh_asr.funasr, "model", "iic/SenseVoiceSmall") or "iic/SenseVoiceSmall")
+        zh_asr.engine = "faster_whisper"
+        zh_asr.model = zh_asr.model or "large-v3-turbo"
         zh_asr.device = shared_device
         zh_asr.compute_type = shared_compute
         zh_asr.beam_size = self.asr_beam_spin.value()
-        zh_asr.final_beam_size = max(3, zh_asr.beam_size)
-        zh_asr.condition_on_previous_text = False
+        zh_asr.final_beam_size = max(4, zh_asr.beam_size)
+        zh_asr.condition_on_previous_text = self.asr_condition_prev_check.isChecked()
         zh_asr.final_condition_on_previous_text = False
-        zh_asr.funasr_online_mode = self.funasr_online_mode_check.isChecked()
-        zh_asr.funasr.use_itn = self.funasr_use_itn_check.isChecked()
-        zh_asr.funasr.batch_size_s_offline = float(self.funasr_batch_size_s_offline_spin.value())
-        zh_asr.funasr.short_text_max_chars = int(self.funasr_short_text_max_chars_spin.value())
-        zh_asr.funasr.min_speech_ratio_for_short_text = float(self.funasr_min_speech_ratio_spin.value())
-        zh_asr.temperature_fallback = "0.0,0.2,0.4"
+        zh_asr.temperature_fallback = self.asr_temperature_fallback_local_edit.text().strip() or "0.0,0.2,0.4"
         zh_asr.streaming.partial_interval_ms = self.asr_partial_interval_spin.value()
         zh_asr.streaming.partial_history_seconds = self.asr_partial_history_spin.value()
         zh_asr.streaming.final_history_seconds = self.asr_final_history_spin.value()
@@ -399,7 +387,7 @@ class LocalAiPage(QWidget):
         en_asr.device = shared_device
         en_asr.compute_type = shared_compute
         en_asr.beam_size = self.remote_asr_beam_spin.value()
-        en_asr.final_beam_size = max(3, en_asr.beam_size)
+        en_asr.final_beam_size = max(5, en_asr.beam_size)
         en_asr.condition_on_previous_text = self.remote_asr_condition_prev_check.isChecked()
         en_asr.final_condition_on_previous_text = False
         en_asr.temperature_fallback = self.asr_temperature_fallback_remote_edit.text().strip() or "0.0,0.2,0.4"
@@ -516,35 +504,31 @@ class LocalAiPage(QWidget):
     def _apply_optimized_defaults(self) -> None:
         self._suspend_notify = True
         try:
-            self.asr_model_combo.setText("FunASR (iic/SenseVoiceSmall)")
+            self.asr_model_combo.setText("faster-whisper (large-v3-turbo)")
             self.remote_asr_model_combo.setText("faster-whisper (large-v3-turbo)")
             self.asr_beam_spin.setValue(1)
             self.remote_asr_beam_spin.setValue(1)
             self.asr_partial_interval_spin.setValue(500)
-            self.remote_asr_partial_interval_spin.setValue(500)
+            self.remote_asr_partial_interval_spin.setValue(420)
             self.asr_partial_history_spin.setValue(2)
             self.remote_asr_partial_history_spin.setValue(2)
             self.asr_final_history_spin.setValue(12)
-            self.remote_asr_final_history_spin.setValue(12)
+            self.remote_asr_final_history_spin.setValue(10)
             self.asr_min_speech_spin.setValue(220)
-            self.remote_asr_min_speech_spin.setValue(220)
+            self.remote_asr_min_speech_spin.setValue(200)
             self.asr_min_silence_spin.setValue(900)
-            self.remote_asr_min_silence_spin.setValue(900)
+            self.remote_asr_min_silence_spin.setValue(760)
             self.asr_speech_pad_spin.setValue(520)
-            self.remote_asr_speech_pad_spin.setValue(520)
+            self.remote_asr_speech_pad_spin.setValue(420)
             self.asr_max_speech_spin.setValue(16)
             self.remote_asr_max_speech_spin.setValue(16)
             self.asr_condition_prev_check.setChecked(False)
             self.remote_asr_condition_prev_check.setChecked(False)
-            self.funasr_use_itn_check.setChecked(True)
-            self.funasr_online_mode_check.setChecked(False)
-            self.funasr_batch_size_s_offline_spin.setValue(0.0)
-            self.funasr_short_text_max_chars_spin.setValue(14)
-            self.funasr_min_speech_ratio_spin.setValue(0.08)
+            self.asr_temperature_fallback_local_edit.setText("0.0,0.2,0.4")
             self.asr_rms_threshold_spin.setValue(0.025)
-            self.remote_asr_rms_threshold_spin.setValue(0.025)
+            self.remote_asr_rms_threshold_spin.setValue(0.02)
             self.asr_no_speech_threshold_spin.setValue(0.3)
-            self.remote_asr_no_speech_threshold_spin.setValue(0.3)
+            self.remote_asr_no_speech_threshold_spin.setValue(0.35)
             self.asr_queue_local_spin.setValue(160)
             self.asr_queue_remote_spin.setValue(160)
 
@@ -607,11 +591,11 @@ class LocalAiPage(QWidget):
         self.quick_save_btn = QPushButton("儲存設定")
         self.show_advanced_check = QCheckBox("顯示進階設定")
         self.show_advanced_check.setChecked(False)
-        self.channel_strategy_label = QLabel("已內建高準確 + 低延遲；依語言自動路由：中文使用 FunASR、非中文使用 faster-whisper。")
+        self.channel_strategy_label = QLabel("已內建高準確 + 低延遲；中文與非中文都使用 faster-whisper，且參數可分開調整。")
         self.optimized_profile_label = QLabel("目前為低延遲優化預設，可再依你的設備與語速微調。")
         self.optimized_profile_label.setWordWrap(False)
         self.asr_routing_summary_label = QLabel(
-            "ASR 路由規則：中文 -> FunASR，非中文 -> faster-whisper。"
+            "ASR 路由規則：中文 -> faster-whisper（中文參數），非中文 -> faster-whisper（非中文參數）。"
         )
         self.asr_routing_summary_label.setWordWrap(True)
         self.asr_routing_summary_label.setStyleSheet("color: #b7bdc6;")
@@ -682,17 +666,17 @@ class LocalAiPage(QWidget):
         self._configure_combo_popup(self.asr_engine_combo)
         self.asr_engine_combo.setEnabled(False)
         self.asr_engine_combo.hide()
-        self.asr_engine_combo.setToolTip("ASR 引擎依語言固定路由：中文 FunASR、非中文 faster-whisper。")
+        self.asr_engine_combo.setToolTip("ASR 引擎統一使用 faster-whisper。")
 
-        self.asr_model_combo = QLabel("FunASR (iic/SenseVoiceSmall)")
+        self.asr_model_combo = QLabel("faster-whisper (large-v3-turbo)")
         self.asr_model_combo.setStyleSheet("color: #ffffff;")
         self.asr_model_combo.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.asr_model_combo.setToolTip("中文固定使用 FunASR。")
+        self.asr_model_combo.setToolTip("中文通道使用 faster-whisper。")
 
         self.remote_asr_model_combo = QLabel("faster-whisper (large-v3-turbo)")
         self.remote_asr_model_combo.setStyleSheet("color: #ffffff;")
         self.remote_asr_model_combo.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.remote_asr_model_combo.setToolTip("非中文固定使用 faster-whisper。")
+        self.remote_asr_model_combo.setToolTip("非中文通道使用 faster-whisper。")
 
 
         self.asr_device_combo = QComboBox()
@@ -713,20 +697,7 @@ class LocalAiPage(QWidget):
         self.remote_asr_beam_spin.setRange(1, 8)
         self.asr_condition_prev_check = QCheckBox("延續前文")
         self.remote_asr_condition_prev_check = QCheckBox("延續前文")
-        self.funasr_use_itn_check = QCheckBox("ITN")
-        self.funasr_online_mode_check = QCheckBox("Online")
-        self.funasr_batch_size_s_offline_spin = QDoubleSpinBox()
-        self.funasr_batch_size_s_offline_spin.setRange(0.0, 120.0)
-        self.funasr_batch_size_s_offline_spin.setSingleStep(5.0)
-        self.funasr_batch_size_s_offline_spin.setDecimals(1)
-        self.funasr_short_text_max_chars_spin = QSpinBox()
-        self.funasr_short_text_max_chars_spin.setRange(1, 80)
-        self.funasr_min_speech_ratio_spin = QDoubleSpinBox()
-        self.funasr_min_speech_ratio_spin.setRange(0.0, 1.0)
-        self.funasr_min_speech_ratio_spin.setSingleStep(0.01)
-        self.funasr_min_speech_ratio_spin.setDecimals(2)
-        self.asr_condition_prev_check.setEnabled(False)
-        self.asr_condition_prev_check.setChecked(False)
+        self.asr_condition_prev_check.setEnabled(True)
         self.asr_partial_interval_spin = QSpinBox()
         self.asr_partial_interval_spin.setRange(200, 5000)
         self.remote_asr_partial_interval_spin = QSpinBox()
@@ -774,8 +745,7 @@ class LocalAiPage(QWidget):
         self.remote_asr_no_speech_threshold_spin.setSingleStep(0.05)
         self.remote_asr_no_speech_threshold_spin.setDecimals(2)
         self.asr_temperature_fallback_local_edit = QLineEdit()
-        self.asr_temperature_fallback_local_edit.setText("N/A (FunASR)")
-        self.asr_temperature_fallback_local_edit.setReadOnly(True)
+        self.asr_temperature_fallback_local_edit.setPlaceholderText("0.0,0.2,0.4")
         self.asr_temperature_fallback_remote_edit = QLineEdit()
         self.asr_temperature_fallback_remote_edit.setPlaceholderText("0.0,0.2,0.4")
         self.asr_queue_local_spin = QSpinBox()
@@ -811,11 +781,6 @@ class LocalAiPage(QWidget):
             self.remote_asr_condition_prev_check,
             self.asr_vad_enabled,
             self.remote_asr_vad_enabled,
-            self.funasr_use_itn_check,
-            self.funasr_online_mode_check,
-            self.funasr_batch_size_s_offline_spin,
-            self.funasr_short_text_max_chars_spin,
-            self.funasr_min_speech_ratio_spin,
             self.asr_temperature_fallback_local_edit,
             self.asr_temperature_fallback_remote_edit,
         )
@@ -827,15 +792,11 @@ class LocalAiPage(QWidget):
         form.addRow("", self._build_dual_header_row("中文", "非中文"))
         form.addRow("模型", self._build_dual_field_row(self.asr_model_combo, self.remote_asr_model_combo))
         form.addRow("裝置/精度(共用)", asr_device_row)
-        form.addRow("FunASR 選項", self._build_dual_field_row(self._build_inline_row(self.funasr_use_itn_check, self.funasr_online_mode_check), self._na_label("-")))
-        form.addRow("FunASR Batch 秒", self._build_dual_field_row(self.funasr_batch_size_s_offline_spin, self._na_label("-")))
-        form.addRow("FunASR 短字上限", self._build_dual_field_row(self.funasr_short_text_max_chars_spin, self._na_label("-")))
-        form.addRow("FunASR 最低語音比", self._build_dual_field_row(self.funasr_min_speech_ratio_spin, self._na_label("-")))
-        form.addRow("溫度 fallback", self._build_dual_field_row(self._na_label("N/A (FunASR)"), self.asr_temperature_fallback_remote_edit))
+        form.addRow("溫度 fallback", self._build_dual_field_row(self.asr_temperature_fallback_local_edit, self.asr_temperature_fallback_remote_edit))
         form.addRow("ASR 佇列", self._build_dual_field_row(self.asr_queue_local_spin, self.asr_queue_remote_spin))
-        form.addRow("Beam 寬度", self._build_dual_field_row(self._na_label("N/A (FunASR)"), self.remote_asr_beam_spin))
+        form.addRow("Beam 寬度", self._build_dual_field_row(self.asr_beam_spin, self.remote_asr_beam_spin))
         en_cond_vad = self._build_inline_row(self.remote_asr_condition_prev_check, self.remote_asr_vad_enabled)
-        form.addRow("延續前文/VAD", self._build_dual_field_row(self._build_inline_row(self._na_label("N/A (FunASR)"), self.asr_vad_enabled), en_cond_vad))
+        form.addRow("延續前文/VAD", self._build_dual_field_row(self._build_inline_row(self.asr_condition_prev_check, self.asr_vad_enabled), en_cond_vad))
         form.addRow(
             "局部更新間隔(ms)",
             self._build_dual_field_row(self.asr_partial_interval_spin, self.remote_asr_partial_interval_spin),
@@ -846,7 +807,7 @@ class LocalAiPage(QWidget):
         form.addRow("最短靜音(ms)", self._build_dual_field_row(self.asr_min_silence_spin, self.remote_asr_min_silence_spin))
         form.addRow("語音補白(ms)", self._build_dual_field_row(self.asr_speech_pad_spin, self.remote_asr_speech_pad_spin))
         form.addRow("最長語音(s)", self._build_dual_field_row(self.asr_max_speech_spin, self.remote_asr_max_speech_spin))
-        form.addRow("No Speech 門檻", self._build_dual_field_row(self._na_label("N/A (FunASR)"), self.remote_asr_no_speech_threshold_spin))
+        form.addRow("No Speech 門檻", self._build_dual_field_row(self.asr_no_speech_threshold_spin, self.remote_asr_no_speech_threshold_spin))
         form.addRow("RMS 門檻", self._build_dual_field_row(self.asr_rms_threshold_spin, self.remote_asr_rms_threshold_spin))
 
         group = QGroupBox("語音辨識 ASR")
@@ -1311,8 +1272,6 @@ class LocalAiPage(QWidget):
             self.remote_asr_vad_enabled,
             self.asr_condition_prev_check,
             self.remote_asr_condition_prev_check,
-            self.funasr_use_itn_check,
-            self.funasr_online_mode_check,
             self.asr_temperature_fallback_local_edit,
             self.asr_temperature_fallback_remote_edit,
             self.asr_min_speech_spin,
@@ -1549,11 +1508,11 @@ class LocalAiPage(QWidget):
         compute_type = self._compute_type_for_device(requested_device)
         if requested_device == "cuda":
             return (
-                "ASR 路由：中文 -> FunASR，非中文 -> faster-whisper。"
+                "ASR 路由：中文 -> faster-whisper（中文參數），非中文 -> faster-whisper（非中文參數）。"
                 f" 目前設定裝置 CUDA，shared compute type={compute_type}；若不可用會自動回退 CPU。"
             )
         return (
-            "ASR 路由：中文 -> FunASR，非中文 -> faster-whisper。"
+            "ASR 路由：中文 -> faster-whisper（中文參數），非中文 -> faster-whisper（非中文參數）。"
             " 目前設定裝置 CPU；若要提升速度可改為 CUDA 並確認 CUDA 版 Torch 已正確安裝。"
         )
 

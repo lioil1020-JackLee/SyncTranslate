@@ -36,15 +36,15 @@ class AsrFactoryTests(unittest.TestCase):
         self.assertEqual(stats["remote"]["execution_mode"], "native_v2")
         self.assertEqual(stats["local"]["resolved_backend"], "faster_whisper_v2")
 
-    def test_factory_pipeline_spec_switches_to_funasr_for_explicit_chinese(self) -> None:
+    def test_factory_pipeline_spec_keeps_faster_whisper_for_explicit_chinese(self) -> None:
         cfg = AppConfig()
         cfg.runtime.asr_pipeline = "v2"
         cfg.runtime.local_asr_language = "zh-TW"
 
         manager = create_asr_manager(cfg, pipeline_revision=6)
 
-        self.assertEqual(manager.pipeline_spec.partial_backend.name, "funasr_v2:partial")
-        self.assertEqual(manager.pipeline_spec.endpointing.name, "fsmn_vad")
+        self.assertEqual(manager.pipeline_spec.partial_backend.name, "faster_whisper_v2:partial")
+        self.assertEqual(manager.pipeline_spec.endpointing.name, "silero_vad")
 
 
 if __name__ == "__main__":

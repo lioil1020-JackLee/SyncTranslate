@@ -95,7 +95,7 @@ PROFILES: dict[str, EndpointProfile] = {
         soft_endpoint_finalize_audio_ms=1800,
         speech_end_finalize_audio_ms=1500,
         pre_roll_ms=300,
-        preferred_vad_backend="fsmn_vad",
+        preferred_vad_backend="silero_vad",
         description="Conservative finalization in high-noise environments.",
     ),
     "max_accuracy": EndpointProfile(
@@ -106,7 +106,7 @@ PROFILES: dict[str, EndpointProfile] = {
         soft_endpoint_finalize_audio_ms=2200,
         speech_end_finalize_audio_ms=2000,
         pre_roll_ms=400,
-        preferred_vad_backend="fsmn_vad",
+        preferred_vad_backend="silero_vad",
         description="Maximize transcription accuracy at the cost of latency.",
     ),
     "low_latency": EndpointProfile(

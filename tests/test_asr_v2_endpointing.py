@@ -71,16 +71,7 @@ class AsrV2EndpointingTests(unittest.TestCase):
         self.assertTrue(snapshot["available"])
         self.assertGreaterEqual(float(snapshot["speech_probability"]), 0.9)
 
-    @patch("app.infra.asr.endpointing_v2._FunASRStreamingVad")
-    def test_funasr_vad_runtime_uses_boundary_events(self, mock_vad_cls) -> None:
-        backend = mock_vad_cls.return_value
-        backend.available = True
-        backend.detect.side_effect = [
-            [(0, -1)],
-            [],
-            [(-1, 640)],
-        ]
-
+    def test_legacy_fsmn_backend_alias_maps_to_silero(self) -> None:
         vad = VadSettings(
             backend="fsmn_vad",
             min_speech_duration_ms=80,
@@ -90,18 +81,8 @@ class AsrV2EndpointingTests(unittest.TestCase):
             rms_threshold=0.02,
         )
         runtime = build_endpointing_runtime("fsmn_vad", vad)
-        started = runtime.update(np.full((1600,), 0.05, dtype=np.float32), 16000)
-        active = runtime.update(np.full((1600,), 0.05, dtype=np.float32), 16000)
-        ended = runtime.update(np.zeros((1600,), dtype=np.float32), 16000)
-
-        self.assertTrue(started.speech_started)
-        self.assertTrue(active.speech_active)
-        self.assertTrue(ended.hard_endpoint)
         snapshot = runtime.snapshot()
-        self.assertTrue(snapshot["available"])
-        self.assertEqual(snapshot["backend"], "fsmn_vad")
-        self.assertGreaterEqual(int(snapshot["speech_started_count"]), 1)
-        self.assertGreaterEqual(int(snapshot["hard_endpoint_count"]), 1)
+        self.assertEqual(snapshot["backend"], "silero_vad")
 
     @patch("app.infra.asr.manager_v2.build_backend_pair")
     def test_manager_v2_reports_shadow_endpointing_stats(self, mock_build_backend_pair) -> None:

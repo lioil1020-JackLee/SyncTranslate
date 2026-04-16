@@ -15,7 +15,7 @@ def _site_packages_candidates(base: Path) -> list[Path]:
     # First priority: root runtimes/ (where external runtimes should be)
     # Fallback: _internal/runtimes/ (legacy location for compatibility)
     runtime_roots = [base / "runtimes", base / "_internal" / "runtimes"]
-    names = ("shared", "funasr", "faster_whisper")
+    names = ("shared", "faster_whisper")
     candidates: list[Path] = []
     for runtimes_root in runtime_roots:
         for name in names:
@@ -80,7 +80,7 @@ def configure_external_ai_runtime() -> dict[str, list[str]]:
             existing_site_packages.append(candidate)
 
     # _prepend_sys_path inserts at sys.path[0], so iterate in reverse to preserve
-    # declared priority order: shared -> funasr -> faster_whisper.
+    # declared priority order: shared -> faster_whisper.
     for candidate in reversed(existing_site_packages):
         _prepend_sys_path(candidate)
 

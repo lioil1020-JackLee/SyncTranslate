@@ -4,8 +4,8 @@
     entries:
       - pattern: "chat gpt"
         replace: "ChatGPT"
-      - pattern: "fun asr"
-        replace: "FunASR"
+      - pattern: "faster whisper"
+        replace: "faster-whisper"
         mode: exact
         case_sensitive: false
 """

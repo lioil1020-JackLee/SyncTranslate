@@ -23,7 +23,7 @@ dependencies = [
 synctranslate = "main:main"
 
 [project.optional-dependencies]
-# AI runtimes are managed externally under runtimes/{shared,funasr,faster_whisper}/
+# AI runtimes are managed externally under runtimes/{shared,faster_whisper}/
 # Use tools/runtime_setup/prepare_external_runtimes.ps1 to set them up.
 
 [dependency-groups]

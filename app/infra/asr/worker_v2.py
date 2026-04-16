@@ -108,8 +108,7 @@ class SourceRuntimeV2:
         self._in_segment = False
         self._force_final_queue_size = max(8, self._queue.maxsize // 4)
         self._force_final_audio_ms = 1800
-        final_backend_name = str(getattr(getattr(self._final_backend, "descriptor", None), "name", "")).lower()
-        self._prefer_conservative_finalize = "funasr_v2" in final_backend_name
+        self._prefer_conservative_finalize = False
         self._soft_endpoint_finalize_audio_ms = max(
             1500 if self._prefer_conservative_finalize else 900,
             self._min_partial_audio_ms,

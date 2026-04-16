@@ -496,11 +496,6 @@ class LiveCaptionPage(QWidget):
         normalized = (language or "").strip().lower().replace("_", "-")
         if normalized == "none":
             return "此通道已停用 ASR。"
-        if normalized in {"zh", "zh-tw", "zh-cn", "cmn", "yue"}:
-            return (
-                "此通道會使用 FunASR + FSMN-VAD。適合中文；若兩個通道都走中文且 effective device 為 CPU，"
-                "同時發話時仍可能因吞吐量不足而增加延遲。"
-            )
         if normalized == "auto":
             return "auto 目前固定走 faster-whisper。"
         return "此通道會使用 faster-whisper。"

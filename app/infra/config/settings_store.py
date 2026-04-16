@@ -11,6 +11,31 @@ from app.infra.config.schema import AppConfig
 
 
 
+def _normalize_asr_engine_name(value: object) -> str:
+    engine = str(value or "").strip().lower()
+    if engine == "funasr":
+        return "faster_whisper"
+    return engine
+
+
+def _normalize_vad_backend_name(value: object) -> str:
+    backend = str(value or "").strip().lower()
+    if backend in {"fsmn_vad", "fsmn-vad", "funasr_vad", "funasr"}:
+        return "silero_vad"
+    if backend in {"", "neural", "neural_endpoint"}:
+        return "silero_vad"
+    return backend
+
+
+def _normalize_asr_profile_legacy_fields(profile: dict[str, Any]) -> None:
+    profile["engine"] = _normalize_asr_engine_name(profile.get("engine") or "faster_whisper")
+    profile.pop("funasr_online_mode", None)
+    profile.pop("funasr", None)
+    vad = profile.get("vad")
+    if isinstance(vad, dict):
+        vad["backend"] = _normalize_vad_backend_name(vad.get("backend"))
+
+
 def _runtime_base_dirs() -> list[Path]:
     dirs: list[Path] = [Path.cwd()]
 
@@ -95,6 +120,9 @@ def save_config(config: AppConfig, config_path: str | Path = "config.yaml") -> P
 
 def _normalize_external_config_keys(raw: dict[str, Any]) -> dict[str, Any]:
     data = deepcopy(raw)
+    asr = data.get("asr")
+    if isinstance(asr, dict):
+        _normalize_asr_profile_legacy_fields(asr)
     language = data.get("language")
     if isinstance(language, dict):
         if "remote_translation_target" in language and "meeting_target" not in language:
@@ -109,6 +137,10 @@ def _normalize_external_config_keys(raw: dict[str, Any]) -> dict[str, Any]:
             asr_channels["local"] = asr_channels.get("chinese")
         if "english" in asr_channels and "remote" not in asr_channels:
             asr_channels["remote"] = asr_channels.get("english")
+        for key in ("local", "remote"):
+            profile = asr_channels.get(key)
+            if isinstance(profile, dict):
+                _normalize_asr_profile_legacy_fields(profile)
     llm_channels = data.get("llm_channels")
     if isinstance(llm_channels, dict):
         if "zh_to_en" in llm_channels and "local" not in llm_channels:
@@ -127,6 +159,8 @@ def _normalize_external_config_keys(raw: dict[str, Any]) -> dict[str, Any]:
         data["local_tts"] = data.get("english_tts")
     runtime = data.get("runtime")
     if isinstance(runtime, dict):
+        if str(runtime.get("asr_v2_backend", "")).strip().lower() == "funasr_v2":
+            runtime["asr_v2_backend"] = "faster_whisper_v2"
         mapping = {
             "asr_queue_maxsize_chinese": "asr_queue_maxsize_local",
             "asr_queue_maxsize_english": "asr_queue_maxsize_remote",
@@ -309,7 +343,6 @@ def migrate_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
     result["asr"]["final_condition_on_previous_text"] = bool(asr.get("final_condition_on_previous_text", True))
     result["asr"]["initial_prompt"] = str(asr.get("initial_prompt", result["asr"]["initial_prompt"]))
     result["asr"]["hotwords"] = str(asr.get("hotwords", result["asr"]["hotwords"]))
-    result["asr"]["funasr_online_mode"] = bool(asr.get("funasr_online_mode", result["asr"]["funasr_online_mode"]))
     result["asr"]["speculative_draft_model"] = str(
         asr.get("speculative_draft_model", result["asr"]["speculative_draft_model"])
     )
@@ -320,10 +353,10 @@ def migrate_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
     result["asr"]["no_speech_threshold"] = float(asr.get("no_speech_threshold", result["asr"]["no_speech_threshold"]))
     if isinstance(asr.get("vad"), dict):
         result["asr"]["vad"].update(asr["vad"])
+    result["asr"]["engine"] = _normalize_asr_engine_name(asr.get("engine") or result["asr"]["engine"])
+    result["asr"]["vad"]["backend"] = _normalize_vad_backend_name(result["asr"]["vad"].get("backend"))
     if isinstance(asr.get("streaming"), dict):
         result["asr"]["streaming"].update(asr["streaming"])
-    if isinstance(asr.get("funasr"), dict):
-        result["asr"]["funasr"].update(asr["funasr"])
     result["asr_channels"]["local"] = deepcopy(result["asr"])
     result["asr_channels"]["remote"] = deepcopy(result["asr"])
     for channel in ("local", "remote"):
@@ -335,7 +368,6 @@ def migrate_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
         )
         profile["initial_prompt"] = str(profile.get("initial_prompt", result["asr"]["initial_prompt"]))
         profile["hotwords"] = str(profile.get("hotwords", result["asr"]["hotwords"]))
-        profile["funasr_online_mode"] = bool(profile.get("funasr_online_mode", result["asr"]["funasr_online_mode"]))
         profile["speculative_draft_model"] = str(
             profile.get("speculative_draft_model", result["asr"]["speculative_draft_model"])
         )
@@ -344,8 +376,11 @@ def migrate_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
         )
         profile["no_speech_threshold"] = float(result["asr"]["no_speech_threshold"])
         profile["streaming"]["soft_final_audio_ms"] = int(result["asr"]["streaming"]["soft_final_audio_ms"])
-        if not isinstance(profile.get("funasr"), dict):
-            profile["funasr"] = deepcopy(result["asr"]["funasr"])
+        profile["engine"] = _normalize_asr_engine_name(profile.get("engine") or result["asr"]["engine"])
+        if isinstance(profile.get("vad"), dict):
+            profile["vad"]["backend"] = _normalize_vad_backend_name(profile["vad"].get("backend"))
+        profile.pop("funasr_online_mode", None)
+        profile.pop("funasr", None)
 
     llm = raw.get("llm") or {}
     result["llm"]["backend"] = "lm_studio"

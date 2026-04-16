@@ -1,4 +1,4 @@
-# ASR 重構藍圖
+﻿# ASR 重構藍圖
 
 ## 目前狀態
 
@@ -6,7 +6,7 @@ ASR 重構已進入第二階段：
 
 - `ASR v2` 已建立並成為主要路線
 - backend 已改成依通道語言自動路由
-- 中文鏈路已接入 `FunASR + FSMN-VAD`
+- 中文鏈路已接入 `faster-whisper + silero-vad`
 - 非中文與 `auto` 仍走 `faster-whisper`
 - lazy registry / runtime stats / diagnostics 已落地
 
@@ -35,7 +35,7 @@ ASR 重構已進入第二階段：
 
 規則：
 
-- 中文 -> `funasr_v2`
+- 中文 -> `faster_whisper_v2`
 - 非中文 / `auto` -> `faster_whisper_v2`
 - `none` -> disabled
 
@@ -43,8 +43,8 @@ ASR 重構已進入第二階段：
 
 已完成：
 
-- `FunASR` backend
-- `FSMN-VAD`
+- `faster-whisper` backend
+- `silero-vad`
 - lazy registry
 - device fallback
 - runtime stats 暴露
@@ -99,8 +99,8 @@ ASR 重構已進入第二階段：
 - `streaming_profile_local` / `streaming_profile_remote`
 - `degradation_policy_enabled`
 
-**FunASR 專屬參數化**
-- 從共用 ASR 欄位拆出 `funasr.*` 子區塊
+**faster-whisper 專屬參數化**
+- 從共用 ASR 欄位拆出 `faster-whisper.*` 子區塊
 - `use_itn`、`batch_size_s_offline`、`batch_size_s_online`、`online_encoder_chunk_look_back`、`online_decoder_chunk_look_back`
 
 ## 尚未完成
@@ -172,18 +172,20 @@ ASR 重構已進入第二階段：
 重構方向已經定下來：
 
 - `ASR v2` 是主線
-- 中文用 FunASR
+- 中文用 faster-whisper
 - 非中文用 faster-whisper
 - UI、diagnostics、config 都以這個模型為準
 
 接下來的工作重點，不再是「要不要重構」，而是「把 v2 驗收穩、把 legacy 刪乾淨」。
 
-## FunASR 專屬參數化（2026-04-16）
+## faster-whisper 專屬參數化（2026-04-16）
 
-已將 FunASR 從共用 ASR 欄位拆出專屬參數：
+已將 faster-whisper 從共用 ASR 欄位拆出專屬參數：
 - 辨識推論：`use_itn`、`batch_size_s_offline`、`batch_size_s_online`
 - online 模式：`online_chunk_size`、`online_encoder_chunk_look_back`、`online_decoder_chunk_look_back`
 - 後處理抑制：`suppress_low_confidence_short`、`short_text_max_chars`、`min_speech_ratio_for_short_text`、`low_peak_threshold`
 - benchmark：`benchmark_window_ms`、`benchmark_overlap_ms`
 
-並新增 `tools/asr_benchmark/tune_funasr.py` 進行中文調參回圈，輸出最佳候選與完整排序結果 JSON。
+並新增 `tools/asr_benchmark/run_benchmark.py` 進行中文調參回圈，輸出最佳候選與完整排序結果 JSON。
+
+
