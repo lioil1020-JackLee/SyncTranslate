@@ -224,10 +224,12 @@ def _present_external_config_keys(raw: dict[str, Any]) -> dict[str, Any]:
         data.pop("direction", None)
     language = data.get("language")
     if isinstance(language, dict):
-        language["remote_translation_target"] = language.pop("meeting_target", language.get("remote_translation_target", "zh-TW"))
-        language["local_translation_target"] = language.pop("local_target", language.get("local_translation_target", "en"))
-        language.pop("meeting_source", None)
-        language.pop("local_source", None)
+        language["meeting_source"] = str(language.get("meeting_source") or "en")
+        language["meeting_target"] = str(language.get("meeting_target") or language.get("remote_translation_target") or "zh-TW")
+        language["local_source"] = str(language.get("local_source") or "zh-TW")
+        language["local_target"] = str(language.get("local_target") or language.get("local_translation_target") or "en")
+        language.pop("remote_translation_target", None)
+        language.pop("local_translation_target", None)
     if "asr_channels" in data:
         data.pop("asr", None)
     if "llm_channels" in data:
@@ -402,7 +404,7 @@ def migrate_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
     if isinstance(llm.get("sliding_window"), dict):
         result["llm"]["sliding_window"].update(llm["sliding_window"])
     if isinstance(llm.get("profiles"), dict):
-        for key in ("live_caption_fast", "live_caption_stable", "speech_output_natural", "technical_meeting"):
+        for key in ("live_caption_fast", "dialogue_fast", "live_caption_stable", "speech_output_natural", "technical_meeting"):
             profile_raw = (llm.get("profiles") or {}).get(key)
             if isinstance(profile_raw, dict):
                 result["llm"]["profiles"][key].update(profile_raw)

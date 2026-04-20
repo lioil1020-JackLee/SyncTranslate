@@ -17,6 +17,7 @@ from app.infra.asr.endpoint_profiles import (
     get_endpoint_profile,
     list_profiles,
 )
+from app.infra.asr.worker_v2 import _scaled_finalize_thresholds
 
 
 # ---------------------------------------------------------------------------
@@ -250,7 +251,7 @@ class TestStreamingPolicyDegradation:
 
 class TestEndpointProfiles:
     def test_all_builtin_profiles_exist(self):
-        for name in ["default", "meeting_room", "headset", "noisy_environment", "max_accuracy", "low_latency"]:
+        for name in ["default", "meeting_room", "headset", "noisy_environment", "max_accuracy", "low_latency", "turn_taking"]:
             p = get_endpoint_profile(name)
             assert p.name == name
 
@@ -282,7 +283,34 @@ class TestEndpointProfiles:
         assert low.partial_interval_ms < acc.partial_interval_ms
         assert low.soft_final_audio_ms < acc.soft_final_audio_ms
 
+    def test_turn_taking_is_more_aggressive_than_default(self):
+        turn = get_endpoint_profile("turn_taking")
+        default = get_endpoint_profile("default")
+        assert turn.partial_interval_ms <= default.partial_interval_ms
+        assert turn.soft_final_audio_ms < default.soft_final_audio_ms
+
     def test_noisy_longer_thresholds(self):
         noisy = get_endpoint_profile("noisy_environment")
         default = get_endpoint_profile("default")
         assert noisy.soft_final_audio_ms > default.soft_final_audio_ms
+
+
+class TestWorkerFinalizeThresholds:
+    def test_thresholds_scale_with_soft_final_window(self):
+        soft_ms, speech_end_ms = _scaled_finalize_thresholds(
+            soft_final_audio_ms=6000,
+            min_partial_audio_ms=1000,
+            force_final_audio_ms=1800,
+        )
+        assert soft_ms == 3900
+        assert speech_end_ms == 3300
+
+    def test_thresholds_respect_force_final_floor(self):
+        soft_ms, speech_end_ms = _scaled_finalize_thresholds(
+            soft_final_audio_ms=2000,
+            min_partial_audio_ms=300,
+            force_final_audio_ms=1800,
+        )
+        assert soft_ms == 1800
+        assert speech_end_ms == 1100
+        assert speech_end_ms <= soft_ms

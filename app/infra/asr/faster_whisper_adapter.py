@@ -1,11 +1,76 @@
 from __future__ import annotations
 
 import io
+import re
 from threading import Lock
 import wave
 from dataclasses import dataclass, field
 
 import numpy as np
+
+# ---------------------------------------------------------------------------
+# Hallucination filter
+# Whisper frequently outputs these patterns when processing music, silence, or
+# low-energy audio that should have been rejected by VAD.  These patterns are
+# safe to filter for conversational CJK audio; they do not occur in real speech.
+# ---------------------------------------------------------------------------
+
+_HALLUC_CREDIT_RE = re.compile(
+    r"(?:"
+    # Music / song credit keywords (作詞・作曲・編曲 / 詞曲 / 词曲 etc.)
+    r"作[詞词]|[詞词]曲|作曲|編[曲曲]|编曲"
+    # Subtitle volunteer credit
+    r"|字幕志[愿願]者"
+    # Subtitle provision credits (e.g. "下集中文字幕提供", "字幕提供")
+    r"|[上下集集]中文字幕|字幕提供"
+    # YouTube/social CTA prompts
+    r"|请不吝点赞|點贊.*?訂閱|订阅.*?转发"
+    # Japanese anime/vocaloid credit patterns
+    r"|初音ミク"
+    r")",
+    re.IGNORECASE,
+)
+
+# Pure ASCII short outputs from noise/silence segments (e.g. "TUK", "MBC", "OK")
+_HALLUC_ASCII_NOISE_RE = re.compile(r"^[A-Za-z0-9\s\.\!\?\-]{1,7}$")
+
+# Non-CJK Latin-script sentence: any length, used to catch foreign-language hallucinations
+# on Chinese ASR (e.g. Icelandic, English phrases on silence segments)
+_HALLUC_LATIN_SENTENCE_RE = re.compile(
+    r"^[A-Za-zÀ-ÖØ-öø-ÿ0-9\s\.\,\!\?\-\'\"\:\;\(\)]{8,}$"
+)
+
+_PUNCT_SET = frozenset("。，、！？…—「」『』【】《》〈〉·～：；""''()（）\u3000 　\t\n\r.!?,;:-–")
+
+
+def _is_hallucination(text: str) -> bool:
+    """Return True if *text* looks like a Whisper hallucination and should be suppressed."""
+    stripped = text.strip()
+    if not stripped:
+        return False
+    # Credit / attribution lines are safe to suppress when short (≤ 20 chars);
+    # in legitimate conversational speech, such keywords appear inside longer sentences.
+    if _HALLUC_CREDIT_RE.search(stripped) and len(stripped) <= 20:
+        return True
+    # Count CJK characters (Chinese / Japanese kana / kanji)
+    cjk_count = sum(1 for c in stripped if "\u4e00" <= c <= "\u9fff" or "\u3040" <= c <= "\u30ff")
+    # Very short pure-ASCII output from non-speech audio (no CJK characters)
+    if cjk_count == 0 and _HALLUC_ASCII_NOISE_RE.match(stripped):
+        return True
+    # Longer Latin-only text with no CJK: foreign-language hallucination on Chinese ASR
+    # (e.g. Icelandic/English phrases generated on silence between segments)
+    if cjk_count == 0 and _HALLUC_LATIN_SENTENCE_RE.match(stripped):
+        return True
+    # Pure punctuation / whitespace — no actual content at all (e.g. "。", "、", "…")
+    content_chars = [c for c in stripped if c not in _PUNCT_SET]
+    if not content_chars:
+        return True
+    # Repeated identical short clause (e.g. "好。好。" → hallucination on trailing silence)
+    if len(stripped) <= 10 and len(stripped) >= 2:
+        half = len(stripped) // 2
+        if stripped[:half] == stripped[half : half * 2]:
+            return True
+    return False
 
 
 _MODEL_CACHE_LOCK = Lock()
@@ -28,6 +93,7 @@ class FasterWhisperEngine:
     temperature_fallback: str = "0.0,0.2,0.4"
     no_speech_threshold: float = 0.55
     language: str = ""
+    hallucination_filter: bool = True
     _model: object | None = field(default=None, init=False, repr=False)
     _runtime_device: str | None = field(default=None, init=False, repr=False)
     _runtime_compute_type: str | None = field(default=None, init=False, repr=False)
@@ -73,8 +139,11 @@ class FasterWhisperEngine:
             beam_size=max(1, int(self.final_beam_size)),
             condition_on_previous_text=bool(self.final_condition_on_previous_text),
         )
+        text = result.text.strip()
+        if self.hallucination_filter and _is_hallucination(text):
+            text = ""
         return TranscribeResult(
-            text=result.text.strip(),
+            text=text,
             detected_language=_normalize_lang(result.detected_language or self.language),
         )
 
@@ -99,6 +168,10 @@ class FasterWhisperEngine:
         return f"{device}{suffix}"
 
     def push_context(self, text: str) -> None:
+        # Respect explicit decoding settings: do not feed previous transcript
+        # back as prompt unless previous-text conditioning is enabled.
+        if not (self.condition_on_previous_text or self.final_condition_on_previous_text):
+            return
         stripped = str(text or "").strip()
         if not stripped:
             return
@@ -111,7 +184,9 @@ class FasterWhisperEngine:
         base_prompt = self.initial_prompt.strip()
         if base_prompt:
             parts.append(base_prompt)
-        if self._context_window:
+        # Keep optional base prompt, but only append rolling context when
+        # previous-text conditioning is enabled by config.
+        if self._context_window and (self.condition_on_previous_text or self.final_condition_on_previous_text):
             parts.append(" ".join(self._context_window))
         return " ".join(parts).strip()
 
@@ -131,6 +206,7 @@ class FasterWhisperEngine:
             kwargs: dict[str, object] = {
                 "beam_size": max(1, int(beam_size)),
                 "condition_on_previous_text": bool(condition_on_previous_text),
+                "task": "transcribe",
                 "vad_filter": vad_filter,
                 "temperature": _parse_temperature_fallback(self.temperature_fallback),
                 "no_speech_threshold": max(0.0, min(1.0, float(self.no_speech_threshold))),

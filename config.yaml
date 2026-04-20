@@ -1,4 +1,4 @@
-﻿audio:
+audio:
   meeting_in: Windows WASAPI::Voicemeeter Out B1 (VB-Audio Voicemeeter VAIO)
   microphone_in: Windows WASAPI::Voicemeeter Out B2 (VB-Audio Voicemeeter VAIO)
   speaker_out: Windows WASAPI::Voicemeeter In 1 (VB-Audio Voicemeeter VAIO)
@@ -8,8 +8,10 @@
   speaker_out_volume: 0.2
   meeting_out_volume: 1.0
 language:
-  remote_translation_target: zh-TW
-  local_translation_target: en
+  meeting_source: en
+  meeting_target: zh-TW
+  local_source: zh-TW
+  local_target: en
 asr_channels:
   local:
     engine: faster_whisper
@@ -17,29 +19,31 @@ asr_channels:
     device: cuda
     compute_type: float16
     beam_size: 1
-    final_beam_size: 4
+    final_beam_size: 10
     condition_on_previous_text: false
     final_condition_on_previous_text: false
-    initial_prompt: ''
+    initial_prompt: 以下是繁體中文口語敘事逐字稿。
     hotwords: ''
     speculative_draft_model: ''
     speculative_num_beams: 1
-    temperature_fallback: 0.0,0.2,0.4
-    no_speech_threshold: 0.3
+    temperature_fallback: '0.0'
+    no_speech_threshold: 0.6
+    hallucination_filter: true
     vad:
       enabled: true
       backend: silero_vad
       min_speech_duration_ms: 220
-      min_silence_duration_ms: 900
+      min_silence_duration_ms: 1000
       max_speech_duration_s: 24.0
-      speech_pad_ms: 520
+      speech_pad_ms: 2000
       rms_threshold: 0.025
-      neural_threshold: 0.5
+      neural_threshold: 0.55
+      startup_suppress_ms: 3000
     streaming:
       partial_interval_ms: 500
       partial_history_seconds: 2
-      final_history_seconds: 12
-      soft_final_audio_ms: 4000
+      final_history_seconds: 20
+      soft_final_audio_ms: 10500
   remote:
     engine: faster_whisper
     model: large-v3-turbo
@@ -55,20 +59,22 @@ asr_channels:
     speculative_num_beams: 1
     temperature_fallback: 0.0,0.2,0.4
     no_speech_threshold: 0.35
+    hallucination_filter: true
     vad:
       enabled: true
       backend: silero_vad
       min_speech_duration_ms: 200
-      min_silence_duration_ms: 760
+      min_silence_duration_ms: 600
       max_speech_duration_s: 24.0
       speech_pad_ms: 420
       rms_threshold: 0.02
-      neural_threshold: 0.5
+      neural_threshold: 0.3
+      startup_suppress_ms: 0
     streaming:
       partial_interval_ms: 420
       partial_history_seconds: 2
       final_history_seconds: 10
-      soft_final_audio_ms: 4000
+      soft_final_audio_ms: 3000
 llm_channels:
   local:
     backend: lm_studio
@@ -91,6 +97,15 @@ llm_channels:
         context_items: 4
         partial_trigger_tokens: 16
         max_tokens: 192
+        preserve_terms: true
+        naturalize_tone: false
+        allow_subject_completion: false
+      dialogue_fast:
+        name: live_caption_fast
+        prompt_style: literal
+        context_items: 4
+        partial_trigger_tokens: 18
+        max_tokens: 256
         preserve_terms: true
         naturalize_tone: false
         allow_subject_completion: false
@@ -147,6 +162,15 @@ llm_channels:
         preserve_terms: true
         naturalize_tone: false
         allow_subject_completion: false
+      dialogue_fast:
+        name: live_caption_fast
+        prompt_style: literal
+        context_items: 4
+        partial_trigger_tokens: 18
+        max_tokens: 256
+        preserve_terms: true
+        naturalize_tone: false
+        allow_subject_completion: false
       live_caption_stable:
         name: live_caption_stable
         prompt_style: stable
@@ -198,9 +222,9 @@ runtime:
   asr_v2_endpointing: neural_endpoint
   sample_rate: 48000
   chunk_ms: 40
-  adaptive_asr_enabled: true
+  adaptive_asr_enabled: false
   adaptive_llm_enabled: true
-  asr_pre_roll_ms: 520
+  asr_pre_roll_ms: 1200
   latency_mode: low_latency
   display_partial_strategy: stable_only
   stable_partial_min_repeats: 2
@@ -232,7 +256,7 @@ runtime:
   asr_frontend_max_gain: 3.0
   asr_frontend_highpass_alpha: 0.96
   asr_enhancement_enabled: true
-  asr_enhancement_noise_reduce_strength: 0.42
+  asr_enhancement_noise_reduce_strength: 0.75
   asr_enhancement_noise_adapt_rate: 0.18
   asr_enhancement_music_suppress_strength: 0.2
   asr_hotwords_enabled: false
@@ -259,20 +283,16 @@ runtime:
   local_tts_voice: none
   remote_tts_enabled: false
   local_tts_enabled: false
-  # --- ASR 後處理 / Glossary ---
-  enable_postprocessor: true
-  enable_partial_stabilization: true
   glossary_enabled: false
   glossary_path: ''
   glossary_apply_on_partial: false
   glossary_apply_on_final: true
-  # --- Structured logging ---
+  enable_postprocessor: true
+  enable_partial_stabilization: true
   enable_structured_logging: true
   runtime_log_format: jsonl
-  # --- ASR endpoint profiles ---
   asr_profile_local: default
   asr_profile_remote: default
   streaming_profile_local: default
   streaming_profile_remote: default
-  # --- Streaming degradation policy ---
   degradation_policy_enabled: true

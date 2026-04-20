@@ -237,6 +237,38 @@ class TranslatorManagerProfileTests(unittest.TestCase):
         self.assertEqual(len(providers[0].calls), 1)
 
     @patch("app.infra.translation.engine.create_translation_provider")
+    def test_dialogue_fast_profile_routes_to_provider(self, mock_factory) -> None:
+        providers = [_FakeProvider(), _FakeProvider()]
+        mock_factory.side_effect = providers
+
+        config = AppConfig()
+        config.llm.caption_profile = "dialogue_fast"
+        config.llm_channels.local.caption_profile = "dialogue_fast"
+        config.language.local_target = "en"
+
+        manager = TranslatorManager(config)
+        event = ASREventWithSource(
+            source="local",
+            utterance_id="u-dialog",
+            revision=1,
+            pipeline_revision=1,
+            config_fingerprint="fp",
+            created_at=0.0,
+            text="等等",
+            is_final=True,
+            is_early_final=False,
+            start_ms=0,
+            end_ms=800,
+            latency_ms=40,
+            detected_language="zh-TW",
+        )
+
+        translated = manager.process(event)
+
+        self.assertIsNotNone(translated)
+        self.assertEqual(providers[0].calls[-1][3], "dialogue_fast")
+
+    @patch("app.infra.translation.engine.create_translation_provider")
     def test_last_skip_reason_includes_provider_debug_when_translation_is_empty(self, mock_factory) -> None:
         providers = [_EmptyProvider(), _EmptyProvider()]
         mock_factory.side_effect = providers

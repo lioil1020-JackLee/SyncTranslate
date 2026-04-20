@@ -96,6 +96,15 @@ llm_channels:
         preserve_terms: true
         naturalize_tone: false
         allow_subject_completion: false
+      dialogue_fast:
+        name: dialogue_fast
+        prompt_style: literal
+        context_items: 2
+        partial_trigger_tokens: 10
+        max_tokens: 128
+        preserve_terms: true
+        naturalize_tone: false
+        allow_subject_completion: false
       live_caption_stable:
         name: live_caption_stable
         prompt_style: stable
@@ -146,6 +155,15 @@ llm_channels:
         context_items: 4
         partial_trigger_tokens: 16
         max_tokens: 192
+        preserve_terms: true
+        naturalize_tone: false
+        allow_subject_completion: false
+      dialogue_fast:
+        name: dialogue_fast
+        prompt_style: literal
+        context_items: 2
+        partial_trigger_tokens: 10
+        max_tokens: 128
         preserve_terms: true
         naturalize_tone: false
         allow_subject_completion: false

@@ -1,6 +1,7 @@
 """Download Chinese (zh-TW) YouTube auto-subtitles and audio.
 
-Video: https://www.youtube.com/watch?v=4K6tuF-O9t0
+Video: https://www.youtube.com/watch?v=wceoWwf7lBw
+  6則便利商店遇到的可怕怪談鬼故事 | 怪談先生-睡前恐怖故事 Mr.Kaidan
 
 Usage
 -----
@@ -15,7 +16,7 @@ from pathlib import Path
 import imageio_ffmpeg  # bundled ffmpeg — no system install needed
 
 
-YOUTUBE_URL = "https://www.youtube.com/watch?v=4K6tuF-O9t0"
+YOUTUBE_URL = "https://www.youtube.com/watch?v=wceoWwf7lBw"
 OUTPUT_DIR = Path("downloads/chinese_srt")
 FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
 

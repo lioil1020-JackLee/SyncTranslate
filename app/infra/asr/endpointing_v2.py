@@ -45,6 +45,8 @@ class EndpointingRuntime:
         self._hard_endpoint_count = 0
         self._last_probability = 0.0
         self._last_rms = 0.0
+        self._elapsed_ms = 0.0
+        self._startup_suppress_ms = max(0.0, float(getattr(config, "startup_suppress_ms", 0)))
         self._neural_vad = (
             _SileroStreamingVad(threshold=float(getattr(config, "neural_threshold", 0.5)))
             if self._backend in {"silero", "silero_vad", "neural", "neural_endpoint"}
@@ -57,6 +59,7 @@ class EndpointingRuntime:
         self._pause_ms = 0.0
         self._speech_hold_ms = 0.0
         self._speech_active = False
+        self._elapsed_ms = 0.0
         self._last_probability = 0.0
         self._last_rms = 0.0
         if self._neural_vad is not None:
@@ -72,6 +75,7 @@ class EndpointingRuntime:
 
         rms = float(np.sqrt(np.mean(np.square(mono)))) if mono.size else 0.0
         probability = self._speech_probability(mono=mono, sample_rate=sample_rate, rms=rms)
+        self._elapsed_ms += chunk_ms
         return self._update_with_probability(probability=probability, chunk_ms=chunk_ms, rms=rms)
 
     def _update_with_probability(self, *, probability: float, chunk_ms: float, rms: float) -> EndpointSignal:
@@ -95,6 +99,16 @@ class EndpointingRuntime:
                 self._speech_active = True
                 speech_started = True
                 self._speech_started_count += 1
+                # Startup suppression: if we are still within the initial
+                # mute window, cancel the speech_started / speech_active
+                # transition so that music/credits at the beginning of a
+                # stream are not forwarded to the transcriber.
+                if self._startup_suppress_ms > 0 and self._elapsed_ms <= self._startup_suppress_ms:
+                    self._speech_active = False
+                    self._speech_ms = 0.0
+                    self._speech_hold_ms = 0.0
+                    speech_started = False
+                    self._speech_started_count -= 1
         else:
             self._silence_ms += chunk_ms
             if self._speech_active:

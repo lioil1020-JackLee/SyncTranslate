@@ -285,10 +285,12 @@ class ConfigMigrationTests(unittest.TestCase):
         tts_channels = payload.get("tts_channels", {})
         runtime = payload.get("runtime", {})
 
-        self.assertNotIn("meeting_source", language)
-        self.assertNotIn("local_source", language)
-        self.assertIn("remote_translation_target", language)
-        self.assertIn("local_translation_target", language)
+        self.assertIn("meeting_source", language)
+        self.assertIn("meeting_target", language)
+        self.assertIn("local_source", language)
+        self.assertIn("local_target", language)
+        self.assertNotIn("remote_translation_target", language)
+        self.assertNotIn("local_translation_target", language)
 
         self.assertIn("local", asr_channels)
         self.assertIn("remote", asr_channels)
@@ -408,8 +410,10 @@ class ConfigMigrationTests(unittest.TestCase):
                 "audio": {},
                 "direction": {"mode": "bidirectional"},
                 "language": {
-                    "remote_translation_target": "de",
-                    "local_translation_target": "it",
+                    "meeting_source": "en",
+                    "meeting_target": "de",
+                    "local_source": "zh-TW",
+                    "local_target": "it",
                 },
                 "asr": {},
                 "llm": {},

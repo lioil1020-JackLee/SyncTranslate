@@ -52,6 +52,23 @@ class TestTextNormalization:
         result = self.pp.process_final("local", "hello world", language="en")
         assert result == "hello world"
 
+    def test_runaway_repetition_is_collapsed_for_chinese_final(self):
+        noisy = "火柴又熄滅了火柴又熄滅了火柴又熄滅了火柴又熄滅了"
+        result = self.pp.process_final("local", noisy, language="zh-TW")
+        assert result.count("火柴又熄滅了") == 1
+
+    def test_single_char_runaway_is_collapsed_for_chinese_final(self):
+        # FINAL #29 類型：「燃 燃 燃 燃 燃 燃 燃 燃...」（單字+空格 ≥6 次）
+        noisy = "當小女孩點燃 燃 燃 燃 燃 燃 燃 燃 燃 燃 燃 燃 燃 燃 燃 燃 燃 燃 燃 燃"
+        result = self.pp.process_final("local", noisy, language="zh-TW")
+        # 應被壓縮，"燃 " 不應超過 2 次
+        assert result.count("燃") <= 4
+
+    def test_runaway_repetition_is_collapsed_for_english_final(self):
+        noisy = "the fire went out the fire went out the fire went out the fire went out"
+        result = self.pp.process_final("local", noisy, language="en")
+        assert result.lower().count("the fire went out") == 1
+
 
 class TestPartialStabilization:
     def setup_method(self):
@@ -111,6 +128,16 @@ class TestPartialStabilization:
         # Final 完全不同，不是 last partial 的尾綴
         result = self.pp.process_final("local", "zebra xylophone", utterance_id="u9")
         assert result == "zebra xylophone"
+
+    def test_short_cross_final_suffix_repeat_is_suppressed(self):
+        self.pp.process_final("local", "我抬頭望向玻璃外面, 發現有個老頭一直盯著我看。", utterance_id="u10")
+        result = self.pp.process_final("local", "一直盯著我看。", utterance_id="u11")
+        assert result == ""
+
+    def test_short_final_not_suppressed_when_not_suffix_repeat(self):
+        self.pp.process_final("local", "我真的有點害怕。", utterance_id="u12")
+        result = self.pp.process_final("local", "對呀。", utterance_id="u13")
+        assert result == "對呀。"
 
 
 class TestGlossaryIntegration:

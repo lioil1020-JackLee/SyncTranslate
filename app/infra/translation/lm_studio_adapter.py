@@ -53,9 +53,15 @@ class LmStudioClient:
         source_label = _language_label(source_lang)
         target_label = _language_label(target_lang)
         style_hint = _profile_hint(profile)
+        _trad_chinese_note = (
+            "IMPORTANT: The target language is Traditional Chinese (繁體中文). "
+            "You MUST use Traditional Chinese characters only. "
+            "Never use Simplified Chinese characters (簡體字) under any circumstances.\n"
+        ) if "traditional chinese" in target_label.lower() else ""
         system_prompt = (
             "You are a real-time interpretation engine.\n"
             f"Translate only from {source_label} to {target_label}.\n"
+            f"{_trad_chinese_note}"
             f"Return JSON only in this exact format: {{\"translation\":\"...\"}} where the value is only {target_label}.\n"
             "Do not output any other keys.\n"
             "Do not explain, analyze, answer, summarize, add notes, add bullet points, use markdown, or show thinking process.\n"

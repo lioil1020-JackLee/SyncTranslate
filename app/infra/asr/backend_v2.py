@@ -217,6 +217,7 @@ def _build_engine(profile: AsrConfig, *, language: str) -> FasterWhisperEngine:
         speculative_num_beams=profile.speculative_num_beams,
         temperature_fallback=profile.temperature_fallback,
         no_speech_threshold=profile.no_speech_threshold,
+        hallucination_filter=bool(getattr(profile, "hallucination_filter", True)),
         language=language,
     )
 

@@ -59,6 +59,8 @@ class TranscriptPostProcessor:
         self._last_partial: dict[str, str] = {}
         # {channel_key: last_displayed_partial_text}（stabilize 後實際顯示的文字，用於 final 前綴回收）
         self._last_displayed_partial: dict[str, str] = {}
+        # {source: last_final_text}（用於抑制跨 utterance 的短尾句重覆）
+        self._last_final: dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -117,8 +119,17 @@ class TranscriptPostProcessor:
         if last_displayed and self._partial_stabilization_enabled:
             normalized = self._recover_final_prefix(last_displayed, normalized)
 
+        # 壓縮連續重複片段，避免長段落出現 runaway hallucination 迴圈。
+        normalized = _suppress_runaway_repetition(normalized, language=language)
+
+        # 若新的 final 只是前一個 final 的短尾句重覆，直接抑制。
+        normalized = self._suppress_short_cross_final_repeat(source, normalized)
+
         if self._glossary and self._glossary_apply_on_final:
             normalized = self._glossary.apply(normalized, conservative=False)
+
+        if normalized:
+            self._last_final[source] = normalized
 
         return normalized
 
@@ -137,6 +148,7 @@ class TranscriptPostProcessor:
         to_del = [k for k in self._last_displayed_partial if k.startswith(prefix)]
         for k in to_del:
             del self._last_displayed_partial[k]
+        self._last_final.pop(source, None)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -216,6 +228,22 @@ class TranscriptPostProcessor:
 
         return text
 
+    def _suppress_short_cross_final_repeat(self, source: str, text: str) -> str:
+        prev = self._last_final.get(source, "").strip()
+        current = str(text or "").strip()
+        if not prev or not current:
+            return current
+
+        current_compact = re.sub(r"\s+", "", current)
+        prev_compact = re.sub(r"\s+", "", prev)
+        if not current_compact or len(current_compact) > 12:
+            return current
+
+        tail_window = prev_compact[-max(len(current_compact) * 2, len(current_compact) + 6):]
+        if prev_compact.endswith(current_compact) or current_compact in tail_window:
+            return ""
+        return current
+
     @staticmethod
     def _normalize(text: str, *, language: str = "") -> str:
         """基礎文字正規化。"""
@@ -279,6 +307,93 @@ _PUNCT_SPACE_RE = re.compile(r"([.!?,;:])([A-Za-z\u4e00-\u9fff])")
 def _normalize_punctuation(text: str, *, language: str = "") -> str:
     """在英文標點後缺少空格時補上空格（中文標點不變動）。"""
     return _PUNCT_SPACE_RE.sub(r"\1 \2", text)
+
+
+def _suppress_runaway_repetition(text: str, *, language: str = "") -> str:
+    """壓縮連續重複 n-gram，抑制 final 的爆詞迴圈。"""
+    if not text or len(text) < 12:
+        return text
+
+    normalized_language = str(language or "").strip().lower().replace("_", "-")
+    is_cjk = normalized_language in {"zh", "zh-tw", "zh-cn", "cmn", "cmn-hans", "cmn-hant", "yue"}
+
+    if not is_cjk and " " in text:
+        collapsed = _collapse_repeated_word_ngrams(text, max_ngram_words=8, min_repeats=3)
+        collapsed = _collapse_repeated_char_ngrams(collapsed, min_ngram_chars=4, max_ngram_chars=24, min_repeats=3)
+        return collapsed
+
+    # CJK: 先處理短迴圈（n=1~3，需 6 次以上），再處理長片語（n=4~24，3 次以上）
+    collapsed = _collapse_repeated_char_ngrams(text, min_ngram_chars=1, max_ngram_chars=3, min_repeats=6)
+    collapsed = _collapse_repeated_char_ngrams(collapsed, min_ngram_chars=4, max_ngram_chars=24, min_repeats=3)
+    return collapsed
+
+
+def _collapse_repeated_char_ngrams(
+    text: str,
+    *,
+    min_ngram_chars: int,
+    max_ngram_chars: int,
+    min_repeats: int,
+) -> str:
+    if len(text) < min_ngram_chars * min_repeats:
+        return text
+
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        matched = False
+        max_len = min(max_ngram_chars, (n - i) // min_repeats)
+        for gram_len in range(max_len, min_ngram_chars - 1, -1):
+            gram = text[i:i + gram_len]
+            repeats = 1
+            j = i + gram_len
+            while j + gram_len <= n and text[j:j + gram_len] == gram:
+                repeats += 1
+                j += gram_len
+            if repeats >= min_repeats:
+                out.append(gram)
+                i = j
+                matched = True
+                break
+        if not matched:
+            out.append(text[i])
+            i += 1
+    return "".join(out)
+
+
+def _collapse_repeated_word_ngrams(
+    text: str,
+    *,
+    max_ngram_words: int,
+    min_repeats: int,
+) -> str:
+    tokens = text.split()
+    if len(tokens) < max(4, min_repeats):
+        return text
+
+    out: list[str] = []
+    i = 0
+    n = len(tokens)
+    while i < n:
+        matched = False
+        max_words = min(max_ngram_words, (n - i) // min_repeats)
+        for gram_words in range(max_words, 0, -1):
+            gram = tokens[i:i + gram_words]
+            repeats = 1
+            j = i + gram_words
+            while j + gram_words <= n and tokens[j:j + gram_words] == gram:
+                repeats += 1
+                j += gram_words
+            if repeats >= min_repeats:
+                out.extend(gram)
+                i = j
+                matched = True
+                break
+        if not matched:
+            out.append(tokens[i])
+            i += 1
+    return " ".join(out)
 
 
 __all__ = ["TranscriptPostProcessor"]

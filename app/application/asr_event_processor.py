@@ -102,6 +102,9 @@ class ASREventProcessor:
                 utterance_id=event.utterance_id or "",
             )
 
+        if not processed_text.strip():
+            return False
+
         original_channel = self._original_channel_of(event.source)
         self._store(
             channel=original_channel,

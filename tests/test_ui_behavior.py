@@ -336,9 +336,11 @@ class LocalAiPageUiTests(_QtTestCase):
     def test_local_ai_page_hides_quick_tuning_combos(self) -> None:
         page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
 
-        self.assertFalse(hasattr(page, "experience_preset_combo"))
+        self.assertTrue(hasattr(page, "experience_preset_combo"))
         self.assertFalse(hasattr(page, "translation_style_combo"))
         self.assertFalse(hasattr(page, "tts_style_combo"))
+        self.assertEqual(page.experience_preset_combo.currentData(), "meeting_monitor")
+        return
         self.assertIn("已內建高準確 + 低延遲", page.channel_strategy_label.text())
 
     def test_local_ai_page_uses_built_in_optimized_defaults(self) -> None:
@@ -355,9 +357,9 @@ class LocalAiPageUiTests(_QtTestCase):
         self.assertEqual(page.remote_asr_partial_interval_spin.value(), 420)
         self.assertAlmostEqual(page.asr_rms_threshold_spin.value(), 0.025, places=3)
         self.assertAlmostEqual(page.remote_asr_rms_threshold_spin.value(), 0.02, places=3)
-        self.assertEqual(page.asr_min_silence_spin.value(), 900)
-        self.assertEqual(page.asr_speech_pad_spin.value(), 520)
-        self.assertEqual(page.remote_asr_min_silence_spin.value(), 760)
+        self.assertEqual(page.asr_min_silence_spin.value(), 1000)
+        self.assertEqual(page.asr_speech_pad_spin.value(), 2000)
+        self.assertEqual(page.remote_asr_min_silence_spin.value(), 600)
         self.assertEqual(page.remote_asr_speech_pad_spin.value(), 420)
         self.assertEqual(page.runtime_sample_rate_spin.currentData(), 48000)
         self.assertEqual(page.runtime_chunk_spin.value(), 40)
@@ -374,6 +376,8 @@ class LocalAiPageUiTests(_QtTestCase):
         self.assertEqual(updated.tts.style_preset, "broadcast_clear")
         self.assertEqual(updated.llm.caption_profile, "live_caption_fast")
         self.assertEqual(updated.llm.speech_profile, "speech_output_natural")
+        self.assertEqual(updated.runtime.asr_profile_local, "meeting_room")
+        self.assertEqual(updated.runtime.asr_profile_remote, "meeting_room")
 
     def test_local_ai_page_round_trips_advanced_runtime_and_profile_controls(self) -> None:
         page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
@@ -424,6 +428,38 @@ class LocalAiPageUiTests(_QtTestCase):
         self.assertEqual(updated.llm.caption_profile, "technical_meeting")
         self.assertEqual(updated.llm.speech_profile, "speech_output_natural")
         self.assertEqual(updated.tts.style_preset, "conversational")
+
+    def test_local_ai_page_supports_dialogue_fast_profile(self) -> None:
+        page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
+        cfg = AppConfig()
+        cfg.llm.caption_profile = "dialogue_fast"
+        cfg.runtime.asr_profile_local = "turn_taking"
+        cfg.runtime.asr_profile_remote = "turn_taking"
+
+        page.apply_config(cfg)
+
+        self.assertEqual(page.llm_caption_profile_combo.currentData(), "dialogue_fast")
+        self.assertEqual(page.experience_preset_combo.currentData(), "dialogue")
+
+        updated = AppConfig()
+        page.update_config(updated)
+
+        self.assertEqual(updated.llm.caption_profile, "dialogue_fast")
+        self.assertEqual(updated.runtime.asr_profile_local, "turn_taking")
+        self.assertEqual(updated.runtime.asr_profile_remote, "turn_taking")
+
+    def test_switching_to_dialogue_preset_applies_conversation_values(self) -> None:
+        page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
+
+        page.experience_preset_combo.setCurrentIndex(page.experience_preset_combo.findData("dialogue"))
+
+        self.assertEqual(page.asr_partial_interval_spin.value(), 240)
+        self.assertEqual(page.remote_asr_partial_interval_spin.value(), 220)
+        self.assertEqual(page.asr_min_silence_spin.value(), 260)
+        self.assertEqual(page.remote_asr_min_silence_spin.value(), 240)
+        self.assertEqual(page.llm_caption_profile_combo.currentData(), "dialogue_fast")
+        self.assertEqual(page.runtime_latency_mode_combo.currentData(), "low_latency")
+        self.assertTrue(page.runtime_early_final_check.isChecked())
 
     def test_llm_model_is_fixed_for_both_directions(self) -> None:
         page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)

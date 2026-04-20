@@ -76,9 +76,15 @@ _EDGE_VOICE_OPTIONS: list[tuple[str, str]] = [
 
 _LLM_PROFILE_OPTIONS: list[tuple[str, str]] = [
     ("即時字幕（快速）", "live_caption_fast"),
+    ("雙向對談（快速）", "dialogue_fast"),
     ("即時字幕（穩定）", "live_caption_stable"),
     ("語音輸出（自然）", "speech_output_natural"),
     ("技術會議", "technical_meeting"),
+]
+
+_EXPERIENCE_PRESET_OPTIONS: list[tuple[str, str]] = [
+    ("會議室監聽版", "meeting_monitor"),
+    ("雙人對話版", "dialogue"),
 ]
 
 _TTS_STYLE_OPTIONS: list[tuple[str, str]] = [
@@ -217,6 +223,9 @@ class LocalAiPage(QWidget):
     def apply_config(self, config: AppConfig) -> None:
         self._suspend_notify = True
         try:
+            preset = self._preset_from_config(config)
+            self._select_combo_data(self.experience_preset_combo, preset)
+            self._update_preset_labels(preset)
             zh_asr = config.asr_channels.local
             en_asr = config.asr_channels.remote
             self._select_combo_data(self.asr_engine_combo, zh_asr.engine)
@@ -252,6 +261,14 @@ class LocalAiPage(QWidget):
             self.remote_asr_rms_threshold_spin.setValue(en_asr.vad.rms_threshold)
             self.asr_no_speech_threshold_spin.setValue(zh_asr.no_speech_threshold)
             self.remote_asr_no_speech_threshold_spin.setValue(en_asr.no_speech_threshold)
+            self.asr_neural_threshold_spin.setValue(zh_asr.vad.neural_threshold)
+            self.remote_asr_neural_threshold_spin.setValue(en_asr.vad.neural_threshold)
+            self.asr_soft_final_spin.setValue(zh_asr.streaming.soft_final_audio_ms)
+            self.remote_asr_soft_final_spin.setValue(en_asr.streaming.soft_final_audio_ms)
+            self.asr_startup_suppress_spin.setValue(zh_asr.vad.startup_suppress_ms)
+            self.remote_asr_startup_suppress_spin.setValue(en_asr.vad.startup_suppress_ms)
+            self.asr_hallucination_filter_check.setChecked(zh_asr.hallucination_filter)
+            self.remote_asr_hallucination_filter_check.setChecked(en_asr.hallucination_filter)
             self.asr_queue_local_spin.setValue(
                 int(getattr(config.runtime, "asr_queue_maxsize_local", config.runtime.asr_queue_maxsize))
             )
@@ -357,6 +374,7 @@ class LocalAiPage(QWidget):
             self._suspend_notify = False
 
     def update_config(self, config: AppConfig) -> None:
+        selected_preset = str(self.experience_preset_combo.currentData() or "meeting_monitor")
         zh_asr = config.asr_channels.local
         en_asr = config.asr_channels.remote
         shared_device = str(self.asr_device_combo.currentData() or "cuda")
@@ -380,6 +398,10 @@ class LocalAiPage(QWidget):
         zh_asr.vad.max_speech_duration_s = float(self.asr_max_speech_spin.value())
         zh_asr.vad.rms_threshold = float(self.asr_rms_threshold_spin.value())
         zh_asr.no_speech_threshold = float(self.asr_no_speech_threshold_spin.value())
+        zh_asr.vad.neural_threshold = float(self.asr_neural_threshold_spin.value())
+        zh_asr.streaming.soft_final_audio_ms = self.asr_soft_final_spin.value()
+        zh_asr.vad.startup_suppress_ms = self.asr_startup_suppress_spin.value()
+        zh_asr.hallucination_filter = self.asr_hallucination_filter_check.isChecked()
         config.runtime.asr_queue_maxsize_local = self.asr_queue_local_spin.value()
 
         en_asr.engine = "faster_whisper"
@@ -401,6 +423,10 @@ class LocalAiPage(QWidget):
         en_asr.vad.max_speech_duration_s = float(self.remote_asr_max_speech_spin.value())
         en_asr.vad.rms_threshold = float(self.remote_asr_rms_threshold_spin.value())
         en_asr.no_speech_threshold = float(self.remote_asr_no_speech_threshold_spin.value())
+        en_asr.vad.neural_threshold = float(self.remote_asr_neural_threshold_spin.value())
+        en_asr.streaming.soft_final_audio_ms = self.remote_asr_soft_final_spin.value()
+        en_asr.vad.startup_suppress_ms = self.remote_asr_startup_suppress_spin.value()
+        en_asr.hallucination_filter = self.remote_asr_hallucination_filter_check.isChecked()
         config.runtime.asr_queue_maxsize_remote = self.asr_queue_remote_spin.value()
         config.asr = zh_asr
         config.runtime.use_channel_specific_asr = True
@@ -486,6 +512,14 @@ class LocalAiPage(QWidget):
         config.runtime.translation_exact_cache_size = self.runtime_translation_cache_spin.value()
         config.runtime.translation_prefix_min_delta_chars = self.runtime_prefix_delta_spin.value()
         config.runtime.tts_drop_backlog_threshold = self.runtime_tts_drop_threshold_spin.value()
+        if selected_preset == "dialogue":
+            config.runtime.asr_profile_local = "turn_taking"
+            config.runtime.asr_profile_remote = "turn_taking"
+        else:
+            config.runtime.asr_profile_local = "meeting_room"
+            config.runtime.asr_profile_remote = "meeting_room"
+        config.runtime.streaming_profile_local = "default"
+        config.runtime.streaming_profile_remote = "default"
         config.llm.caption_profile = caption_profile
         config.llm.speech_profile = speech_profile
         config.llm_channels.local.caption_profile = caption_profile
@@ -502,97 +536,217 @@ class LocalAiPage(QWidget):
         self.runtime_status_label.setText(base_text or hint_text)
 
     def _apply_optimized_defaults(self) -> None:
+        self._apply_experience_preset("meeting_monitor", notify=False)
+
+    def _apply_experience_preset(self, preset: str, *, notify: bool) -> None:
         self._suspend_notify = True
         try:
+            self._select_combo_data(self.experience_preset_combo, preset)
             self.asr_model_combo.setText("faster-whisper (large-v3-turbo)")
             self.remote_asr_model_combo.setText("faster-whisper (large-v3-turbo)")
             self.asr_beam_spin.setValue(1)
             self.remote_asr_beam_spin.setValue(1)
-            self.asr_partial_interval_spin.setValue(500)
-            self.remote_asr_partial_interval_spin.setValue(420)
-            self.asr_partial_history_spin.setValue(2)
-            self.remote_asr_partial_history_spin.setValue(2)
-            self.asr_final_history_spin.setValue(12)
-            self.remote_asr_final_history_spin.setValue(10)
-            self.asr_min_speech_spin.setValue(220)
-            self.remote_asr_min_speech_spin.setValue(200)
-            self.asr_min_silence_spin.setValue(900)
-            self.remote_asr_min_silence_spin.setValue(760)
-            self.asr_speech_pad_spin.setValue(520)
-            self.remote_asr_speech_pad_spin.setValue(420)
-            self.asr_max_speech_spin.setValue(16)
-            self.remote_asr_max_speech_spin.setValue(16)
             self.asr_condition_prev_check.setChecked(False)
             self.remote_asr_condition_prev_check.setChecked(False)
-            self.asr_temperature_fallback_local_edit.setText("0.0,0.2,0.4")
-            self.asr_rms_threshold_spin.setValue(0.025)
-            self.remote_asr_rms_threshold_spin.setValue(0.02)
-            self.asr_no_speech_threshold_spin.setValue(0.3)
-            self.remote_asr_no_speech_threshold_spin.setValue(0.35)
-            self.asr_queue_local_spin.setValue(160)
-            self.asr_queue_remote_spin.setValue(160)
-
-            self.llm_temperature_spin.setValue(0.0)
-            self.remote_llm_temperature_spin.setValue(0.0)
-            self.llm_top_p_spin.setValue(0.78)
-            self.remote_llm_top_p_spin.setValue(0.78)
-            self.llm_repeat_penalty_spin.setValue(1.1)
-            self.remote_llm_repeat_penalty_spin.setValue(1.1)
-            self.llm_max_tokens_spin.setValue(96)
-            self.remote_llm_max_tokens_spin.setValue(128)
-            self.llm_trigger_tokens_spin.setValue(18)
-            self.remote_llm_trigger_tokens_spin.setValue(18)
-            self.llm_context_items_spin.setValue(4)
-            self.remote_llm_context_items_spin.setValue(4)
-            self.llm_queue_local_spin.setValue(24)
-            self.llm_queue_remote_spin.setValue(24)
-            self._select_combo_data(self.llm_caption_profile_combo, "live_caption_fast")
-            self._select_combo_data(self.llm_speech_profile_combo, "speech_output_natural")
-
             self._select_combo_data(self.base_tts.sample_rate_spin, 24000)
-            self._select_combo_data(self.base_tts.style_preset_combo, "broadcast_clear")
-            self.base_tts.length_scale_spin.setValue(1.0)
-            self.base_tts.noise_scale_spin.setValue(0.60)
-            self.base_tts.noise_w_spin.setValue(0.65)
             self._select_combo_data(self.local_tts_override.sample_rate_spin, 24000)
             self._select_combo_data(self.remote_tts_override.sample_rate_spin, 24000)
             self.local_tts_override.noise_w_spin.setValue(0.65)
             self.remote_tts_override.noise_w_spin.setValue(0.65)
-            self.tts_queue_local_spin.setValue(16)
-            self.tts_queue_remote_spin.setValue(16)
-
             self._select_combo_data(self.runtime_sample_rate_spin, 48000)
-            self._select_combo_data(self.runtime_latency_mode_combo, "balanced")
-            self._select_combo_data(self.runtime_display_partial_strategy_combo, "stable_only")
             self.runtime_chunk_spin.setValue(40)
-            self.runtime_asr_pre_roll_spin.setValue(520)
-            self.runtime_stable_partial_min_repeats_spin.setValue(2)
-            self.runtime_partial_stability_delta_spin.setValue(8)
-            self.runtime_asr_partial_min_audio_spin.setValue(1000)
-            self.runtime_asr_partial_floor_spin.setValue(1000)
-            self.runtime_llm_partial_floor_spin.setValue(280)
-            self.runtime_early_final_check.setChecked(False)
-            self.runtime_tts_accept_stable_partial_check.setChecked(False)
-            self.runtime_tts_partial_min_chars_spin.setValue(12)
-            self.runtime_tts_use_speech_profile_check.setChecked(False)
             self.runtime_translation_cache_spin.setValue(256)
             self.runtime_prefix_delta_spin.setValue(6)
-            self.runtime_llm_streaming_tokens_spin.setValue(16)
-            self.runtime_max_pipeline_latency_spin.setValue(3200)
-            self.runtime_tts_max_wait_spin.setValue(2200)
-            self.runtime_tts_max_chars_spin.setValue(160)
-            self.runtime_tts_drop_threshold_spin.setValue(3)
-            self._select_combo_data(self.runtime_tts_cancel_policy_combo, "older_only")
+            self._select_combo_data(self.runtime_display_partial_strategy_combo, "stable_only")
+            self.runtime_tts_accept_stable_partial_check.setChecked(False)
+            self.runtime_tts_use_speech_profile_check.setChecked(False)
+            self.runtime_tts_cancel_pending_check.setChecked(True)
+            self.local_echo_guard_check.setChecked(False)
+            self.local_echo_guard_delay_spin.setValue(300)
+            self.remote_echo_guard_delay_spin.setValue(300)
+
+            if preset == "dialogue":
+                self.asr_partial_interval_spin.setValue(240)
+                self.remote_asr_partial_interval_spin.setValue(220)
+                self.asr_partial_history_spin.setValue(1)
+                self.remote_asr_partial_history_spin.setValue(1)
+                self.asr_final_history_spin.setValue(6)
+                self.remote_asr_final_history_spin.setValue(6)
+                self.asr_min_speech_spin.setValue(140)
+                self.remote_asr_min_speech_spin.setValue(140)
+                self.asr_min_silence_spin.setValue(260)
+                self.remote_asr_min_silence_spin.setValue(240)
+                self.asr_speech_pad_spin.setValue(220)
+                self.remote_asr_speech_pad_spin.setValue(180)
+                self.asr_max_speech_spin.setValue(12)
+                self.remote_asr_max_speech_spin.setValue(12)
+                self.asr_temperature_fallback_local_edit.setText("0.0")
+                self.asr_temperature_fallback_remote_edit.setText("0.0")
+                self.asr_rms_threshold_spin.setValue(0.025)
+                self.remote_asr_rms_threshold_spin.setValue(0.02)
+                self.asr_no_speech_threshold_spin.setValue(0.45)
+                self.remote_asr_no_speech_threshold_spin.setValue(0.40)
+                self.asr_neural_threshold_spin.setValue(0.42)
+                self.remote_asr_neural_threshold_spin.setValue(0.35)
+                self.asr_soft_final_spin.setValue(1800)
+                self.remote_asr_soft_final_spin.setValue(1600)
+                self.asr_startup_suppress_spin.setValue(800)
+                self.remote_asr_startup_suppress_spin.setValue(0)
+                self.asr_hallucination_filter_check.setChecked(True)
+                self.remote_asr_hallucination_filter_check.setChecked(True)
+                self.asr_queue_local_spin.setValue(96)
+                self.asr_queue_remote_spin.setValue(96)
+
+                self.llm_temperature_spin.setValue(0.0)
+                self.remote_llm_temperature_spin.setValue(0.0)
+                self.llm_top_p_spin.setValue(0.70)
+                self.remote_llm_top_p_spin.setValue(0.70)
+                self.llm_repeat_penalty_spin.setValue(1.06)
+                self.remote_llm_repeat_penalty_spin.setValue(1.06)
+                self.llm_max_tokens_spin.setValue(80)
+                self.remote_llm_max_tokens_spin.setValue(80)
+                self.llm_trigger_tokens_spin.setValue(10)
+                self.remote_llm_trigger_tokens_spin.setValue(10)
+                self.llm_context_items_spin.setValue(3)
+                self.remote_llm_context_items_spin.setValue(3)
+                self.llm_queue_local_spin.setValue(16)
+                self.llm_queue_remote_spin.setValue(16)
+                self._select_combo_data(self.llm_caption_profile_combo, "dialogue_fast")
+                self._select_combo_data(self.llm_speech_profile_combo, "dialogue_fast")
+
+                self._select_combo_data(self.base_tts.style_preset_combo, "fast_response")
+                self.base_tts.length_scale_spin.setValue(1.02)
+                self.base_tts.noise_scale_spin.setValue(0.60)
+                self.base_tts.noise_w_spin.setValue(0.65)
+                self.tts_queue_local_spin.setValue(12)
+                self.tts_queue_remote_spin.setValue(12)
+
+                self._select_combo_data(self.runtime_latency_mode_combo, "low_latency")
+                self.runtime_asr_pre_roll_spin.setValue(180)
+                self.runtime_stable_partial_min_repeats_spin.setValue(1)
+                self.runtime_partial_stability_delta_spin.setValue(8)
+                self.runtime_asr_partial_min_audio_spin.setValue(220)
+                self.runtime_asr_partial_floor_spin.setValue(200)
+                self.runtime_llm_partial_floor_spin.setValue(160)
+                self.runtime_early_final_check.setChecked(True)
+                self.runtime_tts_partial_min_chars_spin.setValue(8)
+                self.runtime_llm_streaming_tokens_spin.setValue(12)
+                self.runtime_max_pipeline_latency_spin.setValue(1800)
+                self.runtime_tts_max_wait_spin.setValue(1200)
+                self.runtime_tts_max_chars_spin.setValue(96)
+                self.runtime_tts_drop_threshold_spin.setValue(2)
+                self._select_combo_data(self.runtime_tts_cancel_policy_combo, "older_only")
+            else:
+                self.asr_partial_interval_spin.setValue(500)
+                self.remote_asr_partial_interval_spin.setValue(420)
+                self.asr_partial_history_spin.setValue(2)
+                self.remote_asr_partial_history_spin.setValue(2)
+                self.asr_final_history_spin.setValue(20)
+                self.remote_asr_final_history_spin.setValue(10)
+                self.asr_min_speech_spin.setValue(220)
+                self.remote_asr_min_speech_spin.setValue(200)
+                self.asr_min_silence_spin.setValue(1000)
+                self.remote_asr_min_silence_spin.setValue(600)
+                self.asr_speech_pad_spin.setValue(2000)
+                self.remote_asr_speech_pad_spin.setValue(420)
+                self.asr_max_speech_spin.setValue(16)
+                self.remote_asr_max_speech_spin.setValue(16)
+                self.asr_temperature_fallback_local_edit.setText("0.0")
+                self.asr_temperature_fallback_remote_edit.setText("0.0,0.2,0.4")
+                self.asr_rms_threshold_spin.setValue(0.025)
+                self.remote_asr_rms_threshold_spin.setValue(0.02)
+                self.asr_no_speech_threshold_spin.setValue(0.65)
+                self.remote_asr_no_speech_threshold_spin.setValue(0.35)
+                self.asr_neural_threshold_spin.setValue(0.55)
+                self.remote_asr_neural_threshold_spin.setValue(0.30)
+                self.asr_soft_final_spin.setValue(8000)
+                self.remote_asr_soft_final_spin.setValue(3000)
+                self.asr_startup_suppress_spin.setValue(3000)
+                self.remote_asr_startup_suppress_spin.setValue(0)
+                self.asr_hallucination_filter_check.setChecked(True)
+                self.remote_asr_hallucination_filter_check.setChecked(False)
+                self.asr_queue_local_spin.setValue(160)
+                self.asr_queue_remote_spin.setValue(160)
+
+                self.llm_temperature_spin.setValue(0.0)
+                self.remote_llm_temperature_spin.setValue(0.0)
+                self.llm_top_p_spin.setValue(0.78)
+                self.remote_llm_top_p_spin.setValue(0.78)
+                self.llm_repeat_penalty_spin.setValue(1.1)
+                self.remote_llm_repeat_penalty_spin.setValue(1.1)
+                self.llm_max_tokens_spin.setValue(96)
+                self.remote_llm_max_tokens_spin.setValue(128)
+                self.llm_trigger_tokens_spin.setValue(18)
+                self.remote_llm_trigger_tokens_spin.setValue(18)
+                self.llm_context_items_spin.setValue(4)
+                self.remote_llm_context_items_spin.setValue(4)
+                self.llm_queue_local_spin.setValue(24)
+                self.llm_queue_remote_spin.setValue(24)
+                self._select_combo_data(self.llm_caption_profile_combo, "live_caption_fast")
+                self._select_combo_data(self.llm_speech_profile_combo, "speech_output_natural")
+
+                self._select_combo_data(self.base_tts.style_preset_combo, "broadcast_clear")
+                self.base_tts.length_scale_spin.setValue(1.0)
+                self.base_tts.noise_scale_spin.setValue(0.60)
+                self.base_tts.noise_w_spin.setValue(0.65)
+                self.tts_queue_local_spin.setValue(16)
+                self.tts_queue_remote_spin.setValue(16)
+
+                self._select_combo_data(self.runtime_latency_mode_combo, "balanced")
+                self.runtime_asr_pre_roll_spin.setValue(520)
+                self.runtime_stable_partial_min_repeats_spin.setValue(2)
+                self.runtime_partial_stability_delta_spin.setValue(8)
+                self.runtime_asr_partial_min_audio_spin.setValue(1000)
+                self.runtime_asr_partial_floor_spin.setValue(1000)
+                self.runtime_llm_partial_floor_spin.setValue(280)
+                self.runtime_early_final_check.setChecked(False)
+                self.runtime_tts_partial_min_chars_spin.setValue(12)
+                self.runtime_llm_streaming_tokens_spin.setValue(16)
+                self.runtime_max_pipeline_latency_spin.setValue(3200)
+                self.runtime_tts_max_wait_spin.setValue(2200)
+                self.runtime_tts_max_chars_spin.setValue(160)
+                self.runtime_tts_drop_threshold_spin.setValue(3)
+                self._select_combo_data(self.runtime_tts_cancel_policy_combo, "older_only")
+            self._update_preset_labels(preset)
         finally:
             self._suspend_notify = False
+        if notify:
+            self._refresh_asr_runtime_hints()
+            self._notify_settings_changed()
+
+    def _preset_from_config(self, config: AppConfig) -> str:
+        local_asr = str(getattr(config.runtime, "asr_profile_local", "") or "")
+        remote_asr = str(getattr(config.runtime, "asr_profile_remote", "") or "")
+        caption = str(getattr(config.llm, "caption_profile", "") or "")
+        speech = str(getattr(config.llm, "speech_profile", "") or "")
+        if (
+            local_asr == "turn_taking"
+            or remote_asr == "turn_taking"
+            or caption == "dialogue_fast"
+            or speech == "dialogue_fast"
+        ):
+            return "dialogue"
+        return "meeting_monitor"
+
+    def _update_preset_labels(self, preset: str) -> None:
+        if preset == "dialogue":
+            self.channel_strategy_label.setText("雙向短句優先，會提早切段、縮短翻譯上下文，讓來回對話更跟得上。")
+            self.optimized_profile_label.setText("適合一來一往對談、口譯協助、短句即時翻譯。")
+            return
+        self.channel_strategy_label.setText("會議穩定度優先，保留較長上下文與較保守切段，較適合監聽和字幕。")
+        self.optimized_profile_label.setText("適合會議監聽、長句發言、較重視穩定度的場景。")
 
     def _build_experience_group(self) -> tuple[QGroupBox, QFormLayout]:
+        self.experience_preset_combo = QComboBox()
+        for label, value in _EXPERIENCE_PRESET_OPTIONS:
+            self.experience_preset_combo.addItem(label, value)
+        self._configure_combo_popup(self.experience_preset_combo)
         self.quick_health_btn = QPushButton("健康檢查")
         self.quick_save_btn = QPushButton("儲存設定")
         self.show_advanced_check = QCheckBox("顯示進階設定")
         self.show_advanced_check.setChecked(False)
-        self.channel_strategy_label = QLabel("已內建高準確 + 低延遲；中文與非中文都使用 faster-whisper，且參數可分開調整。")
-        self.optimized_profile_label = QLabel("目前為低延遲優化預設，可再依你的設備與語速微調。")
+        self.channel_strategy_label = QLabel("會議穩定度優先，保留較長上下文與較保守切段，較適合監聽和字幕。")
+        self.optimized_profile_label = QLabel("適合會議監聽、長句發言、較重視穩定度的場景。")
         self.optimized_profile_label.setWordWrap(False)
         self.asr_routing_summary_label = QLabel(
             "ASR 路由規則：中文 -> faster-whisper（中文參數），非中文 -> faster-whisper（非中文參數）。"
@@ -609,6 +763,7 @@ class LocalAiPage(QWidget):
 
         form = QFormLayout()
         self._configure_form_layout(form)
+        form.addRow("使用情境", self.experience_preset_combo)
         form.addRow("通道策略", self.channel_strategy_label)
         form.addRow("優化說明", self.optimized_profile_label)
         form.addRow("ASR 路由", self.asr_routing_summary_label)
@@ -641,6 +796,10 @@ class LocalAiPage(QWidget):
             self.remote_asr_max_speech_spin,
             self.remote_asr_rms_threshold_spin,
             self.remote_asr_no_speech_threshold_spin,
+            self.remote_asr_neural_threshold_spin,
+            self.remote_asr_soft_final_spin,
+            self.remote_asr_startup_suppress_spin,
+            self.remote_asr_hallucination_filter_check,
             self.asr_temperature_fallback_remote_edit,
             self.asr_queue_remote_spin,
         ):
@@ -717,9 +876,9 @@ class LocalAiPage(QWidget):
         self.remote_asr_min_speech_spin = QSpinBox()
         self.remote_asr_min_speech_spin.setRange(100, 4000)
         self.asr_min_silence_spin = QSpinBox()
-        self.asr_min_silence_spin.setRange(300, 8000)
+        self.asr_min_silence_spin.setRange(120, 8000)
         self.remote_asr_min_silence_spin = QSpinBox()
-        self.remote_asr_min_silence_spin.setRange(300, 8000)
+        self.remote_asr_min_silence_spin.setRange(120, 8000)
         self.asr_speech_pad_spin = QSpinBox()
         self.asr_speech_pad_spin.setRange(0, 2000)
         self.remote_asr_speech_pad_spin = QSpinBox()
@@ -744,6 +903,36 @@ class LocalAiPage(QWidget):
         self.remote_asr_no_speech_threshold_spin.setRange(0.0, 1.0)
         self.remote_asr_no_speech_threshold_spin.setSingleStep(0.05)
         self.remote_asr_no_speech_threshold_spin.setDecimals(2)
+        self.asr_neural_threshold_spin = QDoubleSpinBox()
+        self.asr_neural_threshold_spin.setRange(0.05, 0.95)
+        self.asr_neural_threshold_spin.setSingleStep(0.05)
+        self.asr_neural_threshold_spin.setDecimals(2)
+        self.asr_neural_threshold_spin.setToolTip("Silero VAD 神經網路觸發門檻，越高越不容易觸發語音偵測。")
+        self.remote_asr_neural_threshold_spin = QDoubleSpinBox()
+        self.remote_asr_neural_threshold_spin.setRange(0.05, 0.95)
+        self.remote_asr_neural_threshold_spin.setSingleStep(0.05)
+        self.remote_asr_neural_threshold_spin.setDecimals(2)
+        self.remote_asr_neural_threshold_spin.setToolTip("Silero VAD 神經網路觸發門檻，越高越不容易觸發語音偵測。")
+        self.asr_soft_final_spin = QSpinBox()
+        self.asr_soft_final_spin.setRange(500, 12000)
+        self.asr_soft_final_spin.setSingleStep(500)
+        self.asr_soft_final_spin.setToolTip("語音靜音後延遲此時間再觸發 Final，避免句子被切斷。")
+        self.remote_asr_soft_final_spin = QSpinBox()
+        self.remote_asr_soft_final_spin.setRange(500, 12000)
+        self.remote_asr_soft_final_spin.setSingleStep(500)
+        self.remote_asr_soft_final_spin.setToolTip("語音靜音後延遲此時間再觸發 Final，避免句子被切斷。")
+        self.asr_startup_suppress_spin = QSpinBox()
+        self.asr_startup_suppress_spin.setRange(0, 10000)
+        self.asr_startup_suppress_spin.setSingleStep(500)
+        self.asr_startup_suppress_spin.setToolTip("啟動後此時間內忽略語音觸發，避免片頭音樂/雜音產生幻覺（0 = 停用）。")
+        self.remote_asr_startup_suppress_spin = QSpinBox()
+        self.remote_asr_startup_suppress_spin.setRange(0, 10000)
+        self.remote_asr_startup_suppress_spin.setSingleStep(500)
+        self.remote_asr_startup_suppress_spin.setToolTip("啟動後此時間內忽略語音觸發，避免片頭音樂/雜音產生幻覺（0 = 停用）。")
+        self.asr_hallucination_filter_check = QCheckBox("幻覺過濾")
+        self.asr_hallucination_filter_check.setToolTip("過濾 Whisper 常見幻覺輸出（作詞作曲、字幕志願者、純標點等）。")
+        self.remote_asr_hallucination_filter_check = QCheckBox("幻覺過濾")
+        self.remote_asr_hallucination_filter_check.setToolTip("過濾 Whisper 常見幻覺輸出（作詞作曲、字幕志願者、純標點等）。")
         self.asr_temperature_fallback_local_edit = QLineEdit()
         self.asr_temperature_fallback_local_edit.setPlaceholderText("0.0,0.2,0.4")
         self.asr_temperature_fallback_remote_edit = QLineEdit()
@@ -783,6 +972,14 @@ class LocalAiPage(QWidget):
             self.remote_asr_vad_enabled,
             self.asr_temperature_fallback_local_edit,
             self.asr_temperature_fallback_remote_edit,
+            self.asr_neural_threshold_spin,
+            self.remote_asr_neural_threshold_spin,
+            self.asr_soft_final_spin,
+            self.remote_asr_soft_final_spin,
+            self.asr_startup_suppress_spin,
+            self.remote_asr_startup_suppress_spin,
+            self.asr_hallucination_filter_check,
+            self.remote_asr_hallucination_filter_check,
         )
 
         asr_device_row = self._build_inline_row(self.asr_device_combo, self.asr_compute_label)
@@ -809,6 +1006,12 @@ class LocalAiPage(QWidget):
         form.addRow("最長語音(s)", self._build_dual_field_row(self.asr_max_speech_spin, self.remote_asr_max_speech_spin))
         form.addRow("No Speech 門檻", self._build_dual_field_row(self.asr_no_speech_threshold_spin, self.remote_asr_no_speech_threshold_spin))
         form.addRow("RMS 門檻", self._build_dual_field_row(self.asr_rms_threshold_spin, self.remote_asr_rms_threshold_spin))
+        form.addRow("VAD 神經門檻", self._build_dual_field_row(self.asr_neural_threshold_spin, self.remote_asr_neural_threshold_spin))
+        form.addRow("Soft Final(ms)", self._build_dual_field_row(self.asr_soft_final_spin, self.remote_asr_soft_final_spin))
+        form.addRow("啟動抑制(ms)", self._build_dual_field_row(self.asr_startup_suppress_spin, self.remote_asr_startup_suppress_spin))
+        zh_halluc_row = self._build_inline_row(self.asr_hallucination_filter_check)
+        en_halluc_row = self._build_inline_row(self.remote_asr_hallucination_filter_check)
+        form.addRow("幻覺過濾", self._build_dual_field_row(zh_halluc_row, en_halluc_row))
 
         group = QGroupBox("語音辨識 ASR")
         group.setLayout(form)
@@ -1248,6 +1451,7 @@ class LocalAiPage(QWidget):
         self.llm_url_label.setMinimumWidth(140)
         self.llm_url_label.setMinimumHeight(_CONTROL_HEIGHT)
         self.asr_compute_label.setMinimumHeight(_CONTROL_HEIGHT)
+        self.experience_preset_combo.currentIndexChanged.connect(self._on_experience_preset_changed)
         self.show_advanced_check.toggled.connect(self._set_advanced_settings_visible)
         self.show_advanced_check.toggled.connect(lambda *_: self._notify_settings_changed())
         self.quick_health_btn.clicked.connect(lambda *_: self._on_health_check())
@@ -1479,6 +1683,12 @@ class LocalAiPage(QWidget):
             return rows
 
         return []
+
+    def _on_experience_preset_changed(self) -> None:
+        if self._suspend_notify:
+            return
+        preset = str(self.experience_preset_combo.currentData() or "meeting_monitor")
+        self._apply_experience_preset(preset, notify=True)
 
     def _reload_llm_models(self) -> None:
         self.llm_model_label.setText(_FIXED_LLM_MODEL)

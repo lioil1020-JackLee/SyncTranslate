@@ -259,6 +259,7 @@ class TranslatorManager:
         profiles = llm_config.profiles
         mapping: dict[str, TranslationProfileConfig] = {
             "live_caption_fast": profiles.live_caption_fast,
+            "dialogue_fast": profiles.dialogue_fast,
             "live_caption_stable": profiles.live_caption_stable,
             "speech_output_natural": profiles.speech_output_natural,
             "technical_meeting": profiles.technical_meeting,

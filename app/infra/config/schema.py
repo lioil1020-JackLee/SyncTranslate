@@ -43,6 +43,7 @@ class VadSettings:
     speech_pad_ms: int = 450
     rms_threshold: float = 0.02
     neural_threshold: float = 0.5
+    startup_suppress_ms: int = 0
 
 
 @dataclass(slots=True)
@@ -69,6 +70,7 @@ class AsrConfig:
     speculative_num_beams: int = 1
     temperature_fallback: str = "0.0,0.2,0.4"
     no_speech_threshold: float = 0.55
+    hallucination_filter: bool = True
     vad: VadSettings = field(default_factory=VadSettings)
     streaming: AsrStreamingSettings = field(default_factory=AsrStreamingSettings)
 
@@ -107,6 +109,18 @@ class TranslationProfilesConfig:
             context_items=4,
             partial_trigger_tokens=16,
             max_tokens=192,
+            preserve_terms=True,
+            naturalize_tone=False,
+            allow_subject_completion=False,
+        )
+    )
+    dialogue_fast: TranslationProfileConfig = field(
+        default_factory=lambda: TranslationProfileConfig(
+            name="dialogue_fast",
+            prompt_style="literal",
+            context_items=2,
+            partial_trigger_tokens=10,
+            max_tokens=128,
             preserve_terms=True,
             naturalize_tone=False,
             allow_subject_completion=False,
@@ -462,6 +476,9 @@ class AppConfig:
                 live_caption_fast=TranslationProfileConfig(
                     **((llm_raw.get("profiles") or {}).get("live_caption_fast") or {})
                 ),
+                dialogue_fast=TranslationProfileConfig(
+                    **((llm_raw.get("profiles") or {}).get("dialogue_fast") or {})
+                ),
                 live_caption_stable=TranslationProfileConfig(
                     **((llm_raw.get("profiles") or {}).get("live_caption_stable") or {})
                 ),
@@ -493,6 +510,9 @@ class AppConfig:
                 profiles=TranslationProfilesConfig(
                     live_caption_fast=TranslationProfileConfig(
                         **((llm_local_raw.get("profiles") or {}).get("live_caption_fast") or asdict(llm.profiles.live_caption_fast))
+                    ),
+                    dialogue_fast=TranslationProfileConfig(
+                        **((llm_local_raw.get("profiles") or {}).get("dialogue_fast") or asdict(llm.profiles.dialogue_fast))
                     ),
                     live_caption_stable=TranslationProfileConfig(
                         **((llm_local_raw.get("profiles") or {}).get("live_caption_stable") or asdict(llm.profiles.live_caption_stable))
@@ -526,6 +546,9 @@ class AppConfig:
                 profiles=TranslationProfilesConfig(
                     live_caption_fast=TranslationProfileConfig(
                         **((llm_remote_raw.get("profiles") or {}).get("live_caption_fast") or asdict(llm.profiles.live_caption_fast))
+                    ),
+                    dialogue_fast=TranslationProfileConfig(
+                        **((llm_remote_raw.get("profiles") or {}).get("dialogue_fast") or asdict(llm.profiles.dialogue_fast))
                     ),
                     live_caption_stable=TranslationProfileConfig(
                         **((llm_remote_raw.get("profiles") or {}).get("live_caption_stable") or asdict(llm.profiles.live_caption_stable))
@@ -565,7 +588,13 @@ class AppConfig:
         direction.mode = "bidirectional"
         if llm.backend != "lm_studio":
             llm.backend = "lm_studio"
-        valid_profiles = {"live_caption_fast", "live_caption_stable", "speech_output_natural", "technical_meeting"}
+        valid_profiles = {
+            "live_caption_fast",
+            "dialogue_fast",
+            "live_caption_stable",
+            "speech_output_natural",
+            "technical_meeting",
+        }
         valid_tts_style_presets = {"balanced", "broadcast_clear", "conversational", "fast_response"}
         if llm.caption_profile not in valid_profiles:
             llm.caption_profile = "live_caption_fast"

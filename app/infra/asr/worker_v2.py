@@ -18,6 +18,36 @@ from app.infra.asr.streaming_policy import (
 )
 
 
+def _scaled_finalize_thresholds(
+    *,
+    soft_final_audio_ms: int,
+    min_partial_audio_ms: int,
+    force_final_audio_ms: int,
+) -> tuple[int, int]:
+    """Derive conservative finalize thresholds from the configured soft-final window.
+
+    Short fixed thresholds (for example ~900ms) are too aggressive for long-form
+    narration and can fragment one spoken sentence into many tiny finals. Scale
+    the thresholds from the configured soft-final window instead so the worker
+    stays responsive on short turns without over-segmenting longer speech.
+    """
+    base_soft_final = max(1200, int(soft_final_audio_ms))
+    base_partial = max(240, int(min_partial_audio_ms))
+    base_force_final = max(1200, int(force_final_audio_ms))
+
+    soft_endpoint_finalize_audio_ms = max(
+        base_force_final,
+        base_partial + 900,
+        int(round(base_soft_final * 0.65)),
+    )
+    speech_end_finalize_audio_ms = max(
+        base_partial + 700,
+        int(round(base_soft_final * 0.55)),
+    )
+    speech_end_finalize_audio_ms = min(speech_end_finalize_audio_ms, soft_endpoint_finalize_audio_ms)
+    return soft_endpoint_finalize_audio_ms, speech_end_finalize_audio_ms
+
+
 @dataclass(slots=True)
 class V2RuntimeEvent:
     text: str
@@ -109,13 +139,13 @@ class SourceRuntimeV2:
         self._force_final_queue_size = max(8, self._queue.maxsize // 4)
         self._force_final_audio_ms = 1800
         self._prefer_conservative_finalize = False
-        self._soft_endpoint_finalize_audio_ms = max(
-            1500 if self._prefer_conservative_finalize else 900,
-            self._min_partial_audio_ms,
-        )
-        self._speech_end_finalize_audio_ms = max(
-            1300 if self._prefer_conservative_finalize else 900,
-            min(self._soft_endpoint_finalize_audio_ms, self._min_partial_audio_ms + 300),
+        (
+            self._soft_endpoint_finalize_audio_ms,
+            self._speech_end_finalize_audio_ms,
+        ) = _scaled_finalize_thresholds(
+            soft_final_audio_ms=self._soft_final_audio_ms,
+            min_partial_audio_ms=self._min_partial_audio_ms,
+            force_final_audio_ms=self._force_final_audio_ms,
         )
         self._adaptive_length_floor_ms = max(3200, self._soft_final_audio_ms)
         self._adaptive_length_ceiling_ms = max(self._adaptive_length_floor_ms, 12000)
@@ -282,6 +312,11 @@ class SourceRuntimeV2:
                     # next speech burst can immediately start a new segment.
                     self._endpointing.reset()
                 self._reset_segment()
+                # If speech was still active when we hit a ceiling/force-final
+                # (not a speech_ended boundary), immediately start a new segment
+                # so continuous speech (e.g. with background music) is not lost.
+                if signal.speech_active and not signal.speech_ended:
+                    self._start_segment(sample_rate=sample_rate_int, now_ms=now_ms)
 
     def _start_segment(self, *, sample_rate: int, now_ms: int) -> None:
         self._in_segment = True

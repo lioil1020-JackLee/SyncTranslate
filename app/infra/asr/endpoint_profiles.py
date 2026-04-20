@@ -120,6 +120,17 @@ PROFILES: dict[str, EndpointProfile] = {
         preferred_vad_backend="silero",
         description="Minimize partial and final latency; may reduce accuracy.",
     ),
+    "turn_taking": EndpointProfile(
+        name="turn_taking",
+        partial_interval_ms=200,
+        min_partial_audio_ms=180,
+        soft_final_audio_ms=1600,
+        soft_endpoint_finalize_audio_ms=520,
+        speech_end_finalize_audio_ms=420,
+        pre_roll_ms=80,
+        preferred_vad_backend="silero",
+        description="Fast hand-off profile for short, back-and-forth conversation turns.",
+    ),
 }
 
 
