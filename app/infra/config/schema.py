@@ -237,12 +237,12 @@ class RuntimeConfig:
     asr_pre_roll_ms: int = 500
     latency_mode: str = "balanced"
     display_partial_strategy: str = "stable_only"
-    stable_partial_min_repeats: int = 2
-    partial_stability_max_delta_chars: int = 8
-    asr_partial_min_audio_ms: int = 280
+    stable_partial_min_repeats: int = 3
+    partial_stability_max_delta_chars: int = 6
+    asr_partial_min_audio_ms: int = 360
     asr_partial_interval_floor_ms: int = 280
     llm_partial_interval_floor_ms: int = 320
-    early_final_enabled: bool = True
+    early_final_enabled: bool = False
     tts_accept_stable_partial: bool = False
     tts_partial_min_chars: int = 12
     tts_use_speech_profile: bool = False
@@ -320,10 +320,8 @@ class RuntimeConfig:
     enable_structured_logging: bool = True
     runtime_log_format: str = "jsonl"
     # --- Phase 2: ASR profiles ---
-    asr_profile_local: str = "default"
-    asr_profile_remote: str = "default"
-    streaming_profile_local: str = "default"
-    streaming_profile_remote: str = "default"
+    asr_profile_local: str = "meeting_room"
+    asr_profile_remote: str = "meeting_room"
     # --- Phase 2: Degradation policy ---
     degradation_policy_enabled: bool = True
 

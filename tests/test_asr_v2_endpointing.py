@@ -24,6 +24,20 @@ class AsrV2EndpointingTests(unittest.TestCase):
         def transcribe_final(self, audio, sample_rate: int) -> BackendTranscript:
             return BackendTranscript(text="final text", is_final=True, detected_language="zh")
 
+        def runtime_info(self) -> dict[str, object]:
+            return {
+                "device_effective": "cpu",
+                "model_init_mode": "warm",
+                "init_failure": "",
+                "runtime_label": self.descriptor.name,
+                "postprocessor": {
+                    "accepted_count": 3,
+                    "rejected_count": 1,
+                    "last_rejection_reason": "markup-leak",
+                    "rejections_by_reason": {"markup-leak": 1},
+                },
+            }
+
     def test_rms_endpointing_runtime_detects_speech_start_and_hard_endpoint(self) -> None:
         vad = VadSettings(
             backend="rms",
@@ -89,6 +103,7 @@ class AsrV2EndpointingTests(unittest.TestCase):
         cfg = AppConfig()
         cfg.runtime.asr_pipeline = "v2"
         cfg.runtime.asr_v2_endpointing = "rms"
+        cfg.runtime.asr_profile_local = "default"
         cfg.asr_channels.local.vad.backend = "rms"
         cfg.asr_channels.remote.vad.backend = "rms"
         cfg.asr_channels.local.vad.min_speech_duration_ms = 80
@@ -119,6 +134,7 @@ class AsrV2EndpointingTests(unittest.TestCase):
         self.assertEqual(stats["pipeline_mode"], "v2")
         self.assertEqual(stats["execution_mode"], "native_v2")
         self.assertEqual(stats["endpointing"]["backend"], "rms")
+        self.assertEqual(stats["postprocessor"]["final"]["last_rejection_reason"], "markup-leak")
         self.assertGreaterEqual(int(stats["endpointing"]["speech_started_count"]), 1)
         self.assertGreaterEqual(
             int(stats["endpointing"]["soft_endpoint_count"]) + int(stats["endpointing"]["hard_endpoint_count"]),
@@ -131,6 +147,7 @@ class AsrV2EndpointingTests(unittest.TestCase):
         cfg = AppConfig()
         cfg.runtime.asr_pipeline = "v2"
         cfg.runtime.asr_v2_endpointing = "rms"
+        cfg.runtime.asr_profile_local = "default"
         cfg.asr_channels.local.vad.backend = "rms"
         cfg.asr_channels.local.vad.min_speech_duration_ms = 80
         cfg.asr_channels.local.vad.min_silence_duration_ms = 240
@@ -162,6 +179,8 @@ class AsrV2EndpointingTests(unittest.TestCase):
         cfg = AppConfig()
         cfg.runtime.asr_pipeline = "v2"
         cfg.runtime.asr_v2_endpointing = "rms"
+        cfg.runtime.asr_profile_local = "default"
+        cfg.runtime.early_final_enabled = True
         cfg.runtime.asr_partial_min_audio_ms = 240
         cfg.asr_channels.local.vad.backend = "rms"
         cfg.asr_channels.local.vad.min_speech_duration_ms = 80
@@ -192,6 +211,43 @@ class AsrV2EndpointingTests(unittest.TestCase):
         finals = [event for event in events if event.is_final]
         self.assertGreaterEqual(len(finals), 2)
         self.assertTrue(all(event.is_early_final for event in finals))
+
+    @patch("app.infra.asr.manager_v2.build_backend_pair")
+    def test_manager_v2_respects_disabled_early_final_setting(self, mock_build_backend_pair) -> None:
+        cfg = AppConfig()
+        cfg.runtime.asr_pipeline = "v2"
+        cfg.runtime.asr_v2_endpointing = "rms"
+        cfg.runtime.asr_profile_local = "default"
+        cfg.runtime.early_final_enabled = False
+        cfg.runtime.asr_partial_min_audio_ms = 240
+        cfg.asr_channels.local.vad.backend = "rms"
+        cfg.asr_channels.local.vad.min_speech_duration_ms = 80
+        cfg.asr_channels.local.vad.min_silence_duration_ms = 500
+        cfg.asr_channels.local.vad.speech_pad_ms = 80
+        cfg.asr_channels.local.streaming.partial_interval_ms = 200
+        cfg.asr_channels.local.streaming.soft_final_audio_ms = 7200
+        mock_build_backend_pair.return_value = (
+            self._FakeBackend("fake:partial", is_final=False),
+            self._FakeBackend("fake:final", is_final=True),
+        )
+        events = []
+        manager = ASRManagerV2(cfg, pipeline_revision=11)
+        manager.start("local", events.append)
+
+        speech = np.full((16000,), 0.05, dtype=np.float32)
+        soft_pause = np.zeros((4800,), dtype=np.float32)
+        hard_pause = np.zeros((9600,), dtype=np.float32)
+
+        manager.submit("local", speech, 16000)
+        time.sleep(0.08)
+        manager.submit("local", soft_pause, 16000)
+        time.sleep(0.12)
+        manager.submit("local", hard_pause, 16000)
+        time.sleep(0.24)
+
+        finals = [event for event in events if event.is_final]
+        self.assertGreaterEqual(len(finals), 1)
+        self.assertTrue(all(not event.is_early_final for event in finals))
 
 
 if __name__ == "__main__":

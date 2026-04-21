@@ -14,8 +14,8 @@ class SettingsPage(QWidget):
         super().__init__()
         content = QWidget()
         content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(8, 8, 8, 8)
-        content_layout.setSpacing(10)
+        content_layout.setContentsMargins(6, 6, 6, 6)
+        content_layout.setSpacing(8)
         content_layout.addWidget(
             self._build_section(
                 "音訊裝置",

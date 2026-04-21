@@ -4,11 +4,18 @@ import unittest
 
 import numpy as np
 
+from app.infra.asr.backend_v2 import BackendDescriptor, BackendPostProcessor, FasterWhisperStreamingBackend
 from app.infra.asr.lexical_bias_v2 import AsrLexicalBiaser
 from app.infra.asr.transcript_validator_v2 import AsrTranscriptValidatorV2
 
 
 class AsrPostprocessV2Tests(unittest.TestCase):
+    class _FakeEngine:
+        device = "cpu"
+
+        def runtime_label(self) -> str:
+            return "fake-engine"
+
     def test_lexical_bias_replaces_exact_alias(self) -> None:
         biaser = AsrLexicalBiaser("石荒=>拾荒\n白沙盾媽祖=>白沙屯媽祖", enabled=True)
 
@@ -83,6 +90,77 @@ class AsrPostprocessV2Tests(unittest.TestCase):
 
         self.assertFalse(result.accepted)
         self.assertEqual(result.reason, "low-speech-ratio")
+
+    def test_validator_rejects_markup_leak_text(self) -> None:
+        validator = AsrTranscriptValidatorV2(enabled=True)
+        audio = np.full((16000,), 0.02, dtype=np.float32)
+
+        result = validator.validate(
+            "所以就是到了親家那邊 </solution>",
+            audio=audio,
+            sample_rate=16000,
+            language="zh-TW",
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.reason, "markup-leak")
+
+    def test_validator_rejects_role_prefixed_llm_residue(self) -> None:
+        validator = AsrTranscriptValidatorV2(enabled=True)
+        audio = np.full((16000,), 0.02, dtype=np.float32)
+
+        result = validator.validate(
+            "assistant: this should not appear in subtitles",
+            audio=audio,
+            sample_rate=16000,
+            language="en",
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.reason, "markup-leak")
+
+    def test_postprocessor_stats_track_rejection_reason(self) -> None:
+        processor = BackendPostProcessor(
+            language="zh-TW",
+            biaser=AsrLexicalBiaser("", enabled=False),
+            validator=AsrTranscriptValidatorV2(enabled=True),
+        )
+        audio = np.full((16000,), 0.02, dtype=np.float32)
+
+        processor.process(
+            "?隞亙停?臬鈭扛摰園??</solution>",
+            audio=audio,
+            sample_rate=16000,
+        )
+
+        stats = processor.stats()
+        self.assertEqual(stats["rejected_count"], 1)
+        self.assertEqual(stats["last_rejection_reason"], "markup-leak")
+        self.assertEqual(stats["rejections_by_reason"]["markup-leak"], 1)
+
+    def test_backend_runtime_info_exposes_postprocessor_stats(self) -> None:
+        processor = BackendPostProcessor(
+            language="zh-TW",
+            biaser=AsrLexicalBiaser("", enabled=False),
+            validator=AsrTranscriptValidatorV2(enabled=True),
+        )
+        audio = np.full((16000,), 0.02, dtype=np.float32)
+        processor.process(
+            "?隞亙停?臬鈭扛摰園??</solution>",
+            audio=audio,
+            sample_rate=16000,
+        )
+        backend = FasterWhisperStreamingBackend(
+            engine=self._FakeEngine(),
+            descriptor=BackendDescriptor(name="fake:partial", mode="test", streaming=True),
+            post_processor=processor,
+        )
+
+        info = backend.runtime_info()
+
+        self.assertIn("postprocessor", info)
+        self.assertEqual(info["postprocessor"]["rejected_count"], 1)
+        self.assertEqual(info["postprocessor"]["last_rejection_reason"], "markup-leak")
 
 
 if __name__ == "__main__":

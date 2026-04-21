@@ -21,8 +21,8 @@ from app.infra.config.schema import AppConfig
 class ASRManagerV2:
     """Independent ASR v2 execution path.
 
-    Unlike the frozen legacy manager, v2 owns its own endpointing runtime,
-    chunk queue, worker thread, and partial/final emission path.
+    This manager owns its own endpointing runtime, chunk queue, worker thread,
+    and partial/final emission path.
     """
 
     pipeline_mode = "v2"
@@ -143,8 +143,8 @@ class ASRManagerV2:
         key = source if source in {"local", "remote"} else "local"
         if not self.is_enabled(key):
             return
-        runtime = self._runtime_of(key)
-        runtime.submit_chunk(chunk, sample_rate)
+        runtime = self._stream_of(key)
+        runtime.submit_chunk(self._collapse_stereo_for_asr(chunk), sample_rate)
 
     def set_enabled(self, source: str, enabled: bool) -> None:
         key = source if source in {"local", "remote"} else "local"
@@ -176,9 +176,9 @@ class ASRManagerV2:
                 "vad_rms": float(stats.endpointing.get("rms", 0.0)),
                 "vad_threshold": float(self._threshold_for_source(source)),
                 "adaptive_mode": "v2_native",
-                "adaptive_partial_interval_ms": int(self._partial_interval_for_source(source)),
+                "adaptive_partial_interval_ms": int(stats.adaptive_partial_interval_ms),
                 "adaptive_min_silence_duration_ms": int(self._min_silence_for_source(source)),
-                "adaptive_soft_final_audio_ms": int(self._soft_final_for_source(source)),
+                "adaptive_soft_final_audio_ms": int(stats.adaptive_soft_final_audio_ms),
                 "pipeline_mode": self.pipeline_mode,
                 "execution_mode": self._spec.execution_mode,
                 "partial_backend": stats.partial_backend_name,
@@ -191,6 +191,7 @@ class ASRManagerV2:
                 "device_effective": str(backend_runtime.get("device_effective", "")),
                 "model_init_mode": str(backend_runtime.get("model_init_mode", "lazy")),
                 "init_failure": str(backend_runtime.get("init_failure", "")),
+                "postprocessor": backend_runtime.get("postprocessor", {}),
                 "frontend": stats.frontend,
                 "endpointing": stats.endpointing,
                 "endpoint_signal": {
@@ -273,6 +274,12 @@ class ASRManagerV2:
             pre_roll_ms=_ep_kwargs.get("pre_roll_ms", int(getattr(self._config.runtime, "asr_pre_roll_ms", 500))),
             min_partial_audio_ms=_ep_kwargs.get("min_partial_audio_ms", int(getattr(self._config.runtime, "asr_partial_min_audio_ms", 280))),
             queue_maxsize=self._queue_maxsize_for_source(source),
+            early_final_enabled=bool(getattr(self._config.runtime, "early_final_enabled", True)),
+            partial_interval_floor_ms=int(getattr(self._config.runtime, "asr_partial_interval_floor_ms", 280)),
+            adaptive_enabled=bool(getattr(self._config.runtime, "adaptive_asr_enabled", True)),
+            degradation_enabled=bool(getattr(self._config.runtime, "degradation_policy_enabled", True)),
+            soft_endpoint_finalize_audio_ms=_ep_kwargs.get("soft_endpoint_finalize_audio_ms"),
+            speech_end_finalize_audio_ms=_ep_kwargs.get("speech_end_finalize_audio_ms"),
             frontend_enabled=bool(getattr(self._config.runtime, "asr_frontend_enabled", True)),
             frontend_target_rms=float(getattr(self._config.runtime, "asr_frontend_target_rms", 0.05)),
             frontend_max_gain=float(getattr(self._config.runtime, "asr_frontend_max_gain", 3.0)),
@@ -292,8 +299,14 @@ class ASRManagerV2:
         self._runtimes[source] = runtime
         return runtime
 
+    def _stream_of(self, source: str) -> SourceRuntimeV2:
+        return self._runtime_of(source)
+
     def _profile_for_source(self, source: str):
         return self._config.asr_channels.remote if source == "remote" else self._config.asr_channels.local
+
+    def _asr_profile_for_source(self, source: str):
+        return self._profile_for_source(source)
 
     def _profile_for_language(self, language: str):
         resolution = resolve_backend_for_language(language)
@@ -307,8 +320,14 @@ class ASRManagerV2:
             return int(getattr(runtime, "asr_queue_maxsize_remote", getattr(runtime, "asr_queue_maxsize", 128)))
         return int(getattr(runtime, "asr_queue_maxsize_local", getattr(runtime, "asr_queue_maxsize", 128)))
 
+    def _asr_queue_maxsize_for_source(self, source: str) -> int:
+        return self._queue_maxsize_for_source(source)
+
     def _asr_language_for_source(self, source: str) -> str:
         return resolve_requested_asr_language(self._config, source)
+
+    def _speaker_diarizer_for_source(self, source: str):
+        return None
 
     def _threshold_for_source(self, source: str) -> float:
         vad = self._profile_for_source(source).vad
@@ -325,6 +344,45 @@ class ASRManagerV2:
 
     def _soft_final_for_source(self, source: str) -> int:
         return int(self._profile_for_source(source).streaming.soft_final_audio_ms)
+
+    @staticmethod
+    def _collapse_stereo_for_asr(chunk: np.ndarray) -> np.ndarray:
+        channels = np.asarray(chunk, dtype=np.float32)
+        if channels.ndim != 2 or channels.shape[1] <= 1:
+            return channels.reshape(-1).astype(np.float32, copy=False)
+
+        channel_energy = np.sqrt(np.mean(np.square(channels), axis=0, dtype=np.float32))
+        strongest = int(np.argmax(channel_energy)) if channel_energy.size else 0
+        strongest_energy = float(channel_energy[strongest]) if channel_energy.size else 0.0
+        weakest_energy = float(np.min(channel_energy)) if channel_energy.size else 0.0
+        if strongest_energy >= max(0.01, weakest_energy * 2.5):
+            return channels[:, strongest].astype(np.float32, copy=False)
+
+        left = channels[:, 0].astype(np.float32, copy=False)
+        right = channels[:, 1].astype(np.float32, copy=False)
+        left_std = float(np.std(left))
+        right_std = float(np.std(right))
+        if left_std > 1e-6 and right_std > 1e-6:
+            corr = float(np.corrcoef(left, right)[0, 1])
+            if corr >= 0.3:
+                return ((left + right) * 0.5).astype(np.float32, copy=False)
+            if corr <= -0.3:
+                return channels[:, strongest].astype(np.float32, copy=False)
+        return channels[:, strongest].astype(np.float32, copy=False)
+
+    @staticmethod
+    def _effective_pre_roll_ms(
+        *,
+        configured_pre_roll_ms: int,
+        min_speech_duration_ms: int,
+        speech_pad_ms: int,
+    ) -> int:
+        configured = max(0, int(configured_pre_roll_ms))
+        recommended = max(
+            int(min_speech_duration_ms) + 160,
+            int(round(max(0, int(speech_pad_ms)) * 0.75)),
+        )
+        return max(configured, min(1200, recommended))
 
     def _build_runtime_fingerprint(self) -> str:
         return f"v2:{self._pipeline_revision}:{self._spec.partial_backend.name}:{self._spec.endpointing.name}"
@@ -356,6 +414,7 @@ class ASRManagerV2:
             "device_effective": "",
             "model_init_mode": "lazy",
             "init_failure": "",
+            "postprocessor": {},
             "frontend": {},
             "endpointing": {},
             "endpoint_signal": {

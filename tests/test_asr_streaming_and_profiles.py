@@ -18,6 +18,7 @@ from app.infra.asr.endpoint_profiles import (
     list_profiles,
 )
 from app.infra.asr.worker_v2 import _scaled_finalize_thresholds
+from app.infra.asr.worker_v2 import SourceRuntimeV2
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +159,18 @@ class TestStreamingPolicyFinalization:
         assert decision.emit_final is True
         assert decision.is_early_final is True
 
+    def test_pause_turn_triggers_final_before_hard_endpoint(self):
+        policy = StreamingPolicy()
+        ctx = _make_ctx(
+            signal=_make_signal(speech_active=True, pause_ms=260.0),
+            segment_audio_ms=1100,
+            min_partial_audio_ms=300,
+        )
+        decision = policy.decide(ctx)
+        assert decision.emit_final is True
+        assert decision.reason == "pause_turn"
+        assert decision.reset_endpointing_after_final is True
+
     def test_ceiling_triggers_final(self):
         policy = StreamingPolicy()
         ctx = _make_ctx(segment_audio_ms=13000)
@@ -294,6 +307,21 @@ class TestEndpointProfiles:
         default = get_endpoint_profile("default")
         assert noisy.soft_final_audio_ms > default.soft_final_audio_ms
 
+    def test_meeting_room_is_more_conservative_than_default(self):
+        meeting = get_endpoint_profile("meeting_room")
+        default = get_endpoint_profile("default")
+        assert meeting.partial_interval_ms > default.partial_interval_ms
+        assert meeting.min_partial_audio_ms > default.min_partial_audio_ms
+        assert meeting.soft_final_audio_ms > default.soft_final_audio_ms
+        assert meeting.speech_end_finalize_audio_ms > default.speech_end_finalize_audio_ms
+
+    def test_turn_taking_stays_faster_than_meeting_room(self):
+        turn = get_endpoint_profile("turn_taking")
+        meeting = get_endpoint_profile("meeting_room")
+        assert turn.partial_interval_ms < meeting.partial_interval_ms
+        assert turn.min_partial_audio_ms < meeting.min_partial_audio_ms
+        assert turn.soft_final_audio_ms < meeting.soft_final_audio_ms
+
 
 class TestWorkerFinalizeThresholds:
     def test_thresholds_scale_with_soft_final_window(self):
@@ -302,8 +330,8 @@ class TestWorkerFinalizeThresholds:
             min_partial_audio_ms=1000,
             force_final_audio_ms=1800,
         )
-        assert soft_ms == 3900
-        assert speech_end_ms == 3300
+        assert soft_ms == 3000
+        assert speech_end_ms == 2280
 
     def test_thresholds_respect_force_final_floor(self):
         soft_ms, speech_end_ms = _scaled_finalize_thresholds(
@@ -312,5 +340,19 @@ class TestWorkerFinalizeThresholds:
             force_final_audio_ms=1800,
         )
         assert soft_ms == 1800
-        assert speech_end_ms == 1100
+        assert speech_end_ms == 900
         assert speech_end_ms <= soft_ms
+
+    def test_merge_final_with_last_partial_prefers_partial_when_final_drops_prefix(self):
+        merged = SourceRuntimeV2._merge_final_with_last_partial(
+            final_text="後半句",
+            last_partial_text="這是完整的後半句",
+        )
+        assert merged == "這是完整的後半句"
+
+    def test_merge_final_with_last_partial_keeps_final_when_it_is_not_shorter(self):
+        merged = SourceRuntimeV2._merge_final_with_last_partial(
+            final_text="這是完整 final",
+            last_partial_text="這是完整",
+        )
+        assert merged == "這是完整 final"

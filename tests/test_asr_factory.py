@@ -4,14 +4,13 @@ import unittest
 
 from app.infra.asr.factory import create_asr_manager, normalize_asr_pipeline_mode
 from app.infra.asr.manager_v2 import ASRManagerV2
-from app.infra.asr.streaming_pipeline import ASRManager
 from app.infra.config.schema import AppConfig
 
 
 class AsrFactoryTests(unittest.TestCase):
-    def test_normalize_pipeline_mode_defaults_to_legacy(self) -> None:
-        self.assertEqual(normalize_asr_pipeline_mode(""), "legacy")
-        self.assertEqual(normalize_asr_pipeline_mode("whisper_legacy"), "legacy")
+    def test_normalize_pipeline_mode_always_resolves_to_v2(self) -> None:
+        self.assertEqual(normalize_asr_pipeline_mode(""), "v2")
+        self.assertEqual(normalize_asr_pipeline_mode("whisper_legacy"), "v2")
         self.assertEqual(normalize_asr_pipeline_mode("v2"), "v2")
 
     def test_factory_builds_v2_manager_by_default(self) -> None:

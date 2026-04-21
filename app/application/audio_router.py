@@ -11,7 +11,7 @@ import numpy as np
 
 from app.domain.events import ErrorEvent
 from app.infra.audio.routing import AudioInputManager
-from app.infra.asr.streaming_pipeline import ASREventWithSource, ASRManager
+from app.infra.asr.contracts import ASREventWithSource, AsrManagerProtocol
 from app.infra.config.schema import AppConfig, AudioRouteConfig
 from app.domain.runtime_state import StateManager
 from app.domain.constants import (
@@ -52,7 +52,7 @@ class AudioRouter:
         *,
         transcript_buffer: TranscriptBuffer,
         input_manager: AudioInputManager,
-        asr_manager: ASRManager,
+        asr_manager: AsrManagerProtocol,
         translator_manager: TranslatorManager,
         tts_manager: TTSManager,
         state_manager: StateManager,
@@ -592,20 +592,35 @@ class AudioRouter:
         if previous == current:
             return True
         delta_limit = self._partial_stability_max_delta_chars()
-        if current.startswith(previous):
-            return (len(current) - len(previous)) <= delta_limit
-        if previous.startswith(current):
-            return (len(previous) - len(current)) <= delta_limit
-        common_prefix_len = 0
+        if not previous or not current:
+            return False
+
+        min_shared_prefix = min(6, len(previous), len(current))
+        shared_prefix = 0
         for prev_char, curr_char in zip(previous, current):
             if prev_char != curr_char:
                 break
-            common_prefix_len += 1
-        if common_prefix_len <= 0:
+            shared_prefix += 1
+
+        if current.startswith(previous):
+            growth = len(current) - len(previous)
+            if growth <= delta_limit:
+                return True
+            return shared_prefix >= max(min_shared_prefix, int(len(previous) * 0.75))
+        if previous.startswith(current):
+            shrink = len(previous) - len(current)
+            if shrink <= delta_limit:
+                return True
+            return shared_prefix >= max(min_shared_prefix, int(len(current) * 0.85))
+        if shared_prefix <= 0:
             return False
-        previous_tail = len(previous) - common_prefix_len
-        current_tail = len(current) - common_prefix_len
-        return previous_tail <= delta_limit and current_tail <= delta_limit
+        previous_tail = len(previous) - shared_prefix
+        current_tail = len(current) - shared_prefix
+        shorter_len = min(len(previous), len(current))
+        shared_ratio = shared_prefix / max(1, shorter_len)
+        if previous_tail <= delta_limit and current_tail <= delta_limit:
+            return True
+        return shared_ratio >= 0.72 and previous_tail <= delta_limit * 2 and current_tail <= delta_limit * 2
 
     def _start_translation_workers(self) -> None:
         if not self._async_translation:

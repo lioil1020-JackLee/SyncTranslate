@@ -25,6 +25,25 @@ def export_runtime_diagnostics(
         overflow = router_stats.get("translation_overflow") or {}
         for entry in list(router_stats.get("latency") or [])[:8]:
             latency_summary.append(str(entry))
+    asr_observation_summary: list[str] = []
+    for label, source in (("meeting", "remote"), ("local", "local")):
+        asr_stats = ((router_stats or {}).get("asr") or {}).get(source) or {}
+        post = asr_stats.get("postprocessor") or {}
+        final_post = post.get("final") or {}
+        endpointing = asr_stats.get("endpointing") or {}
+        endpoint_signal = asr_stats.get("endpoint_signal") or {}
+        asr_observation_summary.append(
+            f"{label}: "
+            f"q={int(asr_stats.get('queue_size', 0) or 0)} "
+            f"p={int(asr_stats.get('partial_count', 0) or 0)} "
+            f"f={int(asr_stats.get('final_count', 0) or 0)} "
+            f"pause_ms={int(endpoint_signal.get('pause_ms', 0) or 0)} "
+            f"speech_started={int(endpointing.get('speech_started_count', 0) or 0)} "
+            f"soft={int(endpointing.get('soft_endpoint_count', 0) or 0)} "
+            f"hard={int(endpointing.get('hard_endpoint_count', 0) or 0)} "
+            f"rej={int(final_post.get('rejected_count', 0) or 0)} "
+            f"last_rej={str(final_post.get('last_rejection_reason', '') or '-')}"
+        )
 
     content = "\n".join(
         [
@@ -61,6 +80,8 @@ def export_runtime_diagnostics(
             f"llm_queue_maxsize_remote: {config.runtime.llm_queue_maxsize_remote}",
             f"translation_overflow_local: {overflow.get('local', 0)}",
             f"translation_overflow_remote: {overflow.get('remote', 0)}",
+            "asr_observation:",
+            *asr_observation_summary,
             "recent_latency_entries:",
             *latency_summary,
             "runtime_stats:",

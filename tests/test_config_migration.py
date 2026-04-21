@@ -18,11 +18,17 @@ from app.infra.config.schema import AppConfig
 
 
 class ConfigMigrationTests(unittest.TestCase):
-    def test_runtime_defaults_start_with_legacy_pipeline_and_v2_placeholders(self) -> None:
+    def test_runtime_defaults_start_with_v2_stable_defaults(self) -> None:
         cfg = AppConfig()
         self.assertEqual(cfg.runtime.asr_pipeline, "v2")
         self.assertEqual(cfg.runtime.asr_v2_backend, "faster_whisper_v2")
         self.assertEqual(cfg.runtime.asr_v2_endpointing, "neural_endpoint")
+        self.assertEqual(cfg.runtime.asr_profile_local, "meeting_room")
+        self.assertEqual(cfg.runtime.asr_profile_remote, "meeting_room")
+        self.assertFalse(cfg.runtime.early_final_enabled)
+        self.assertEqual(cfg.runtime.stable_partial_min_repeats, 3)
+        self.assertEqual(cfg.runtime.partial_stability_max_delta_chars, 6)
+        self.assertEqual(cfg.runtime.asr_partial_min_audio_ms, 360)
 
     def test_normalize_legacy_funasr_fields_to_new_defaults(self) -> None:
         raw = {

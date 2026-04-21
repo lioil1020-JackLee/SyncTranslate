@@ -12,8 +12,11 @@ import numpy as np
 from app.infra.asr.endpointing_v2 import EndpointSignal, EndpointingRuntime
 from app.infra.asr.frontend_v2 import AsrAudioFrontendV2
 from app.infra.asr.streaming_policy import (
+    DEGRADATION_CONGESTED,
+    DEGRADATION_DEGRADED,
     DEGRADATION_NORMAL,
     StreamingContext,
+    StreamingDecision,
     StreamingPolicy,
 )
 
@@ -35,14 +38,18 @@ def _scaled_finalize_thresholds(
     base_partial = max(240, int(min_partial_audio_ms))
     base_force_final = max(1200, int(force_final_audio_ms))
 
+    # Finals should happen promptly once speech has clearly ended.
+    # Overly conservative thresholds keep the UI stuck in partial state and
+    # make the eventual final decode re-run over too much audio.
     soft_endpoint_finalize_audio_ms = max(
         base_force_final,
-        base_partial + 900,
-        int(round(base_soft_final * 0.65)),
+        base_partial + 700,
+        int(round(base_soft_final * 0.50)),
     )
     speech_end_finalize_audio_ms = max(
-        base_partial + 700,
-        int(round(base_soft_final * 0.55)),
+        900,
+        base_partial + 360,
+        int(round(base_soft_final * 0.38)),
     )
     speech_end_finalize_audio_ms = min(speech_end_finalize_audio_ms, soft_endpoint_finalize_audio_ms)
     return soft_endpoint_finalize_audio_ms, speech_end_finalize_audio_ms
@@ -65,6 +72,8 @@ class SourceRuntimeV2Stats:
     dropped_chunks: int
     partial_count: int
     final_count: int
+    adaptive_partial_interval_ms: int
+    adaptive_soft_final_audio_ms: int
     last_debug: str
     partial_backend_name: str
     final_backend_name: str
@@ -90,6 +99,12 @@ class SourceRuntimeV2:
         pre_roll_ms: int,
         min_partial_audio_ms: int,
         queue_maxsize: int,
+        early_final_enabled: bool = True,
+        partial_interval_floor_ms: int = 280,
+        adaptive_enabled: bool = True,
+        degradation_enabled: bool = True,
+        soft_endpoint_finalize_audio_ms: int | None = None,
+        speech_end_finalize_audio_ms: int | None = None,
         frontend_enabled: bool = True,
         frontend_target_rms: float = 0.05,
         frontend_max_gain: float = 3.0,
@@ -115,12 +130,17 @@ class SourceRuntimeV2:
             enhancement_noise_adapt_rate=enhancement_noise_adapt_rate,
             enhancement_music_suppress_strength=enhancement_music_suppress_strength,
         )
-        self._partial_interval_ms = max(200, int(partial_interval_ms))
+        self._partial_interval_floor_ms = max(120, int(partial_interval_floor_ms))
+        self._base_partial_interval_ms = max(self._partial_interval_floor_ms, int(partial_interval_ms))
+        self._partial_interval_ms = self._base_partial_interval_ms
         self._partial_history_seconds = max(1, int(partial_history_seconds))
         self._final_history_seconds = max(2, int(final_history_seconds))
-        self._soft_final_audio_ms = max(1200, int(soft_final_audio_ms))
+        self._base_soft_final_audio_ms = max(1200, int(soft_final_audio_ms))
+        self._soft_final_audio_ms = self._base_soft_final_audio_ms
         self._pre_roll_ms = max(0, int(pre_roll_ms))
         self._min_partial_audio_ms = max(240, int(min_partial_audio_ms))
+        self._early_final_enabled = bool(early_final_enabled)
+        self._adaptive_enabled = bool(adaptive_enabled)
         self._queue: Queue[tuple[np.ndarray, float]] = Queue(maxsize=max(4, queue_maxsize))
         self._stop_event = Event()
         self._thread: Thread | None = None
@@ -129,6 +149,8 @@ class SourceRuntimeV2:
         self._last_signal = EndpointSignal()
         self._last_partial_emit_ms = 0
         self._last_partial_text = ""
+        self._last_partial_latency_ms = 0
+        self._deferred_early_final_until_ms = 0
         self._segment_chunks: list[np.ndarray] = []
         self._segment_sample_rate = 16000
         self._segment_start_ms = 0
@@ -139,25 +161,38 @@ class SourceRuntimeV2:
         self._force_final_queue_size = max(8, self._queue.maxsize // 4)
         self._force_final_audio_ms = 1800
         self._prefer_conservative_finalize = False
-        (
-            self._soft_endpoint_finalize_audio_ms,
-            self._speech_end_finalize_audio_ms,
-        ) = _scaled_finalize_thresholds(
-            soft_final_audio_ms=self._soft_final_audio_ms,
+        scaled_soft_ms, scaled_speech_end_ms = _scaled_finalize_thresholds(
+            soft_final_audio_ms=self._base_soft_final_audio_ms,
             min_partial_audio_ms=self._min_partial_audio_ms,
             force_final_audio_ms=self._force_final_audio_ms,
         )
+        self._base_soft_endpoint_finalize_audio_ms = max(
+            self._force_final_audio_ms,
+            int(soft_endpoint_finalize_audio_ms) if soft_endpoint_finalize_audio_ms is not None else scaled_soft_ms,
+        )
+        self._base_speech_end_finalize_audio_ms = min(
+            self._base_soft_endpoint_finalize_audio_ms,
+            max(
+                900,
+                int(speech_end_finalize_audio_ms) if speech_end_finalize_audio_ms is not None else scaled_speech_end_ms,
+            ),
+        )
+        self._soft_endpoint_finalize_audio_ms = self._base_soft_endpoint_finalize_audio_ms
+        self._speech_end_finalize_audio_ms = self._base_speech_end_finalize_audio_ms
         self._adaptive_length_floor_ms = max(3200, self._soft_final_audio_ms)
         self._adaptive_length_ceiling_ms = max(self._adaptive_length_floor_ms, 12000)
         self._drop_partial_until_final = False
         self._partial_cooldown_until_ms = 0
+        self._adaptive_recent_audio_ms: deque[int] = deque(maxlen=10)
+        self._adaptive_partial_latencies: deque[int] = deque(maxlen=10)
+        self._adaptive_final_latencies: deque[int] = deque(maxlen=10)
         self._partial_count = 0
         self._final_count = 0
         self._dropped_chunks = 0
         self._last_debug = ""
         self._last_degradation_level: str = DEGRADATION_NORMAL
         self._stats_lock = Lock()
-        self._streaming_policy = StreamingPolicy(degradation_enabled=True)
+        self._streaming_policy = StreamingPolicy(degradation_enabled=bool(degradation_enabled))
 
     def start(self, on_event: Callable[[V2RuntimeEvent], None]) -> None:
         self.stop()
@@ -185,6 +220,8 @@ class SourceRuntimeV2:
         self._last_signal = EndpointSignal()
         self._last_partial_emit_ms = 0
         self._last_partial_text = ""
+        self._last_partial_latency_ms = 0
+        self._deferred_early_final_until_ms = 0
         while not self._queue.empty():
             try:
                 self._queue.get_nowait()
@@ -216,6 +253,8 @@ class SourceRuntimeV2:
                 dropped_chunks=self._dropped_chunks,
                 partial_count=self._partial_count,
                 final_count=self._final_count,
+                adaptive_partial_interval_ms=self._partial_interval_ms,
+                adaptive_soft_final_audio_ms=self._soft_final_audio_ms,
                 last_debug=self._last_debug,
                 partial_backend_name=str(getattr(getattr(self._partial_backend, "descriptor", None), "name", "")),
                 final_backend_name=str(getattr(getattr(self._final_backend, "descriptor", None), "name", "")),
@@ -303,6 +342,16 @@ class SourceRuntimeV2:
             if decision.emit_partial:
                 self._emit_partial(now_ms=now_ms)
             if decision.emit_final:
+                if decision.is_early_final and not self._early_final_enabled:
+                    return
+                if self._should_defer_early_final(
+                    now_ms=now_ms,
+                    decision=decision,
+                    signal=signal,
+                    segment_audio_ms=segment_audio_ms,
+                ):
+                    self._recompute_adaptive_tuning(now_ms=now_ms, segment_audio_ms=segment_audio_ms, signal=signal)
+                    return
                 self._emit_final(
                     now_ms=now_ms,
                     is_early_final=decision.is_early_final,
@@ -317,6 +366,7 @@ class SourceRuntimeV2:
                 # so continuous speech (e.g. with background music) is not lost.
                 if signal.speech_active and not signal.speech_ended:
                     self._start_segment(sample_rate=sample_rate_int, now_ms=now_ms)
+            self._recompute_adaptive_tuning(now_ms=now_ms, segment_audio_ms=segment_audio_ms, signal=signal)
 
     def _start_segment(self, *, sample_rate: int, now_ms: int) -> None:
         self._in_segment = True
@@ -325,6 +375,8 @@ class SourceRuntimeV2:
         self._segment_chunks = list(self._pre_roll_chunks)
         self._last_partial_emit_ms = 0
         self._last_partial_text = ""
+        self._last_partial_latency_ms = 0
+        self._deferred_early_final_until_ms = 0
 
     def _reset_segment(self) -> None:
         self._in_segment = False
@@ -332,6 +384,8 @@ class SourceRuntimeV2:
         self._segment_start_ms = 0
         self._last_partial_emit_ms = 0
         self._last_partial_text = ""
+        self._last_partial_latency_ms = 0
+        self._deferred_early_final_until_ms = 0
         self._drop_partial_until_final = False
 
     def _append_pre_roll(self, chunk: np.ndarray, sample_rate: int) -> None:
@@ -358,10 +412,15 @@ class SourceRuntimeV2:
             sample_rate=self._segment_sample_rate,
         )
         text = (result.text or "").strip()
+        if not text and getattr(result, "rejection_reason", ""):
+            self._debug(f"v2 partial rejected reason={result.rejection_reason}")
+            return
         if not text or text == self._last_partial_text:
             return
         latency_ms = int((time.perf_counter() - start) * 1000)
+        self._adaptive_partial_latencies.append(max(0, latency_ms))
         self._last_partial_text = text
+        self._last_partial_latency_ms = latency_ms
         self._last_partial_emit_ms = now_ms
         self._on_event(
             V2RuntimeEvent(
@@ -388,10 +447,19 @@ class SourceRuntimeV2:
             audio=audio,
             sample_rate=self._segment_sample_rate,
         )
-        text = (result.text or "").strip()
+        if not (result.text or "").strip() and getattr(result, "rejection_reason", ""):
+            self._debug(f"v2 final rejected reason={result.rejection_reason}")
+            return
+        text = self._merge_final_with_last_partial(
+            final_text=(result.text or "").strip(),
+            last_partial_text=self._last_partial_text,
+        )
         if not text:
             return
         latency_ms = int((time.perf_counter() - start) * 1000)
+        audio_ms = int(audio.shape[0] * 1000 / max(1, self._segment_sample_rate))
+        self._adaptive_recent_audio_ms.append(max(0, audio_ms))
+        self._adaptive_final_latencies.append(max(0, latency_ms))
         self._on_event(
             V2RuntimeEvent(
                 text=text,
@@ -405,6 +473,122 @@ class SourceRuntimeV2:
         )
         with self._stats_lock:
             self._final_count += 1
+
+    @staticmethod
+    def _merge_final_with_last_partial(*, final_text: str, last_partial_text: str) -> str:
+        final_clean = (final_text or "").strip()
+        partial_clean = (last_partial_text or "").strip()
+        if not partial_clean:
+            return final_clean
+        if not final_clean:
+            return partial_clean
+        if final_clean == partial_clean:
+            return final_clean
+
+        final_compact = "".join(final_clean.split())
+        partial_compact = "".join(partial_clean.split())
+        if not final_compact or not partial_compact:
+            return final_clean
+
+        if SourceRuntimeV2._looks_like_repetitive_loop(final_clean):
+            return partial_clean
+
+        # If final shrank substantially compared with the latest stable partial,
+        # prefer the partial to avoid dropping already-correct words.
+        if len(final_compact) < max(4, int(len(partial_compact) * 0.7)):
+            if partial_compact.startswith(final_compact) or final_compact in partial_compact:
+                return partial_clean
+
+        # If final and partial share the same tail, recover the missing prefix.
+        probe_len = min(18, len(final_compact), len(partial_compact))
+        if probe_len >= 6 and partial_compact.endswith(final_compact[-probe_len:]):
+            if final_compact[-probe_len:] in partial_compact and len(partial_compact) > len(final_compact):
+                return partial_clean
+
+        prefix_chars = 0
+        for final_char, partial_char in zip(final_clean, partial_clean):
+            if final_char != partial_char:
+                break
+            prefix_chars += 1
+        if prefix_chars >= 6:
+            shorter_len = min(len(final_clean), len(partial_clean))
+            shared_ratio = prefix_chars / max(1, shorter_len)
+            if shared_ratio >= 0.72 and len(final_clean) + 8 < len(partial_clean):
+                return partial_clean
+        overlap = SourceRuntimeV2._token_overlap_ratio(final_clean, partial_clean)
+        if overlap < 0.45 and len(final_compact) <= len(partial_compact) + 6:
+            return partial_clean
+
+        return final_clean
+
+    def _should_defer_early_final(
+        self,
+        *,
+        now_ms: int,
+        decision: StreamingDecision,
+        signal: EndpointSignal,
+        segment_audio_ms: int,
+    ) -> bool:
+        if not decision.is_early_final:
+            return False
+        if signal.hard_endpoint or signal.speech_ended:
+            return False
+        if self._last_partial_emit_ms <= 0 or not self._last_partial_text:
+            return False
+        if decision.reason not in {"pause_turn", "adaptive_length"}:
+            return False
+        if now_ms < self._deferred_early_final_until_ms:
+            return False
+        pause_ms = float(signal.pause_ms)
+        if pause_ms >= 300.0:
+            return False
+        if segment_audio_ms >= max(2400, int(self._base_soft_final_audio_ms * 0.8)):
+            return False
+        time_since_partial_ms = now_ms - self._last_partial_emit_ms
+        if time_since_partial_ms > max(900, self._partial_interval_ms * 2):
+            return False
+        hold_ms = max(160, min(320, int(round((420.0 - pause_ms) * 0.85))))
+        self._deferred_early_final_until_ms = now_ms + hold_ms
+        self._debug(
+            "v2 defer early final "
+            f"reason={decision.reason or 'early'} pause_ms={int(round(pause_ms))} "
+            f"segment_ms={segment_audio_ms} hold_ms={hold_ms}"
+        )
+        return True
+
+    @staticmethod
+    def _looks_like_repetitive_loop(text: str) -> bool:
+        tokens = [token for token in text.split() if token]
+        if len(tokens) >= 8:
+            for size in range(3, min(8, len(tokens) // 2 + 1)):
+                chunk = tokens[-size:]
+                prev = tokens[-size * 2 : -size]
+                if prev == chunk:
+                    return True
+        compact = "".join(text.split())
+        if len(compact) < 12:
+            return False
+        max_span = min(18, len(compact) // 2)
+        for span in range(6, max_span + 1):
+            suffix = compact[-span:]
+            prev = compact[-span * 2 : -span]
+            if prev == suffix:
+                return True
+        return False
+
+    @staticmethod
+    def _token_overlap_ratio(left: str, right: str) -> float:
+        left_tokens = {token for token in left.split() if token}
+        right_tokens = {token for token in right.split() if token}
+        if left_tokens and right_tokens:
+            intersection = len(left_tokens & right_tokens)
+            return intersection / max(1, min(len(left_tokens), len(right_tokens)))
+        prefix_chars = 0
+        for left_char, right_char in zip(left, right):
+            if left_char != right_char:
+                break
+            prefix_chars += 1
+        return prefix_chars / max(1, min(len(left), len(right)))
 
     def _limited_audio(self, history_seconds: int) -> np.ndarray:
         if not self._segment_chunks:
@@ -428,7 +612,24 @@ class SourceRuntimeV2:
             self._on_debug(message)
 
     def _backend_runtime_info(self) -> dict[str, object]:
-        info_fn = getattr(self._final_backend, "runtime_info", None)
+        final_info = self._single_backend_runtime_info(self._final_backend)
+        partial_info = self._single_backend_runtime_info(self._partial_backend)
+        return {
+            "device_effective": str(final_info.get("device_effective", "")),
+            "model_init_mode": str(final_info.get("model_init_mode", "lazy")),
+            "init_failure": str(final_info.get("init_failure", "")),
+            "runtime_label": str(final_info.get("runtime_label", "")),
+            "postprocessor": {
+                "partial": partial_info.get("postprocessor", {}),
+                "final": final_info.get("postprocessor", {}),
+            },
+            "partial_backend_runtime": partial_info,
+            "final_backend_runtime": final_info,
+        }
+
+    @staticmethod
+    def _single_backend_runtime_info(backend: object) -> dict[str, object]:
+        info_fn = getattr(backend, "runtime_info", None)
         if callable(info_fn):
             try:
                 info = info_fn()
@@ -467,6 +668,88 @@ class SourceRuntimeV2:
         if signal.pause_ms >= 120.0:
             return max(self._adaptive_length_floor_ms, 7200)
         return self._adaptive_length_ceiling_ms
+
+    def _recompute_adaptive_tuning(self, *, now_ms: int, segment_audio_ms: int, signal: EndpointSignal) -> None:
+        if not self._adaptive_enabled:
+            return
+
+        avg_partial_latency_ms = (
+            sum(self._adaptive_partial_latencies) / len(self._adaptive_partial_latencies)
+            if self._adaptive_partial_latencies
+            else 0.0
+        )
+        avg_final_latency_ms = (
+            sum(self._adaptive_final_latencies) / len(self._adaptive_final_latencies)
+            if self._adaptive_final_latencies
+            else 0.0
+        )
+        avg_final_audio_ms = (
+            sum(self._adaptive_recent_audio_ms) / len(self._adaptive_recent_audio_ms)
+            if self._adaptive_recent_audio_ms
+            else 0.0
+        )
+
+        next_partial_interval_ms = self._base_partial_interval_ms
+        next_soft_final_audio_ms = self._base_soft_final_audio_ms
+        next_soft_endpoint_finalize_audio_ms = self._base_soft_endpoint_finalize_audio_ms
+        next_speech_end_finalize_audio_ms = self._base_speech_end_finalize_audio_ms
+
+        if avg_final_audio_ms and avg_final_audio_ms <= 1800:
+            next_partial_interval_ms = max(self._partial_interval_floor_ms, self._base_partial_interval_ms - 120)
+            next_soft_final_audio_ms = max(self._force_final_audio_ms, int(round(self._base_soft_final_audio_ms * 0.88)))
+        elif avg_final_audio_ms >= 4200:
+            next_partial_interval_ms = max(next_partial_interval_ms, self._base_partial_interval_ms + 140)
+
+        if avg_partial_latency_ms >= 850 or avg_final_latency_ms >= 1400:
+            next_partial_interval_ms = max(next_partial_interval_ms, self._base_partial_interval_ms + 260)
+            next_soft_final_audio_ms = max(self._force_final_audio_ms, int(round(self._base_soft_final_audio_ms * 0.82)))
+
+        if self._last_degradation_level == DEGRADATION_CONGESTED:
+            next_partial_interval_ms = max(next_partial_interval_ms, self._base_partial_interval_ms + 180)
+        elif self._last_degradation_level == DEGRADATION_DEGRADED:
+            next_partial_interval_ms = max(next_partial_interval_ms, self._base_partial_interval_ms + 320)
+            next_soft_final_audio_ms = max(self._force_final_audio_ms, int(round(self._base_soft_final_audio_ms * 0.78)))
+
+        if signal.pause_ms >= 220.0 and segment_audio_ms >= self._base_soft_final_audio_ms:
+            next_soft_final_audio_ms = min(next_soft_final_audio_ms, self._base_soft_final_audio_ms)
+
+        next_partial_interval_ms = max(self._partial_interval_floor_ms, int(next_partial_interval_ms))
+        next_soft_final_audio_ms = max(self._force_final_audio_ms, int(next_soft_final_audio_ms))
+        next_soft_endpoint_finalize_audio_ms = min(
+            next_soft_final_audio_ms,
+            max(
+                self._force_final_audio_ms,
+                int(round(self._base_soft_endpoint_finalize_audio_ms * (next_soft_final_audio_ms / max(1, self._base_soft_final_audio_ms)))),
+            ),
+        )
+        next_speech_end_finalize_audio_ms = min(
+            next_soft_endpoint_finalize_audio_ms,
+            max(
+                900,
+                int(round(self._base_speech_end_finalize_audio_ms * (next_soft_final_audio_ms / max(1, self._base_soft_final_audio_ms)))),
+            ),
+        )
+
+        changed = any(
+            (
+                next_partial_interval_ms != self._partial_interval_ms,
+                next_soft_final_audio_ms != self._soft_final_audio_ms,
+                next_soft_endpoint_finalize_audio_ms != self._soft_endpoint_finalize_audio_ms,
+                next_speech_end_finalize_audio_ms != self._speech_end_finalize_audio_ms,
+            )
+        )
+        self._partial_interval_ms = next_partial_interval_ms
+        self._soft_final_audio_ms = next_soft_final_audio_ms
+        self._soft_endpoint_finalize_audio_ms = next_soft_endpoint_finalize_audio_ms
+        self._speech_end_finalize_audio_ms = next_speech_end_finalize_audio_ms
+        if changed:
+            self._debug(
+                "v2 adaptive "
+                f"partial_ms={self._partial_interval_ms} "
+                f"soft_final_ms={self._soft_final_audio_ms} "
+                f"soft_finalize_ms={self._soft_endpoint_finalize_audio_ms} "
+                f"speech_end_finalize_ms={self._speech_end_finalize_audio_ms}"
+            )
 
 
 __all__ = ["V2RuntimeEvent", "SourceRuntimeV2", "SourceRuntimeV2Stats"]

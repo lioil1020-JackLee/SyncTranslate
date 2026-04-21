@@ -2,7 +2,7 @@
 
 ## 目前狀態
 
-ASR 重構已進入第二階段：
+ASR 重構已進入收尾與實測調校階段：
 
 - `ASR v2` 已建立並成為主要路線
 - backend 已改成依通道語言自動路由
@@ -14,7 +14,7 @@ ASR 重構已進入第二階段：
 
 - 已完成什麼
 - 還沒完成什麼
-- 舊版何時刪除
+- 還有哪些觀測與實測工具要補強
 
 ## 已完成
 
@@ -59,6 +59,10 @@ ASR 重構已進入第二階段：
 - `device_effective`
 - `model_init_mode`
 - `init_failure`
+- `endpoint_signal.pause_ms`
+- `speech_started_count / soft_endpoint_count / hard_endpoint_count`
+- `postprocessor.final.rejected_count`
+- `postprocessor.final.last_rejection_reason`
 
 ### 5. UI 同步
 
@@ -105,15 +109,14 @@ ASR 重構已進入第二階段：
 
 ## 尚未完成
 
-### 1. legacy 清理
+### 1. v2 實測回放工具
 
-雖然 `ASR v2` 已成為主線，但 `legacy` 仍存在。
+單一路徑 v2 已落地，但仍缺更方便的壞案例回放與比對工具。
 
 下一步要做：
 
-- 清點所有 legacy 專用 config
-- 確認沒有任何 runtime 還會回落依賴 legacy
-- 刪除不再使用的 legacy ASR 實作與測試
+- 離線回放一段音訊並輸出 frontend / endpointing / partial / final / validator 節奏
+- 更快重現「畫面體感差」但不容易定位的案例
 
 ### 2. 中文鏈路實測穩定度
 
@@ -139,27 +142,21 @@ ASR 重構已進入第二階段：
 - 先確保單一講者不亂跳
 - 再決定是否重新啟用預設
 
-## 刪除 legacy 的條件
+## 單一路徑 v2 現況
 
-只有在下面條件都達成後，才建議刪除 legacy：
-
-1. `ASR v2` 成為預設且已穩定使用
-2. 中文與非中文測試都能走正確 backend
-3. session report 能穩定輸出完整 stats
-4. UI 與 config 不再依賴 legacy 概念
-5. 真實中文場景下，沒有再出現「幾乎只剩 2-3 句」這類根本性錯誤
+目前實際 runtime 已統一為 `ASR v2`，剩下的只是不影響執行的相容 helper 與舊設定正規化。
 
 ## 下一階段建議
 
 ### 高優先
 
 - 持續做中文新聞 / 會議語音實測
-- 把 diagnostics 再做得更直觀
+- 把 diagnostics / replay 做得更直觀
 - 釐清 CUDA 環境與 `effective device`
 
 ### 中優先
 
-- 整理並刪除 legacy config / dead code
+- 持續清理相容 helper 與 dead code
 - 補更多 ASR v2 integration tests
 
 ### 低優先
@@ -171,12 +168,12 @@ ASR 重構已進入第二階段：
 
 重構方向已經定下來：
 
-- `ASR v2` 是主線
+- `ASR v2` 是唯一執行主線
 - 中文用 faster-whisper
 - 非中文用 faster-whisper
 - UI、diagnostics、config 都以這個模型為準
 
-接下來的工作重點，不再是「要不要重構」，而是「把 v2 驗收穩、把 legacy 刪乾淨」。
+接下來的工作重點，不再是「要不要重構」，而是「把 v2 實測驗收穩、把觀測與回放工具補齊」。
 
 ## faster-whisper 專屬參數化（2026-04-16）
 

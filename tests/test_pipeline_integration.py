@@ -13,7 +13,7 @@ from PySide6.QtWidgets import QApplication
 from app.application.audio_router import AudioRouter
 from app.application.transcript_service import TranscriptBuffer
 from app.domain.runtime_state import StateManager
-from app.infra.asr.streaming_pipeline import ASREventWithSource
+from app.infra.asr.contracts import ASREventWithSource
 from app.infra.config.schema import AudioRouteConfig
 from app.infra.translation.engine import TranslationEvent
 from app.ui.main_window import MainWindow

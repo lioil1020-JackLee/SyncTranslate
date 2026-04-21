@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import unittest
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -41,6 +42,50 @@ class _DummyDeviceVolumeController:
 
 
 class LiveCaptionPageUiTests(_QtTestCase):
+    def test_main_window_asr_diagnostics_summary_surfaces_validator_rejections(self) -> None:
+        router_stats = SimpleNamespace(
+            asr={
+                "remote": {
+                    "queue_size": 0,
+                    "partial_count": 4,
+                    "final_count": 5,
+                    "degradation_level": "normal",
+                    "endpoint_signal": {"pause_ms": 260},
+                    "endpointing": {
+                        "speech_started_count": 3,
+                        "soft_endpoint_count": 4,
+                        "hard_endpoint_count": 1,
+                    },
+                    "postprocessor": {
+                        "final": {"rejected_count": 2, "last_rejection_reason": "markup-leak"},
+                    },
+                },
+                "local": {
+                    "queue_size": 1,
+                    "partial_count": 2,
+                    "final_count": 3,
+                    "degradation_level": "congested",
+                    "endpoint_signal": {"pause_ms": 80},
+                    "endpointing": {
+                        "speech_started_count": 2,
+                        "soft_endpoint_count": 1,
+                        "hard_endpoint_count": 0,
+                    },
+                    "postprocessor": {
+                        "final": {"rejected_count": 0, "last_rejection_reason": ""},
+                    },
+                },
+            },
+            translation_overflow={"local": 0, "remote": 0},
+            latency=[],
+            tts={},
+        )
+
+        text = MainWindow._build_asr_diagnostics_summary(router_stats)
+
+        self.assertIn("meeting:q=0 p=4 f=5 pause=260 ep=3/4/1 deg=normal rej=2(markup-leak)", text)
+        self.assertIn("local:q=1 p=2 f=3 pause=80 ep=2/1/0 deg=congested rej=0", text)
+
     def test_runtime_mode_controls_apply_to_labels_and_target_pickers(self) -> None:
         page = LiveCaptionPage()
         config = AppConfig()
@@ -340,6 +385,7 @@ class LocalAiPageUiTests(_QtTestCase):
         self.assertFalse(hasattr(page, "translation_style_combo"))
         self.assertFalse(hasattr(page, "tts_style_combo"))
         self.assertEqual(page.experience_preset_combo.currentData(), "meeting_monitor")
+        self.assertEqual(page.experience_preset_combo.currentText(), "超穩定會議字幕")
         return
         self.assertIn("已內建高準確 + 低延遲", page.channel_strategy_label.text())
 
@@ -353,18 +399,20 @@ class LocalAiPageUiTests(_QtTestCase):
         self.assertEqual(page.asr_beam_spin.value(), 1)
         self.assertFalse(page.asr_condition_prev_check.isChecked())
         self.assertFalse(page.remote_asr_condition_prev_check.isChecked())
-        self.assertEqual(page.asr_partial_interval_spin.value(), 500)
-        self.assertEqual(page.remote_asr_partial_interval_spin.value(), 420)
-        self.assertAlmostEqual(page.asr_rms_threshold_spin.value(), 0.025, places=3)
-        self.assertAlmostEqual(page.remote_asr_rms_threshold_spin.value(), 0.02, places=3)
-        self.assertEqual(page.asr_min_silence_spin.value(), 1000)
-        self.assertEqual(page.asr_speech_pad_spin.value(), 2000)
-        self.assertEqual(page.remote_asr_min_silence_spin.value(), 600)
-        self.assertEqual(page.remote_asr_speech_pad_spin.value(), 420)
+        self.assertEqual(page.asr_partial_interval_spin.value(), 520)
+        self.assertEqual(page.remote_asr_partial_interval_spin.value(), 480)
+        self.assertAlmostEqual(page.asr_rms_threshold_spin.value(), 0.022, places=3)
+        self.assertAlmostEqual(page.remote_asr_rms_threshold_spin.value(), 0.020, places=3)
+        self.assertEqual(page.asr_min_silence_spin.value(), 640)
+        self.assertEqual(page.asr_speech_pad_spin.value(), 360)
+        self.assertEqual(page.remote_asr_min_silence_spin.value(), 560)
+        self.assertEqual(page.remote_asr_speech_pad_spin.value(), 320)
         self.assertEqual(page.runtime_sample_rate_spin.currentData(), 48000)
         self.assertEqual(page.runtime_chunk_spin.value(), 40)
-        self.assertEqual(page.runtime_asr_pre_roll_spin.value(), 520)
-        self.assertEqual(page.runtime_asr_partial_min_audio_spin.value(), 1000)
+        self.assertEqual(page.runtime_asr_pre_roll_spin.value(), 360)
+        self.assertEqual(page.runtime_asr_partial_min_audio_spin.value(), 360)
+        self.assertEqual(page.runtime_stable_partial_min_repeats_spin.value(), 3)
+        self.assertEqual(page.runtime_partial_stability_delta_spin.value(), 6)
         self.assertFalse(page.runtime_early_final_check.isChecked())
         self.assertEqual(page.runtime_tts_max_wait_spin.value(), 2200)
         self.assertEqual(page.runtime_tts_cancel_policy_combo.currentData(), "older_only")
@@ -376,8 +424,11 @@ class LocalAiPageUiTests(_QtTestCase):
         self.assertEqual(updated.tts.style_preset, "broadcast_clear")
         self.assertEqual(updated.llm.caption_profile, "live_caption_fast")
         self.assertEqual(updated.llm.speech_profile, "speech_output_natural")
+        self.assertEqual(updated.asr_channels.local.final_beam_size, 4)
+        self.assertEqual(updated.asr_channels.remote.final_beam_size, 5)
         self.assertEqual(updated.runtime.asr_profile_local, "meeting_room")
         self.assertEqual(updated.runtime.asr_profile_remote, "meeting_room")
+        self.assertIn("超穩定會議字幕", page._current_asr_runtime_hint_text())
 
     def test_local_ai_page_round_trips_advanced_runtime_and_profile_controls(self) -> None:
         page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
@@ -440,6 +491,7 @@ class LocalAiPageUiTests(_QtTestCase):
 
         self.assertEqual(page.llm_caption_profile_combo.currentData(), "dialogue_fast")
         self.assertEqual(page.experience_preset_combo.currentData(), "dialogue")
+        self.assertEqual(page.experience_preset_combo.currentText(), "低延遲雙向對話")
 
         updated = AppConfig()
         page.update_config(updated)
@@ -453,13 +505,17 @@ class LocalAiPageUiTests(_QtTestCase):
 
         page.experience_preset_combo.setCurrentIndex(page.experience_preset_combo.findData("dialogue"))
 
+        self.assertEqual(page.asr_beam_spin.value(), 1)
+        self.assertFalse(page.asr_condition_prev_check.isChecked())
+        self.assertFalse(page.remote_asr_condition_prev_check.isChecked())
         self.assertEqual(page.asr_partial_interval_spin.value(), 240)
         self.assertEqual(page.remote_asr_partial_interval_spin.value(), 220)
-        self.assertEqual(page.asr_min_silence_spin.value(), 260)
-        self.assertEqual(page.remote_asr_min_silence_spin.value(), 240)
+        self.assertEqual(page.asr_min_silence_spin.value(), 280)
+        self.assertEqual(page.remote_asr_min_silence_spin.value(), 260)
         self.assertEqual(page.llm_caption_profile_combo.currentData(), "dialogue_fast")
         self.assertEqual(page.runtime_latency_mode_combo.currentData(), "low_latency")
         self.assertTrue(page.runtime_early_final_check.isChecked())
+        self.assertIn("低延遲雙向對話", page._current_asr_runtime_hint_text())
 
     def test_llm_model_is_fixed_for_both_directions(self) -> None:
         page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)

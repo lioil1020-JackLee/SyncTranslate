@@ -67,6 +67,16 @@ class SettingsContractTests(_QtTestCase):
         self.assertEqual(len(page.findChildren(QPushButton)), 0)
         self.assertEqual(page.diagnostics_details.verticalScrollBarPolicy(), Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
+    def test_diagnostics_page_can_append_runtime_summary_without_adding_lines(self) -> None:
+        page = DiagnosticsPage()
+        page.set_asr_details("ready")
+        page.set_asr_runtime_details("meeting:q=0 f=3 rej=1(markup-leak)")
+
+        text = page.diagnostics_details.toPlainText()
+
+        self.assertEqual(text.count("\n"), 2)
+        self.assertIn("ASR: ready | meeting:q=0 f=3 rej=1(markup-leak)", text)
+
 
 if __name__ == "__main__":
     unittest.main()

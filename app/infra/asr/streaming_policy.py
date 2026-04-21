@@ -103,6 +103,10 @@ class StreamingPolicy:
             ctx.signal.speech_ended
             and ctx.segment_audio_ms >= ctx.speech_end_finalize_audio_ms
         )
+        finalize_on_pause_turn = (
+            ctx.signal.pause_ms >= 240.0
+            and ctx.segment_audio_ms >= max(900, ctx.min_partial_audio_ms + 180)
+        )
         finalize_on_length = (
             ctx.segment_audio_ms >= ctx.adaptive_length_limit_ms
             and ctx.signal.pause_ms >= 180.0
@@ -117,6 +121,7 @@ class StreamingPolicy:
             ctx.signal.hard_endpoint
             or finalize_on_speech_end
             or finalize_on_soft
+            or finalize_on_pause_turn
             or finalize_on_length
             or finalize_on_ceiling
             or should_force_final
@@ -125,7 +130,9 @@ class StreamingPolicy:
         if should_finalize:
             decision.emit_final = True
             decision.is_early_final = not ctx.signal.hard_endpoint
-            decision.reset_endpointing_after_final = finalize_on_soft and not ctx.signal.hard_endpoint
+            decision.reset_endpointing_after_final = (
+                (finalize_on_soft or finalize_on_pause_turn) and not ctx.signal.hard_endpoint
+            )
 
             if should_force_final:
                 decision.reason = "force_final(queue_pressure)"
@@ -135,6 +142,8 @@ class StreamingPolicy:
                 decision.reason = "speech_ended"
             elif finalize_on_soft:
                 decision.reason = "soft_endpoint"
+            elif finalize_on_pause_turn:
+                decision.reason = "pause_turn"
             elif finalize_on_ceiling:
                 decision.reason = "ceiling"
             else:

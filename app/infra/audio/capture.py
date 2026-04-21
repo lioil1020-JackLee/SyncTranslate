@@ -278,9 +278,10 @@ class AudioCapture:
     def _preferred_input_channels(device_name: str, max_input_channels: int) -> int:
         if max_input_channels <= 0:
             return 0
-        normalized = normalize_device_text(device_name)
-        if max_input_channels >= 2 and any(token in normalized for token in ("voicemeeter", "vb audio", "virtual", "cable")):
-            return 2
+        # Desktop dictation stacks are typically more stable when the capture
+        # path is forced to mono before VAD/ASR. Virtual devices often expose
+        # duplicated or weakly decorrelated stereo channels, which makes speech
+        # boundary detection and transcription less stable.
         return 1
 
 

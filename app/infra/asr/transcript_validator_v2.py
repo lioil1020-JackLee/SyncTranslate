@@ -47,6 +47,8 @@ class AsrTranscriptValidatorV2:
         duration_sec = max(0.001, float(np.asarray(audio).reshape(-1).size) / float(max(1, sample_rate)))
         chars_per_second = len(value) / duration_sec
         speech_ratio = self._speech_ratio_from_stats_or_audio(audio, frontend_stats=frontend_stats)
+        if self._looks_like_markup_leak(value):
+            return TranscriptValidationResult(text="", accepted=False, reason="markup-leak", score=0.0)
         # Non-CJK transcripts naturally need more characters to represent the same content.
         # Relax density threshold to avoid over-filtering English/Japanese/Korean outputs.
         density_limit = self._max_chars_per_second if is_cjk_language else self._max_chars_per_second * 2.2
@@ -86,6 +88,33 @@ class AsrTranscriptValidatorV2:
             repeated = unit * (len(compact) // span)
             if compact.startswith(repeated[: len(compact)]) and compact.count(unit) >= 3:
                 return True
+        return False
+
+    @staticmethod
+    def _looks_like_markup_leak(text: str) -> bool:
+        lowered = text.strip().lower()
+        if not lowered:
+            return False
+        if "```" in lowered:
+            return True
+        if re.search(r"</?[a-z][a-z0-9_-]*>", lowered):
+            return True
+        suspicious_tokens = (
+            "<solution",
+            "</solution",
+            "<analysis",
+            "</analysis",
+            "<final",
+            "</final",
+            "<assistant",
+            "</assistant",
+            "<user",
+            "</user",
+        )
+        if any(token in lowered for token in suspicious_tokens):
+            return True
+        if lowered.startswith(("assistant:", "user:", "system:", "translation:", "output:")):
+            return True
         return False
 
     @staticmethod

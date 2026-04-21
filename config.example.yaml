@@ -26,22 +26,22 @@ asr_channels:
     hotwords: ''
     speculative_draft_model: ''
     speculative_num_beams: 1
-    temperature_fallback: 0.0,0.2,0.4
-    no_speech_threshold: 0.3
+    temperature_fallback: 0.0
+    no_speech_threshold: 0.4
     vad:
       enabled: true
       backend: silero_vad
-      min_speech_duration_ms: 220
-      min_silence_duration_ms: 900
+      min_speech_duration_ms: 200
+      min_silence_duration_ms: 520
       max_speech_duration_s: 24.0
-      speech_pad_ms: 520
-      rms_threshold: 0.025
-      neural_threshold: 0.5
+      speech_pad_ms: 320
+      rms_threshold: 0.022
+      neural_threshold: 0.45
     streaming:
-      partial_interval_ms: 500
+      partial_interval_ms: 460
       partial_history_seconds: 2
-      final_history_seconds: 12
-      soft_final_audio_ms: 4000
+      final_history_seconds: 20
+      soft_final_audio_ms: 3200
   remote:
     engine: faster_whisper
     model: large-v3-turbo
@@ -55,22 +55,22 @@ asr_channels:
     hotwords: ''
     speculative_draft_model: ''
     speculative_num_beams: 1
-    temperature_fallback: 0.0,0.2,0.4
-    no_speech_threshold: 0.35
+    temperature_fallback: 0.0
+    no_speech_threshold: 0.32
     vad:
       enabled: true
       backend: silero_vad
-      min_speech_duration_ms: 200
-      min_silence_duration_ms: 760
+      min_speech_duration_ms: 180
+      min_silence_duration_ms: 460
       max_speech_duration_s: 24.0
-      speech_pad_ms: 420
+      speech_pad_ms: 260
       rms_threshold: 0.02
-      neural_threshold: 0.5
+      neural_threshold: 0.35
     streaming:
       partial_interval_ms: 420
       partial_history_seconds: 2
-      final_history_seconds: 10
-      soft_final_audio_ms: 4000
+      final_history_seconds: 12
+      soft_final_audio_ms: 2600
 llm_channels:
   local:
     backend: lm_studio
@@ -220,13 +220,13 @@ runtime:
   chunk_ms: 40
   adaptive_asr_enabled: true
   adaptive_llm_enabled: true
-  asr_pre_roll_ms: 520
-  latency_mode: low_latency
+  asr_pre_roll_ms: 360
+  latency_mode: balanced
   display_partial_strategy: stable_only
   stable_partial_min_repeats: 2
   partial_stability_max_delta_chars: 10
-  asr_partial_min_audio_ms: 1000
-  asr_partial_interval_floor_ms: 1000
+  asr_partial_min_audio_ms: 320
+  asr_partial_interval_floor_ms: 240
   llm_partial_interval_floor_ms: 280
   early_final_enabled: false
   tts_accept_stable_partial: false
@@ -290,9 +290,7 @@ runtime:
   enable_structured_logging: true
   runtime_log_format: jsonl
   # --- ASR endpoint profiles ---
-  asr_profile_local: default
-  asr_profile_remote: default
-  streaming_profile_local: default
-  streaming_profile_remote: default
+  asr_profile_local: meeting_room
+  asr_profile_remote: meeting_room
   # --- Streaming degradation policy ---
   degradation_policy_enabled: true

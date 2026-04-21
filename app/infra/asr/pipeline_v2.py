@@ -21,11 +21,16 @@ class AsrV2PipelineSpec:
 
 def resolve_requested_asr_language(config: AppConfig, source: str) -> str:
     runtime = config.runtime
+    language_mode = str(getattr(runtime, "asr_language_mode", "") or "").strip().lower()
+    if language_mode == "auto":
+        return ""
     explicit = (
         str(getattr(runtime, "remote_asr_language", "") or "").strip()
         if source == "remote"
         else str(getattr(runtime, "local_asr_language", "") or "").strip()
     )
+    if explicit.lower() == "auto":
+        return ""
     if explicit:
         return explicit
     if source == "remote":

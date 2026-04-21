@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from app.infra.asr.streaming_pipeline import ASREventWithSource
+from app.infra.asr.contracts import ASREventWithSource
 from app.infra.asr.text_correction import AsrCorrectionResult
 from app.infra.config.schema import AppConfig
 from app.infra.translation.engine import TranslatorManager

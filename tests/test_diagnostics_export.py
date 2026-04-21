@@ -60,6 +60,24 @@ class DiagnosticsExportTests(unittest.TestCase):
         )
         router_stats = {
             "translation_overflow": {"local": 3, "remote": 7},
+            "asr": {
+                "remote": {
+                    "queue_size": 0,
+                    "partial_count": 5,
+                    "final_count": 4,
+                    "endpointing": {"speech_started_count": 2, "soft_endpoint_count": 3, "hard_endpoint_count": 1},
+                    "endpoint_signal": {"pause_ms": 240},
+                    "postprocessor": {"final": {"rejected_count": 2, "last_rejection_reason": "markup-leak"}},
+                },
+                "local": {
+                    "queue_size": 1,
+                    "partial_count": 2,
+                    "final_count": 1,
+                    "endpointing": {"speech_started_count": 1, "soft_endpoint_count": 0, "hard_endpoint_count": 0},
+                    "endpoint_signal": {"pause_ms": 60},
+                    "postprocessor": {"final": {"rejected_count": 0, "last_rejection_reason": ""}},
+                },
+            },
             "latency": [
                 {"source": "remote", "utterance_id": "u1", "speech_end_to_asr_final_ms": 400},
             ],
@@ -81,6 +99,9 @@ class DiagnosticsExportTests(unittest.TestCase):
             self.assertIn("display_partial_strategy: stable_only", text)
             self.assertIn("translation_overflow_local: 3", text)
             self.assertIn("translation_overflow_remote: 7", text)
+            self.assertIn("asr_observation:", text)
+            self.assertIn("meeting: q=0 p=5 f=4 pause_ms=240", text)
+            self.assertIn("last_rej=markup-leak", text)
             self.assertIn("u1", text)
 
     def test_export_session_report_contains_runtime_snapshot_and_recent_errors(self) -> None:

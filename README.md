@@ -10,7 +10,7 @@ SyncTranslate 是一個以 Windows 桌面為主的即時雙向字幕 / 翻譯 / 
 - 模型採懶載入與共享 registry，避免啟動時重複初始化
 - diagnostics / session report 會輸出每通道實際使用的 backend、effective device、初始化狀態
 
-舊版 `legacy` ASR 仍暫時保留作為 fallback，但已停止擴充。後續功能與調整都以 `ASR v2` 為主。
+專案內部現在只維護單一路徑 `ASR v2`。舊版執行路徑已移除，僅保留極小的相容 helper 供測試與舊介面引用。
 
 ## 目前功能
 
@@ -36,9 +36,9 @@ SyncTranslate 是一個以 Windows 桌面為主的即時雙向字幕 / 翻譯 / 
 
 1. `AudioCapture` 收到本地或遠端音訊
 2. `AudioRouter` 將 chunk 分流到 ASR / translation / TTS
-3. `ASRManagerV2` 依通道語言解析 backend
+3. `ASRManagerV2` 建立每通道 v2 runtime 與 backend pair
 4. `EndpointingRuntime` 執行 VAD / endpointing
-5. `SourceRuntimeV2` 負責 partial / final 事件發送
+5. `SourceRuntimeV2` 負責 partial / final / validator / diagnostics
 6. 翻譯與 TTS 消費 final transcript
 7. `MainWindow` / `LiveCaptionPage` 顯示字幕與 diagnostics
 
@@ -162,7 +162,7 @@ uv run python .\main.py
 uv run python .\main.py --check
 ```
 
-執行測試（全套 324 tests，透過 conftest.py 自動配置外部運行時）：
+執行測試（透過 `conftest.py` 自動配置外部運行時）：
 
 ```powershell
 uv run pytest -q
@@ -191,12 +191,23 @@ powershell -ExecutionPolicy Bypass -File .\tools\runtime_setup\relocate_ai_runti
 - `runtime.asr_pipeline`：預設 `v2`
 - `runtime.local_asr_language` / `runtime.remote_asr_language`：決定 ASR backend
 - `runtime.asr_v2_endpointing`
-- `runtime.asr_profile_local` / `runtime.asr_profile_remote`：endpoint profile（default / meeting_room / headset / noisy_environment / max_accuracy / low_latency）
+- `runtime.asr_profile_local` / `runtime.asr_profile_remote`：endpoint profile（預設 `meeting_room`）
+- `runtime.early_final_enabled`：預設 `false`
+- `runtime.stable_partial_min_repeats`：預設 `3`
+- `runtime.partial_stability_max_delta_chars`：預設 `6`
+- `runtime.asr_partial_min_audio_ms`：預設 `360`
 - `runtime.enable_postprocessor` / `runtime.enable_partial_stabilization`：ASR 後處理
 - `runtime.glossary_enabled` / `runtime.glossary_path`：術語表套用
 - `runtime.degradation_policy_enabled`：streaming 降級保護
 - `runtime.enable_structured_logging`：jsonl 結構化日誌
 - `runtime.asr_queue_maxsize_local` / `runtime.asr_queue_maxsize_remote`
+
+UI 內建兩種快速模式：
+
+- `超穩定會議字幕`
+  - 偏向長句字幕、會議監聽、降低 partial / final 抖動
+- `低延遲雙向對話`
+  - 偏向短句往返、提早切段、降低對話等待感
 
 ASR 路由規則：
 
@@ -205,12 +216,30 @@ ASR 路由規則：
 - `auto` -> `faster_whisper_v2`
 - `none` -> disabled
 
+## Diagnostics 觀測
+
+diagnostics / runtime stats / 匯出目前可直接看到：
+
+- `resolved_backend`
+- `device_effective`
+- `endpoint_signal.pause_ms`
+- `speech_started_count / soft_endpoint_count / hard_endpoint_count`
+- validator / post-processor 的 `rejected_count`
+- 最近一次 `last_rejection_reason`
+
+這些欄位能直接幫助判斷是：
+
+- endpoint 太敏感
+- final 切太碎
+- validator 正在擋垃圾輸出
+- 或 queue / degradation 已開始影響品質
+
 ## 目前已知限制
 
 - 若實際 `effective device` 為 `CPU`，雙通道同時中文發話時仍可能因吞吐量不足而增加延遲
 - speaker diarization 目前仍屬實驗性功能，預設關閉
 - `runtime.asr_v2_backend` 目前主要作為相容欄位保留；實際 backend 以通道語言解析結果為準
-- legacy ASR 尚未完全刪除，但不再作為主要維護路線
+- `stream_worker.py` 只剩 compatibility helpers；不再承載實際 ASR 執行流程
 
 ## 開發工具
 

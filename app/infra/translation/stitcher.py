@@ -7,7 +7,7 @@ from collections import deque
 from dataclasses import dataclass
 from collections import OrderedDict
 
-from app.infra.asr.stream_worker import AsrEvent
+from app.infra.asr.contracts import ASREventWithSource
 from app.infra.translation.provider import TranslationProvider
 from app.infra.config.schema import TranslationProfileConfig
 
@@ -97,7 +97,7 @@ class TranslationStitcher:
         words = [part for part in text.split() if part.strip()]
         return max(1, len(words))
 
-    def process(self, event: AsrEvent) -> StitchResult | None:
+    def process(self, event: ASREventWithSource) -> StitchResult | None:
         text = event.text.strip()
         if not text:
             self._last_skip_reason = "empty_source_text"

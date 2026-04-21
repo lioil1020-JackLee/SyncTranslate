@@ -8,7 +8,7 @@ from typing import Callable
 
 from app.infra.asr.text_correction import AsrTextCorrector
 from app.domain.events import ErrorEvent
-from app.infra.asr.streaming_pipeline import ASREventWithSource
+from app.infra.asr.contracts import ASREventWithSource
 from app.infra.translation.provider import create_translation_provider
 from app.infra.translation.stitcher import TranslationStitcher
 from app.infra.config.schema import AppConfig, LlmConfig, TranslationProfileConfig, translation_enabled_for_source

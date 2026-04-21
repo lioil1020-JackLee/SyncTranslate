@@ -462,7 +462,7 @@ class MainWindow(QMainWindow):
 
     def _set_initial_window_geometry(self) -> None:
         default_width = self._preferred_client_width()
-        default_height = 980
+        default_height = 1060
         screen = self._current_screen()
         if screen is None:
             self.resize(default_width, default_height)
@@ -502,7 +502,7 @@ class MainWindow(QMainWindow):
                 page_height = self.settings_page.minimumHeight()
         tab_bar_h = self.tabs.tabBar().sizeHint().height() if hasattr(self, "tabs") else 0
         status_h = self.statusBar().sizeHint().height() if self.statusBar() else 0
-        return max(760, min(1080, page_height + tab_bar_h + status_h + 12))
+        return max(820, min(1160, page_height + tab_bar_h + status_h + 28))
 
     def _standard_window_flags(self):
         return (
@@ -577,7 +577,7 @@ class MainWindow(QMainWindow):
 
     def _apply_content_minimum_height(self) -> None:
         # 降低最小高度以避免不必要的窗口溢出，並讓四個區塊在較小窗體中自動等比縮放
-        desired_height = max(640, self._preferred_client_height() - 28)
+        desired_height = max(720, self._preferred_client_height() - 12)
         self.setMinimumHeight(desired_height)
 
     def _fit_window_to_screen(self) -> None:
@@ -601,6 +601,7 @@ class MainWindow(QMainWindow):
 
     def refresh_live_caption(self) -> None:
         self._drain_health_check_results()
+        self._refresh_runtime_diagnostics()
         self._apply_detected_asr_labels()
         remote_original_items = self.transcript_buffer.latest("meeting_original", limit=2000)
         remote_translated_items = self.transcript_buffer.latest("meeting_translated", limit=2000)
@@ -632,6 +633,81 @@ class MainWindow(QMainWindow):
             remote_translated_active=bool(remote_translated_lines),
             local_original_active=bool(local_original_lines),
             local_translated_active=bool(local_translated_lines),
+        )
+
+    def _refresh_runtime_diagnostics(self) -> None:
+        if not getattr(self, "diagnostics_page", None):
+            return
+        if not self.audio_router:
+            self.diagnostics_page.set_asr_runtime_details("router=not-built")
+            self.diagnostics_page.set_llm_runtime_details("")
+            self.diagnostics_page.set_tts_runtime_details("")
+            return
+        try:
+            router_stats = self.audio_router.stats()
+        except Exception as exc:
+            self.diagnostics_page.set_asr_runtime_details(f"stats-error={exc}")
+            return
+        self.diagnostics_page.set_asr_runtime_details(self._build_asr_diagnostics_summary(router_stats))
+        self.diagnostics_page.set_llm_runtime_details(self._build_llm_diagnostics_summary(router_stats))
+        self.diagnostics_page.set_tts_runtime_details(self._build_tts_diagnostics_summary(router_stats))
+
+    @staticmethod
+    def _build_asr_diagnostics_summary(router_stats) -> str:
+        parts: list[str] = []
+        for label, source in (("meeting", "remote"), ("local", "local")):
+            asr = router_stats.asr.get(source) or {}
+            parts.append(f"{label}:{MainWindow._build_asr_observation_fragment(asr)}")
+        return " ; ".join(parts)
+
+    @staticmethod
+    def _build_asr_observation_fragment(asr: dict[str, object]) -> str:
+        post = asr.get("postprocessor") or {}
+        final_post = post.get("final") or {}
+        rejected = int(final_post.get("rejected_count", 0) or 0)
+        last_reason = str(final_post.get("last_rejection_reason", "") or "")
+        queue = int(asr.get("queue_size", 0) or 0)
+        partials = int(asr.get("partial_count", 0) or 0)
+        finals = int(asr.get("final_count", 0) or 0)
+        degradation = str(asr.get("degradation_level", "") or "").strip() or "-"
+        signal = asr.get("endpoint_signal") or {}
+        pause_ms = int(signal.get("pause_ms", 0) or 0)
+        endpointing = asr.get("endpointing") or {}
+        soft_count = int(endpointing.get("soft_endpoint_count", 0) or 0)
+        hard_count = int(endpointing.get("hard_endpoint_count", 0) or 0)
+        speech_started = int(endpointing.get("speech_started_count", 0) or 0)
+        fragment = (
+            f"q={queue} p={partials} f={finals} "
+            f"pause={pause_ms} ep={speech_started}/{soft_count}/{hard_count} "
+            f"deg={degradation} rej={rejected}"
+        )
+        if last_reason:
+            fragment += f"({last_reason})"
+        return fragment
+
+    @staticmethod
+    def _build_llm_diagnostics_summary(router_stats) -> str:
+        overflow = router_stats.translation_overflow or {}
+        latest_latency = (router_stats.latency or [{}])[0] if router_stats.latency else {}
+        overflow_text = f"overflow l={int(overflow.get('local', 0))} r={int(overflow.get('remote', 0))}"
+        if not latest_latency:
+            return overflow_text
+        return (
+            f"{overflow_text} ; latest="
+            f"{latest_latency.get('source', '-')}:"
+            f"asr_final={latest_latency.get('speech_end_to_asr_final_ms', '-')}"
+            f"/llm_final={latest_latency.get('asr_final_to_llm_final_ms', '-')}"
+        )
+
+    @staticmethod
+    def _build_tts_diagnostics_summary(router_stats) -> str:
+        tts = router_stats.tts or {}
+        return (
+            f"depth={int(tts.get('queue_depth', 0) or 0)} "
+            f"local={int(tts.get('queue_depth_local', 0) or 0)} "
+            f"remote={int(tts.get('queue_depth_remote', 0) or 0)} "
+            f"drop_l={int(tts.get('drop_count_local', 0) or 0)} "
+            f"drop_r={int(tts.get('drop_count_remote', 0) or 0)}"
         )
 
     def _resolve_active_sources(self) -> set[str]:
@@ -1041,6 +1117,20 @@ class MainWindow(QMainWindow):
                 lines.append(f"{label}: capture_error={capture['last_error']}")
             if asr["last_debug"]:
                 lines.append(f"{label}: asr_last={asr['last_debug']}")
+            final_post = ((asr.get("postprocessor") or {}).get("final") or {})
+            partial_post = ((asr.get("postprocessor") or {}).get("partial") or {})
+            if final_post:
+                lines.append(
+                    f"{label}: post_final accepted={final_post.get('accepted_count', 0)} "
+                    f"rejected={final_post.get('rejected_count', 0)} "
+                    f"last_reason={final_post.get('last_rejection_reason', '-') or '-'}"
+                )
+            if partial_post:
+                lines.append(
+                    f"{label}: post_partial accepted={partial_post.get('accepted_count', 0)} "
+                    f"rejected={partial_post.get('rejected_count', 0)} "
+                    f"last_reason={partial_post.get('last_rejection_reason', '-') or '-'}"
+                )
             if asr.get("backend_resolution_reason"):
                 lines.append(f"{label}: backend_reason={asr['backend_resolution_reason']}")
             if asr.get("init_failure"):

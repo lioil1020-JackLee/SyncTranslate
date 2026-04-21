@@ -6,7 +6,7 @@ import sys
 from types import ModuleType
 from unittest.mock import patch
 
-from app.infra.asr.streaming_pipeline import ASRManager
+from app.infra.asr.manager_v2 import ASRManagerV2
 from app.infra.asr.language_policy import VadSegmenter
 from app.infra.config.schema import AppConfig
 from app.infra.asr.stream_worker import (
@@ -54,7 +54,7 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
         cfg.asr_channels.remote.model = "remote-asr-model"
         cfg.runtime.asr_queue_maxsize_local = 25
         cfg.runtime.asr_queue_maxsize_remote = 31
-        manager = ASRManager(cfg)
+        manager = ASRManagerV2(cfg)
 
         self.assertEqual(manager._asr_profile_for_source("local").model, "local-asr-model")
         self.assertEqual(manager._asr_profile_for_source("remote").model, "remote-asr-model")
@@ -86,7 +86,7 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
         cfg.llm_channels.local.model = "local-model"
         cfg.llm_channels.remote.model = "remote-model"
 
-        asr_manager = ASRManager(cfg)
+        asr_manager = ASRManagerV2(cfg)
         translator_manager = TranslatorManager(cfg)
 
         self.assertEqual(asr_manager._asr_profile_for_source("local").model, "local-asr-model")
@@ -99,7 +99,7 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
         cfg.language.local_source = "ja"
         cfg.language.meeting_source = "th"
         cfg.runtime.asr_language_mode = "auto"
-        manager = ASRManager(cfg)
+        manager = ASRManagerV2(cfg)
 
         self.assertEqual(manager._asr_language_for_source("local"), "")
         self.assertEqual(manager._asr_language_for_source("remote"), "")
@@ -177,7 +177,7 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
 
     def test_asr_submit_prefers_strongest_input_channel(self) -> None:
         cfg = AppConfig()
-        manager = ASRManager(cfg)
+        manager = ASRManagerV2(cfg)
 
         class _Stream:
             def __init__(self) -> None:
@@ -205,7 +205,7 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
 
     def test_asr_submit_averages_similar_stereo_channels_for_stable_mono(self) -> None:
         cfg = AppConfig()
-        manager = ASRManager(cfg)
+        manager = ASRManagerV2(cfg)
 
         class _Stream:
             def __init__(self) -> None:
@@ -271,7 +271,7 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
 
     def test_asr_submit_avoids_phase_cancellation_from_stereo_sum(self) -> None:
         cfg = AppConfig()
-        manager = ASRManager(cfg)
+        manager = ASRManagerV2(cfg)
 
         class _Stream:
             def __init__(self) -> None:
@@ -381,7 +381,7 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
 
     def test_effective_pre_roll_ms_keeps_enough_lead_in_for_soft_sentence_starts(self) -> None:
         self.assertEqual(
-            ASRManager._effective_pre_roll_ms(
+            ASRManagerV2._effective_pre_roll_ms(
                 configured_pre_roll_ms=220,
                 min_speech_duration_ms=150,
                 speech_pad_ms=320,
@@ -389,7 +389,7 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
             310,
         )
         self.assertEqual(
-            ASRManager._effective_pre_roll_ms(
+            ASRManagerV2._effective_pre_roll_ms(
                 configured_pre_roll_ms=480,
                 min_speech_duration_ms=150,
                 speech_pad_ms=320,
@@ -525,7 +525,7 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
 
     def test_speaker_diarization_is_disabled_by_default(self) -> None:
         cfg = AppConfig()
-        manager = ASRManager(cfg)
+        manager = ASRManagerV2(cfg)
 
         self.assertIsNone(manager._speaker_diarizer_for_source("local"))
 

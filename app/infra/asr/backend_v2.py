@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 from dataclasses import dataclass
+from threading import Lock
 
 import numpy as np
 
@@ -27,6 +28,7 @@ class BackendTranscript:
     start_ms: int = 0
     end_ms: int = 0
     confidence: float = 0.0
+    rejection_reason: str = ""
 
 
 @dataclass(slots=True)
@@ -47,6 +49,11 @@ class BackendPostProcessor:
         self._language = language
         self._biaser = biaser
         self._validator = validator
+        self._stats_lock = Lock()
+        self._accepted_count = 0
+        self._rejected_count = 0
+        self._last_rejection_reason = ""
+        self._rejections_by_reason: dict[str, int] = {}
 
     def process(
         self,
@@ -64,12 +71,30 @@ class BackendPostProcessor:
             language=self._language,
             frontend_stats=frontend_stats,
         )
+        with self._stats_lock:
+            if result.accepted:
+                self._accepted_count += 1
+            else:
+                self._rejected_count += 1
+                self._last_rejection_reason = result.reason
+                self._rejections_by_reason[result.reason] = self._rejections_by_reason.get(result.reason, 0) + 1
         return BackendTranscript(
             text=result.text if result.accepted else "",
             is_final=True,
             detected_language=self._language,
             confidence=result.score,
+            rejection_reason="" if result.accepted else result.reason,
         )
+
+    def stats(self) -> dict[str, object]:
+        with self._stats_lock:
+            return {
+                "language": self._language,
+                "accepted_count": self._accepted_count,
+                "rejected_count": self._rejected_count,
+                "last_rejection_reason": self._last_rejection_reason,
+                "rejections_by_reason": dict(self._rejections_by_reason),
+            }
 
 
 class FasterWhisperStreamingBackend:
@@ -138,12 +163,15 @@ class FasterWhisperStreamingBackend:
         )
 
     def runtime_info(self) -> dict[str, object]:
-        return {
+        info = {
             "device_effective": str(getattr(self._engine, "_runtime_device", "") or getattr(self._engine, "device", "")),
             "model_init_mode": "warm" if getattr(self._engine, "_model", None) is not None else "lazy",
             "init_failure": str(getattr(self._engine, "_fallback_reason", "") or ""),
             "runtime_label": self._engine.runtime_label(),
         }
+        if self._post_processor is not None:
+            info["postprocessor"] = self._post_processor.stats()
+        return info
 
 
 def build_backend_pair(

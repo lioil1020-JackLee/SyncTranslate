@@ -1,26 +1,20 @@
-"""Legacy segment worker for the Whisper-based ASR path.
+"""Minimal compatibility helpers around the v2-only ASR runtime.
 
-This worker remains as the frozen compatibility path while the new ASR v2 stack
-is introduced. Avoid adding new product features here unless they are required
-to keep the existing pipeline functioning during migration.
+This module intentionally keeps only the small API surface still referenced by
+tests and compatibility imports.
 """
 
 from __future__ import annotations
 
-import time
-from dataclasses import dataclass
 from collections import deque
-from queue import Empty, Full, Queue
-from threading import Event, Lock, Thread
+from dataclasses import dataclass
+from threading import Lock
 from typing import Callable
 import re
+import time
 import unicodedata
 
 import numpy as np
-
-from app.infra.asr.faster_whisper_adapter import FasterWhisperEngine
-from app.infra.asr.language_policy import VadSegmenter
-from app.infra.asr.speaker_diarizer import OnlineSpeakerDiarizer
 
 
 @dataclass(slots=True)
@@ -51,11 +45,18 @@ class StreamingAsrStats:
 
 
 class StreamingAsr:
+    """Small compatibility stub for tests and old imports.
+
+    The old decode thread and endpointing loop are gone.  This class only keeps
+    the helper methods and adaptive tuning state that existing tests still
+    assert against.
+    """
+
     def __init__(
         self,
         *,
-        engine: FasterWhisperEngine,
-        vad: VadSegmenter,
+        engine,
+        vad,
         partial_interval_ms: int = 800,
         partial_history_seconds: int = 3,
         final_history_seconds: int = 6,
@@ -66,61 +67,54 @@ class StreamingAsr:
         early_final_enabled: bool = True,
         adaptive_enabled: bool = True,
         queue_maxsize: int = 128,
-        speaker_diarizer: OnlineSpeakerDiarizer | None = None,
+        speaker_diarizer=None,
         on_event: Callable[[AsrEvent], None] | None = None,
         on_debug: Callable[[str], None] | None = None,
     ) -> None:
         self._engine = engine
         self._vad = vad
-        # Keep partial decode conservative to avoid native decoder overload.
-        self._partial_interval_floor_ms = max(120, int(partial_interval_floor_ms))
-        self._base_partial_interval_ms = max(self._partial_interval_floor_ms, int(partial_interval_ms))
-        self._partial_interval_ms = self._base_partial_interval_ms
+        self._speaker_diarizer = speaker_diarizer
+        self._on_event = on_event
+        self._on_debug = on_debug
+        self._queue_maxsize = max(4, int(queue_maxsize))
         self._partial_history_seconds = max(1, int(partial_history_seconds))
         self._final_history_seconds = max(1, int(final_history_seconds))
         self._pre_roll_ms = max(0, int(pre_roll_ms))
-        self._queue: Queue[tuple[np.ndarray, float]] = Queue(maxsize=max(4, queue_maxsize))
-        self._stop_event = Event()
-        self._thread: Thread | None = None
-        self._on_event = on_event
-        self._on_debug = on_debug
-        self._segment_chunks: list[np.ndarray] = []
-        self._segment_start_ms = 0
-        self._segment_end_ms = 0
-        self._last_partial_ms = 0
-        self._segment_sample_rate = 16000
         self._min_partial_audio_ms = max(120, int(min_partial_audio_ms))
-        self._force_final_queue_size = max(8, self._queue.maxsize // 4)
-        self._force_final_audio_ms = 1800
-        self._base_soft_final_audio_ms = max(self._force_final_audio_ms, int(soft_final_audio_ms))
-        self._soft_final_audio_ms = self._base_soft_final_audio_ms
-        self._early_final_enabled = bool(early_final_enabled)
-        self._adaptive_enabled = bool(adaptive_enabled)
-        self._speaker_diarizer = speaker_diarizer
+        self._partial_interval_floor_ms = max(120, int(partial_interval_floor_ms))
+        self._base_partial_interval_ms = max(self._partial_interval_floor_ms, int(partial_interval_ms))
+        self._partial_interval_ms = self._base_partial_interval_ms
         self._base_min_silence_duration_ms = int(
             max(120.0, float(getattr(vad, "effective_min_silence_duration_ms", 240.0)))
         )
+        self._force_final_audio_ms = 1800
+        self._base_soft_final_audio_ms = max(self._force_final_audio_ms, int(soft_final_audio_ms))
+        self._soft_final_audio_ms = self._base_soft_final_audio_ms
+        self._adaptive_enabled = bool(adaptive_enabled)
         self._adaptive_mode = "baseline"
         self._adaptive_recent_audio_ms: deque[int] = deque(maxlen=10)
         self._adaptive_partial_latencies: deque[int] = deque(maxlen=10)
         self._adaptive_final_latencies: deque[int] = deque(maxlen=10)
         self._adaptive_cps_samples: deque[float] = deque(maxlen=8)
         self._adaptive_load_backoff_until_ms = 0
-        self._final_error_cooldown_until_ms = 0
-        self._last_final_error_text = ""
-        self._overflow_count = 0
-        self._last_overflow_report_ms = 0
+        self._soft_split_pause_ms = 220.0
+        self._segment_chunks: list[np.ndarray] = []
+        self._segment_sample_rate = 16000
+        self._segment_start_ms = 0
+        self._segment_end_ms = 0
+        self._last_partial_ms = 0
         self._drop_partial_until_final = False
-        self._partial_cooldown_until_ms = 0
+        self._in_speech_segment = False
         self._pre_roll_chunks: deque[np.ndarray] = deque()
         self._pre_roll_sample_count = 0
         self._pre_roll_sample_rate = 16000
-        self._in_speech_segment = False
-        self._soft_split_pause_ms = 220.0
+        self._overflow_count = 0
         self._partial_count = 0
         self._final_count = 0
         self._last_debug = ""
         self._stats_lock = Lock()
+        self._early_final_enabled = bool(early_final_enabled)
+
         self._apply_adaptive_tuning(
             mode="baseline",
             partial_interval_ms=self._base_partial_interval_ms,
@@ -130,83 +124,34 @@ class StreamingAsr:
         )
 
     def start(self, on_event: Callable[[AsrEvent], None]) -> None:
-        self.stop()
         self._on_event = on_event
-        self._stop_event.clear()
-        self._thread = Thread(target=self._run, daemon=True)
-        self._thread.start()
 
     def request_stop(self) -> None:
-        self._stop_event.set()
+        return None
 
     def is_running(self) -> bool:
-        return self._thread is not None and self._thread.is_alive()
+        return False
 
     def cleanup_if_stopped(self) -> bool:
-        if self._thread and self._thread.is_alive():
-            return False
-        self._thread = None
-        self._vad.reset()
-        self._segment_chunks = []
-        self._segment_start_ms = 0
-        self._segment_end_ms = 0
-        self._last_partial_ms = 0
-        self._segment_sample_rate = 16000
-        self._overflow_count = 0
-        self._last_overflow_report_ms = 0
-        self._drop_partial_until_final = False
-        self._partial_cooldown_until_ms = 0
-        self._pre_roll_chunks.clear()
-        self._pre_roll_sample_count = 0
-        self._pre_roll_sample_rate = 16000
-        self._in_speech_segment = False
-        self._partial_count = 0
-        self._final_count = 0
-        self._last_debug = ""
-        self._adaptive_recent_audio_ms.clear()
-        self._adaptive_partial_latencies.clear()
-        self._adaptive_final_latencies.clear()
-        self._adaptive_cps_samples.clear()
-        self._adaptive_load_backoff_until_ms = 0
-        self._final_error_cooldown_until_ms = 0
-        self._last_final_error_text = ""
-        if self._speaker_diarizer is not None:
-            self._speaker_diarizer.reset()
-        self._apply_adaptive_tuning(
-            mode="baseline",
-            partial_interval_ms=self._base_partial_interval_ms,
-            min_silence_duration_ms=self._base_min_silence_duration_ms,
-            soft_final_audio_ms=self._base_soft_final_audio_ms,
-            force=True,
-        )
-        while not self._queue.empty():
-            try:
-                self._queue.get_nowait()
-            except Empty:
-                break
         return True
 
     def stop(self) -> None:
-        self.request_stop()
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=8.0)
-            if self._thread.is_alive():
-                # Do not clear/reset the shared stop event if old worker is still alive,
-                # otherwise a subsequent start() can revive the previous worker thread.
-                self._debug("asr worker stop timeout; skip reset to avoid concurrent workers")
-                raise RuntimeError("ASR worker did not stop in time")
-        self.cleanup_if_stopped()
+        return None
+
+    def submit_chunk(self, chunk: np.ndarray, sample_rate: float) -> None:
+        if self._pre_roll_ms > 0:
+            self._append_pre_roll_chunk(chunk=np.asarray(chunk, dtype=np.float32), sample_rate=sample_rate)
 
     def stats(self) -> StreamingAsrStats:
         with self._stats_lock:
             return StreamingAsrStats(
-                queue_size=self._queue.qsize(),
+                queue_size=0,
                 dropped_chunks=self._overflow_count,
                 partial_count=self._partial_count,
                 final_count=self._final_count,
                 last_debug=self._last_debug,
-                vad_rms=self._vad.last_rms,
-                vad_threshold=self._vad.effective_rms_threshold,
+                vad_rms=float(getattr(self._vad, "last_rms", 0.0)),
+                vad_threshold=float(getattr(self._vad, "effective_rms_threshold", 0.0)),
                 adaptive_mode=self._adaptive_mode,
                 adaptive_partial_interval_ms=self._partial_interval_ms,
                 adaptive_min_silence_duration_ms=int(
@@ -215,278 +160,8 @@ class StreamingAsr:
                 adaptive_soft_final_audio_ms=self._soft_final_audio_ms,
             )
 
-    def submit_chunk(self, chunk: np.ndarray, sample_rate: float) -> None:
-        try:
-            self._queue.put_nowait((chunk.copy(), sample_rate))
-        except Full:
-            try:
-                self._queue.get_nowait()
-            except Empty:
-                pass
-            try:
-                self._queue.put_nowait((chunk.copy(), sample_rate))
-            except Full:
-                pass
-            self._overflow_count += 1
-            now_ms = int(time.monotonic() * 1000)
-            if now_ms - self._last_overflow_report_ms >= 1000:
-                self._debug(f"asr queue overflow: dropped oldest chunk x{self._overflow_count}")
-                self._last_overflow_report_ms = now_ms
-            self._drop_partial_until_final = True
-            # Cool down partial decoding after overflow to reduce native ASR load spikes.
-            self._partial_cooldown_until_ms = max(self._partial_cooldown_until_ms, now_ms + 8000)
-            self._adaptive_load_backoff_until_ms = max(self._adaptive_load_backoff_until_ms, now_ms + 12000)
-            self._recompute_adaptive_tuning(now_ms=now_ms)
-            self._debug("asr safety mode: partial decode cooling down after overflow")
-
-    def _run(self) -> None:
-        while not self._stop_event.is_set():
-            try:
-                chunk, sample_rate = self._queue.get(timeout=0.2)
-            except Empty:
-                continue
-
-            drained = 0
-            pending_parts = [chunk]
-            while drained < 3:
-                try:
-                    extra_chunk, extra_rate = self._queue.get_nowait()
-                except Empty:
-                    break
-                if extra_rate > 0 and int(extra_rate) == int(sample_rate):
-                    pending_parts.append(extra_chunk)
-                    drained += 1
-                    continue
-                self._process_chunk(chunk=np.concatenate(pending_parts, axis=0), sample_rate=sample_rate)
-                pending_parts = [extra_chunk]
-                sample_rate = extra_rate
-                drained = 0
-
-            self._process_chunk(chunk=np.concatenate(pending_parts, axis=0), sample_rate=sample_rate)
-
-    def _process_chunk(self, *, chunk: np.ndarray, sample_rate: float) -> None:
-        if sample_rate <= 0:
-            return
-        now_ms = int(time.monotonic() * 1000)
-        if not self._in_speech_segment:
-            self._append_pre_roll_chunk(chunk=chunk, sample_rate=sample_rate)
-        decision = self._vad.update(chunk, sample_rate)
-        chunk_ms = int(decision.chunk_ms)
-        self._segment_sample_rate = int(sample_rate)
-        if self._segment_start_ms == 0:
-            self._segment_start_ms = now_ms - chunk_ms
-        self._segment_end_ms = now_ms
-
-        if decision.speech_active:
-            just_started = False
-            if not self._in_speech_segment:
-                just_started = self._prime_segment_from_pre_roll(now_ms=now_ms, sample_rate=sample_rate)
-                self._in_speech_segment = True
-            if not just_started:
-                self._segment_chunks.append(chunk)
-            segment_audio_ms = self._segment_audio_ms()
-            should_force_final = (
-                self._queue.qsize() >= self._force_final_queue_size
-                and segment_audio_ms >= self._force_final_audio_ms
-            )
-            should_soft_split = self._should_emit_soft_split(decision)
-            if should_force_final:
-                self._debug(
-                    "asr backlog: force final "
-                    f"queue={self._queue.qsize()} audio_ms={segment_audio_ms}"
-                )
-                self._emit_final(now_ms=now_ms, is_early_final=False)
-                self._reset_segment()
-                return
-            if should_soft_split:
-                pause_ms = int(round(float(getattr(decision, "pause_ms", 0.0))))
-                self._debug(f"asr long speech: soft final audio_ms={segment_audio_ms} pause_ms={pause_ms}")
-                self._emit_final(now_ms=now_ms, is_early_final=False)
-                self._reset_segment()
-                return
-            should_emit_partial = (
-                (not self._drop_partial_until_final)
-                and now_ms >= self._partial_cooldown_until_ms
-                and self._queue.qsize() == 0
-                and now_ms - self._last_partial_ms >= self._partial_interval_ms
-            )
-            if should_emit_partial:
-                self._emit_partial()
-                self._last_partial_ms = now_ms
-
-        if decision.finalize:
-            # Include the transition chunk (speech→silence boundary) so the very last
-            # words are not silently dropped before final transcription.
-            if (not decision.speech_active) and chunk.size > 0:
-                self._segment_chunks.append(chunk)
-            self._emit_final(now_ms=now_ms, is_early_final=False)
-            self._reset_segment()
-            return
-
-        if self._should_emit_early_final(decision):
-            self._debug(
-                "asr early final "
-                f"speech_ms={int(decision.speech_ms)} silence_ms={int(decision.silence_ms)}"
-            )
-            self._emit_final(now_ms=now_ms, is_early_final=True)
-            self._reset_segment()
-
-    def _emit_partial(self) -> None:
-        if not self._on_event or not self._segment_chunks:
-            return
-        audio = np.concatenate(self._segment_chunks, axis=0)
-        audio = self._limited_audio(audio, self._partial_history_seconds)
-        audio_ms = int(len(audio) * 1000 / max(1, self._segment_sample_rate))
-        if audio_ms < self._min_partial_audio_ms:
-            return
-        start = time.perf_counter()
-        try:
-            result = self._engine.transcribe_partial_result(audio=audio, sample_rate=self._segment_sample_rate)
-            text = result.text or ""
-        except Exception as exc:
-            self._debug(f"partial asr failed: {exc}")
-            now_ms = int(time.monotonic() * 1000)
-            self._partial_cooldown_until_ms = max(self._partial_cooldown_until_ms, now_ms + 12000)
-            self._debug("asr safety mode: partial decode cooling down after partial failure")
-            return
-        if not text.strip():
-            return
-        if self._stop_event.is_set():
-            return
-        drop_reason = _transcript_drop_reason(
-            text,
-            audio_ms=audio_ms,
-            vad_rms=self._vad.last_rms,
-            expected_language=str(getattr(self._engine, "language", "") or ""),
-        )
-        if drop_reason:
-            self._debug(f"drop {drop_reason} partial text={text.strip()[:80]}")
-            return
-        latency_ms = int((time.perf_counter() - start) * 1000)
-        if latency_ms >= 1500:
-            now_ms = int(time.monotonic() * 1000)
-            self._partial_cooldown_until_ms = max(self._partial_cooldown_until_ms, now_ms + 15000)
-            self._debug("asr safety mode: partial decode cooling down after high partial latency")
-        self._record_partial_adaptation(latency_ms=latency_ms)
-        self._on_event(
-            AsrEvent(
-                text=text.strip(),
-                is_final=False,
-                is_early_final=False,
-                start_ms=self._segment_start_ms,
-                end_ms=self._segment_end_ms,
-                latency_ms=latency_ms,
-                detected_language=result.detected_language,
-            )
-        )
-        with self._stats_lock:
-            self._partial_count += 1
-        self._debug(f"asr partial latency={latency_ms}ms text={text.strip()[:80]}")
-
-    def _emit_final(self, *, now_ms: int, is_early_final: bool) -> None:
-        if not self._on_event or not self._segment_chunks:
-            return
-        audio = np.concatenate(self._segment_chunks, axis=0)
-        audio = self._limited_audio(audio, self._final_history_seconds)
-        start = time.perf_counter()
-        try:
-            result = self._engine.transcribe_final_result(audio=audio, sample_rate=self._segment_sample_rate)
-            text = result.text or ""
-        except Exception as exc:
-            if self._stop_event.is_set():
-                return
-            error_text = _format_asr_exception_message(exc)
-            cooldown_ms = 15000
-            if "_ssl" in error_text.lower() or "libssl" in error_text.lower() or "libcrypto" in error_text.lower():
-                cooldown_ms = 45000
-            should_emit = (
-                now_ms >= self._final_error_cooldown_until_ms
-                or error_text != self._last_final_error_text
-            )
-            self._final_error_cooldown_until_ms = max(self._final_error_cooldown_until_ms, now_ms + cooldown_ms)
-            self._last_final_error_text = error_text
-            if not should_emit:
-                self._debug("asr final failed repeatedly; suppressing duplicate error during cooldown")
-                return
-            self._on_event(
-                AsrEvent(
-                    text=f"[asr-error] {error_text}",
-                    is_final=True,
-                    is_early_final=is_early_final,
-                    start_ms=self._segment_start_ms,
-                    end_ms=now_ms,
-                    latency_ms=0,
-                )
-            )
-            return
-        audio_ms = int(len(audio) * 1000 / max(1, self._segment_sample_rate))
-        drop_reason = _transcript_drop_reason(
-            text,
-            audio_ms=audio_ms,
-            vad_rms=self._vad.last_rms,
-            expected_language=str(getattr(self._engine, "language", "") or ""),
-        )
-        if drop_reason:
-            self._debug(f"drop {drop_reason} final text={text.strip()[:80]}")
-            return
-        latency_ms = int((time.perf_counter() - start) * 1000)
-        if latency_ms >= 1500:
-            now_ms = int(time.monotonic() * 1000)
-            self._partial_cooldown_until_ms = max(self._partial_cooldown_until_ms, now_ms + 6000)
-            self._debug(f"asr partial backoff: latency={latency_ms}ms")
-        cps = 0.0
-        if text and audio_ms > 0:
-            cps = len(text.strip()) / (audio_ms / 1000.0)
-        self._record_final_adaptation(audio_ms=audio_ms, latency_ms=latency_ms, now_ms=now_ms, cps=cps)
-        if not text.strip():
-            return
-        if self._stop_event.is_set():
-            return
-        speaker_label = ""
-        if self._speaker_diarizer is not None:
-            speaker_label = self._speaker_diarizer.assign(
-                audio=audio,
-                sample_rate=self._segment_sample_rate,
-                now_ms=now_ms,
-            )
-        self._on_event(
-            AsrEvent(
-                text=text.strip(),
-                is_final=True,
-                is_early_final=is_early_final,
-                start_ms=self._segment_start_ms,
-                end_ms=now_ms,
-                latency_ms=latency_ms,
-                detected_language=result.detected_language,
-                speaker_label=speaker_label,
-            )
-        )
-        with self._stats_lock:
-            self._final_count += 1
-        self._debug(f"asr final latency={latency_ms}ms text={text.strip()[:80]}")
-
-    def _should_emit_early_final(self, decision) -> bool:
-        if not self._early_final_enabled:
-            return False
-        if decision.speech_active:
-            return False
-        if not self._segment_chunks:
-            return False
-        speech_ms = float(getattr(decision, "speech_ms", 0.0))
-        silence_ms = float(getattr(decision, "silence_ms", 0.0))
-        if speech_ms <= 0 or silence_ms <= 0:
-            return False
-        segment_audio_ms = self._segment_audio_ms()
-        if segment_audio_ms < 700 or segment_audio_ms > 2200:
-            return False
-        if speech_ms < 520:
-            return False
-        configured_silence_ms = float(getattr(self._vad, "effective_min_silence_duration_ms", 240.0))
-        early_silence_ms = max(320.0, min(420.0, configured_silence_ms * 0.75))
-        return silence_ms >= early_silence_ms
-
     def _should_emit_soft_split(self, decision) -> bool:
-        if self._queue.qsize() != 0 or not self._segment_chunks:
+        if not self._segment_chunks:
             return False
         segment_audio_ms = self._segment_audio_ms()
         if segment_audio_ms < self._soft_final_audio_ms:
@@ -568,9 +243,8 @@ class StreamingAsr:
             min_silence_duration_ms = max(160, int(min_silence_duration_ms * 0.85))
             mode_parts.append("fast_speaker")
 
-        mode = "+".join(mode_parts) if mode_parts else "baseline"
         self._apply_adaptive_tuning(
-            mode=mode,
+            mode="+".join(mode_parts) if mode_parts else "baseline",
             partial_interval_ms=partial_interval_ms,
             min_silence_duration_ms=min_silence_duration_ms,
             soft_final_audio_ms=soft_final_audio_ms,
@@ -646,7 +320,7 @@ class StreamingAsr:
             self._pre_roll_chunks.clear()
             self._pre_roll_sample_count = 0
             self._pre_roll_sample_rate = sr
-        copied = chunk.copy()
+        copied = np.asarray(chunk, dtype=np.float32).copy()
         self._pre_roll_chunks.append(copied)
         self._pre_roll_sample_count += int(copied.shape[0])
         max_samples = int(sr * self._pre_roll_ms / 1000)
@@ -674,11 +348,6 @@ _HALLUCINATION_PATTERNS = (
     re.compile(r"^\s*thanks\s+for\s+your\s+watching[.! ]*$", re.IGNORECASE),
     re.compile(r"^\s*good night[.! ]*$", re.IGNORECASE),
     re.compile(r"^\s*bye(-| )?bye[.! ]*$", re.IGNORECASE),
-    re.compile(r"^\s*y[' ]?all[.! ]*$", re.IGNORECASE),
-    re.compile(r"^\s*(感謝|謝謝)(您的|你們的)?收看[。！! ]*$"),
-    re.compile(r"^\s*感謝大家收看[。！! ]*$"),
-    re.compile(r"^\s*謝謝(大家|各位)?[。！! ]*$"),
-    re.compile(r"^\s*晚安[。！! ]*$"),
 )
 
 _SHORT_HALLUCINATION_NORMALIZED = {
@@ -691,50 +360,29 @@ _SHORT_HALLUCINATION_NORMALIZED = {
     "thanksall",
     "goodnight",
     "byebye",
-    "\u8b1d\u8b1d\u5927\u5bb6",
-    "\u8c22\u8c22\u5927\u5bb6",
-    "\u611f\u8b1d\u5927\u5bb6",
-    "\u611f\u8c22\u5927\u5bb6",
-    "\u665a\u5b89",
-    "\u62dc\u62dc",
-    "\u6380\u6380",
-    "\u611f\u8b1d\u6536\u770b",
-    "\u611f\u8c22\u6536\u770b",
-    "\u8b1d\u8b1d\u6536\u770b",
-    "\u8c22\u8c22\u6536\u770b",
-    "\u611f\u8b1d\u60a8\u7684\u6536\u770b",
-    "\u611f\u8c22\u60a8\u7684\u6536\u770b",
-    "\u8b1d\u8b1d\u60a8\u7684\u6536\u770b",
-    "\u8c22\u8c22\u60a8\u7684\u6536\u770b",
-    "\u611f\u8b1d\u89c0\u770b",
-    "\u611f\u8c22\u89c2\u770b",
-    "\u8b1d\u8b1d\u89c0\u770b",
-    "\u8c22\u8c22\u89c2\u770b",
+    "謝謝大家",
+    "谢谢大家",
+    "感謝大家",
+    "感谢大家",
+    "晚安",
+    "感謝您的收看",
+    "感谢您的收看",
 }
 
 _NON_SPEECH_TEXT_PATTERNS = (
-    re.compile(r"amara\.org", re.IGNORECASE),
     re.compile(r"yoyo\s+television\s+series\s+exclusive", re.IGNORECASE),
-    re.compile(r"\bming\s*pao\b", re.IGNORECASE),
-    re.compile(r"字幕.{0,8}(志願者|志愿者|由|提供)"),
-    re.compile(r"中文.{0,4}(字幕|字暮).{0,4}(提供|製作|制作)"),
-    re.compile(r"(請不吝|请不吝).{0,12}(點贊|点赞|訂閱|订阅|轉發|转发|打賞|打赏)"),
-    re.compile(r"(明鏡與點點欄目|明镜与点点栏目)"),
+    re.compile(r"amara\.org", re.IGNORECASE),
+    re.compile(r"點贊.*訂閱.*轉發.*打賞", re.IGNORECASE),
+    re.compile(r"ming\s+pao\s+canada\s+ming\s+pao\s+toronto", re.IGNORECASE),
+    re.compile(r"謝謝觀看.*下次見", re.IGNORECASE),
 )
 
 _NON_SPEECH_NORMALIZED_SUBSTRINGS = (
-    "優優獨播劇場yoyotelevisionseriesexclusive",
-    "谢谢观看下次见",
+    "yoyotelevisionseriesexclusive",
+    "amaraorg",
+    "點贊訂閱轉發打賞",
+    "mingpaocanadamingpaotoronto",
     "謝謝觀看下次見",
-    "感谢观看下次见",
-    "感謝觀看下次見",
-    "感謝觀看",
-    "感谢观看",
-    "感謝收看",
-    "感谢收看",
-    "字幕由amaraorg社群提供",
-    "中文字幕提供",
-    "請不吝點贊訂閱轉發打賞支援明鏡與點點欄目",
 )
 
 
@@ -743,9 +391,9 @@ def _format_asr_exception_message(exc: Exception) -> str:
     lowered = message.lower()
     if "dll load failed while importing _ssl" in lowered:
         return (
-            f"{message}。ASR 執行環境缺少 OpenSSL 相依檔，"
-            "請確認發行包中的 _internal/libssl-3-x64.dll、_internal/libcrypto-3-x64.dll 與 _internal/_ssl.pyd 都存在，"
-            "並從 dist/SyncTranslate-onedir/SyncTranslate.exe 啟動。"
+            f"{message} OpenSSL runtime is missing. "
+            "Check _internal/libssl-3-x64.dll, _internal/libcrypto-3-x64.dll, "
+            "_internal/_ssl.pyd, and dist/SyncTranslate-onedir/SyncTranslate.exe."
         )
     return message
 
@@ -754,9 +402,7 @@ def _looks_like_silence_hallucination(text: str, *, audio_ms: int, vad_rms: floa
     value = (text or "").strip()
     if not value:
         return False
-    if audio_ms > 1800:
-        return False
-    if vad_rms >= 0.035:
+    if audio_ms > 1800 or vad_rms >= 0.035:
         return False
     compact = re.sub(r"\s+", " ", value)
     normalized = "".join(ch.lower() for ch in value if ch.isalnum())
@@ -850,3 +496,15 @@ def _is_hangul(ch: str) -> bool:
 def _is_japanese(ch: str) -> bool:
     codepoint = ord(ch)
     return _is_cjk(ch) or 0x3040 <= codepoint <= 0x30FF
+
+
+__all__ = [
+    "AsrEvent",
+    "StreamingAsr",
+    "StreamingAsrStats",
+    "_format_asr_exception_message",
+    "_looks_like_known_non_speech_text",
+    "_looks_like_script_mismatch_junk",
+    "_looks_like_silence_hallucination",
+    "_transcript_drop_reason",
+]

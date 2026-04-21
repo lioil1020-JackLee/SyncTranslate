@@ -8,8 +8,8 @@ import unittest
 from app.application.audio_router import AudioRouter
 from app.application.transcript_service import TranscriptBuffer
 from app.domain.runtime_state import StateManager
+from app.infra.asr.contracts import ASREventWithSource
 from app.infra.config.schema import AudioRouteConfig
-from app.infra.asr.streaming_pipeline import ASREventWithSource
 
 
 @dataclass
@@ -495,6 +495,25 @@ class AudioRouterRuntimeConfigTests(unittest.TestCase):
         config.runtime.stable_partial_min_repeats = 5
         router.refresh_runtime_config(config)
         self.assertEqual(router._stable_partial_min_repeats(), 5)
+
+    def test_stable_partial_progression_accepts_large_append_when_prefix_is_stable(self) -> None:
+        router, _, _, _, _ = _build_router()
+        from app.infra.config.schema import AppConfig
+        config = AppConfig()
+        config.runtime.partial_stability_max_delta_chars = 6
+        router.refresh_runtime_config(config)
+
+        previous = "We need to update the deployment pipeline"
+        current = "We need to update the deployment pipeline before Friday morning"
+
+        self.assertTrue(router._is_stable_partial_progression(previous, current))
+
+    def test_stable_partial_progression_rejects_mid_sentence_rewrite(self) -> None:
+        router, _, _, _, _ = _build_router()
+        previous = "We need to update the deployment pipeline"
+        current = "We should replace the release checklist"
+
+        self.assertFalse(router._is_stable_partial_progression(previous, current))
 
     def test_put_drop_oldest_returns_false_when_queue_not_full(self) -> None:
         from queue import Queue
