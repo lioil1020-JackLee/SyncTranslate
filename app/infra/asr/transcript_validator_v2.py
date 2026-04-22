@@ -36,6 +36,7 @@ class AsrTranscriptValidatorV2:
         sample_rate: int,
         language: str,
         frontend_stats: dict[str, object] | None = None,
+        is_final: bool = False,
     ) -> TranscriptValidationResult:
         value = self._sanitize(text)
         if not self._enabled:
@@ -56,7 +57,10 @@ class AsrTranscriptValidatorV2:
             return TranscriptValidationResult(text="", accepted=False, reason="too-dense", score=0.0)
         # Low speech-ratio gating is mainly useful on CJK channels where short noise bursts
         # may produce fluent hallucinations; keep non-CJK path less aggressive.
-        if is_cjk_language and len(value) >= 14 and speech_ratio < self._min_speech_ratio_for_long_text:
+        effective_min_speech_ratio = self._min_speech_ratio_for_long_text
+        if is_final:
+            effective_min_speech_ratio *= 0.45
+        if is_cjk_language and len(value) >= 14 and speech_ratio < effective_min_speech_ratio:
             return TranscriptValidationResult(text="", accepted=False, reason="low-speech-ratio", score=0.0)
         if self._looks_like_loop(value):
             return TranscriptValidationResult(text="", accepted=False, reason="looped-phrase", score=0.0)

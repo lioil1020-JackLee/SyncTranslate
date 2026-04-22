@@ -5,6 +5,7 @@ import unittest
 import numpy as np
 
 from app.infra.asr.backend_v2 import BackendDescriptor, BackendPostProcessor, FasterWhisperStreamingBackend
+from app.infra.asr.faster_whisper_adapter import _is_hallucination
 from app.infra.asr.lexical_bias_v2 import AsrLexicalBiaser
 from app.infra.asr.transcript_validator_v2 import AsrTranscriptValidatorV2
 
@@ -91,6 +92,21 @@ class AsrPostprocessV2Tests(unittest.TestCase):
         self.assertFalse(result.accepted)
         self.assertEqual(result.reason, "low-speech-ratio")
 
+    def test_validator_allows_cjk_final_with_borderline_low_speech_ratio(self) -> None:
+        validator = AsrTranscriptValidatorV2(enabled=True, min_speech_ratio_for_long_text=0.2)
+        audio = np.zeros((32000,), dtype=np.float32)
+
+        result = validator.validate(
+            "這是一段已經完整辨識的中文句子內容",
+            audio=audio,
+            sample_rate=16000,
+            language="zh-TW",
+            frontend_stats={"speech_ratio": 0.1},
+            is_final=True,
+        )
+
+        self.assertTrue(result.accepted)
+
     def test_validator_rejects_markup_leak_text(self) -> None:
         validator = AsrTranscriptValidatorV2(enabled=True)
         audio = np.full((16000,), 0.02, dtype=np.float32)
@@ -118,6 +134,12 @@ class AsrPostprocessV2Tests(unittest.TestCase):
 
         self.assertFalse(result.accepted)
         self.assertEqual(result.reason, "markup-leak")
+
+    def test_hallucination_filter_keeps_english_sentence_on_english_channel(self) -> None:
+        self.assertFalse(_is_hallucination("You can keep your safety.", language="en"))
+
+    def test_hallucination_filter_can_still_block_latin_sentence_on_cjk_channel(self) -> None:
+        self.assertTrue(_is_hallucination("You can keep your safety.", language="zh-TW"))
 
     def test_postprocessor_stats_track_rejection_reason(self) -> None:
         processor = BackendPostProcessor(

@@ -447,13 +447,25 @@ class SourceRuntimeV2:
             audio=audio,
             sample_rate=self._segment_sample_rate,
         )
+        result = self._retry_empty_final_with_shorter_tail(
+            result=result,
+            audio=audio,
+            sample_rate=self._segment_sample_rate,
+        )
         if not (result.text or "").strip() and getattr(result, "rejection_reason", ""):
             self._debug(f"v2 final rejected reason={result.rejection_reason}")
             return
-        text = self._merge_final_with_last_partial(
-            final_text=(result.text or "").strip(),
+        final_text = (result.text or "").strip()
+        merge_reason = self._reason_to_prefer_last_partial(
+            final_text=final_text,
             last_partial_text=self._last_partial_text,
         )
+        text = self._last_partial_text.strip() if merge_reason else final_text
+        if merge_reason:
+            self._debug(
+                "v2 final fallback_to_partial "
+                f"reason={merge_reason} final={final_text!r} partial={self._last_partial_text.strip()!r}"
+            )
         if not text:
             return
         latency_ms = int((time.perf_counter() - start) * 1000)
@@ -474,37 +486,103 @@ class SourceRuntimeV2:
         with self._stats_lock:
             self._final_count += 1
 
+    def _retry_empty_final_with_shorter_tail(self, *, result, audio: np.ndarray, sample_rate: int):
+        if (result.text or "").strip():
+            return result
+        if audio.size == 0 or not self._last_partial_text.strip():
+            return result
+
+        retry_seconds = min(
+            max(4, self._partial_history_seconds + 2),
+            max(4, self._final_history_seconds // 2),
+        )
+        if retry_seconds >= self._final_history_seconds:
+            return result
+
+        retry_audio = self._limited_audio(retry_seconds)
+        if retry_audio.size == 0 or retry_audio.shape[0] >= audio.shape[0]:
+            return result
+
+        retried = self._transcribe_backend(
+            self._final_backend,
+            method_name="transcribe_final",
+            audio=retry_audio,
+            sample_rate=sample_rate,
+        )
+        if (retried.text or "").strip():
+            retry_ms = int(retry_audio.shape[0] * 1000 / max(1, sample_rate))
+            self._debug(
+                "v2 final recovered_with_short_tail "
+                f"retry_seconds={retry_seconds} retry_audio_ms={retry_ms} text={retried.text.strip()!r}"
+            )
+            return retried
+        return result
+
     @staticmethod
     def _merge_final_with_last_partial(*, final_text: str, last_partial_text: str) -> str:
+        reason = SourceRuntimeV2._reason_to_prefer_last_partial(
+            final_text=final_text,
+            last_partial_text=last_partial_text,
+        )
+        if reason:
+            return (last_partial_text or "").strip()
+        return (final_text or "").strip()
+
+    @staticmethod
+    def _reason_to_prefer_last_partial(*, final_text: str, last_partial_text: str) -> str:
         final_clean = (final_text or "").strip()
         partial_clean = (last_partial_text or "").strip()
         if not partial_clean:
-            return final_clean
+            return ""
         if not final_clean:
-            return partial_clean
+            return "empty-final"
         if final_clean == partial_clean:
-            return final_clean
+            return ""
 
         final_compact = "".join(final_clean.split())
         partial_compact = "".join(partial_clean.split())
         if not final_compact or not partial_compact:
-            return final_clean
+            return ""
 
         if SourceRuntimeV2._looks_like_repetitive_loop(final_clean):
-            return partial_clean
+            return "looped-final"
 
-        # If final shrank substantially compared with the latest stable partial,
-        # prefer the partial to avoid dropping already-correct words.
+        containment_reason = SourceRuntimeV2._reason_partial_clearly_contains_final(
+            final_clean=final_clean,
+            partial_clean=partial_clean,
+            final_compact=final_compact,
+            partial_compact=partial_compact,
+        )
+        if containment_reason:
+            return containment_reason
+
+        return ""
+
+    @staticmethod
+    def _reason_partial_clearly_contains_final(
+        *,
+        final_clean: str,
+        partial_clean: str,
+        final_compact: str,
+        partial_compact: str,
+    ) -> str:
+        # Only trust the partial over the final when we have strong evidence that
+        # the final is a truncated regression of the same utterance.
+        if len(final_compact) >= len(partial_compact):
+            return ""
+
+        # Final shrank substantially but is still contained within the stable partial.
         if len(final_compact) < max(4, int(len(partial_compact) * 0.7)):
             if partial_compact.startswith(final_compact) or final_compact in partial_compact:
-                return partial_clean
+                return "final-substring-regression"
 
-        # If final and partial share the same tail, recover the missing prefix.
+        # Final lost its prefix but still shares the same ending with the partial.
         probe_len = min(18, len(final_compact), len(partial_compact))
         if probe_len >= 6 and partial_compact.endswith(final_compact[-probe_len:]):
-            if final_compact[-probe_len:] in partial_compact and len(partial_compact) > len(final_compact):
-                return partial_clean
+            if final_compact[-probe_len:] in partial_compact:
+                return "missing-prefix-regression"
 
+        # Final preserves a long common prefix but dropped a significant suffix.
         prefix_chars = 0
         for final_char, partial_char in zip(final_clean, partial_clean):
             if final_char != partial_char:
@@ -514,12 +592,9 @@ class SourceRuntimeV2:
             shorter_len = min(len(final_clean), len(partial_clean))
             shared_ratio = prefix_chars / max(1, shorter_len)
             if shared_ratio >= 0.72 and len(final_clean) + 8 < len(partial_clean):
-                return partial_clean
-        overlap = SourceRuntimeV2._token_overlap_ratio(final_clean, partial_clean)
-        if overlap < 0.45 and len(final_compact) <= len(partial_compact) + 6:
-            return partial_clean
+                return "missing-suffix-regression"
 
-        return final_clean
+        return ""
 
     def _should_defer_early_final(
         self,

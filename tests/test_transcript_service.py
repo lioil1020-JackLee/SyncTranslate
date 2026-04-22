@@ -116,6 +116,33 @@ class TranscriptServiceTests(unittest.TestCase):
         items = svc.latest("meeting_original", limit=10)
         self.assertEqual(len(items), 2)
 
+    def test_finals_with_different_utterance_ids_are_not_merged(self) -> None:
+        svc = TranscriptService()
+        now = datetime.now()
+        svc.upsert_event(
+            source="meeting_original",
+            channel="meeting_original",
+            kind="original",
+            text="first sentence",
+            is_final=True,
+            utterance_id="utt-1",
+            created_at=now,
+        )
+        svc.upsert_event(
+            source="meeting_original",
+            channel="meeting_original",
+            kind="original",
+            text="second sentence",
+            is_final=True,
+            utterance_id="utt-2",
+            created_at=now + timedelta(milliseconds=180),
+        )
+
+        items = svc.latest("meeting_original", limit=10)
+        self.assertEqual(len(items), 2)
+        self.assertEqual(items[0].text, "first sentence")
+        self.assertEqual(items[1].text, "second sentence")
+
 
 if __name__ == "__main__":
     unittest.main()

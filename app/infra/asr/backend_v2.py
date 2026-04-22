@@ -62,6 +62,7 @@ class BackendPostProcessor:
         audio: np.ndarray,
         sample_rate: int,
         frontend_stats: dict[str, object] | None = None,
+        is_final: bool = False,
     ) -> BackendTranscript:
         biased = self._biaser.apply(text, language=self._language)
         result = self._validator.validate(
@@ -70,6 +71,7 @@ class BackendPostProcessor:
             sample_rate=sample_rate,
             language=self._language,
             frontend_stats=frontend_stats,
+            is_final=is_final,
         )
         with self._stats_lock:
             if result.accepted:
@@ -127,6 +129,7 @@ class FasterWhisperStreamingBackend:
                 audio=audio,
                 sample_rate=sample_rate,
                 frontend_stats=frontend_stats,
+                is_final=False,
             ).text
         return BackendTranscript(
             text=text,
@@ -150,6 +153,7 @@ class FasterWhisperStreamingBackend:
                 audio=audio,
                 sample_rate=sample_rate,
                 frontend_stats=frontend_stats,
+                is_final=True,
             )
             text = processed.text
             confidence = processed.confidence
@@ -185,7 +189,8 @@ def build_backend_pair(
         raise ValueError("ASR runtime must not be created when language is set to none")
 
     profile = config.asr_channels.remote if source == "remote" else config.asr_channels.local
-    post_processor = _build_post_processor(config, language=language)
+    partial_post_processor = _build_post_processor(config, language=language)
+    final_post_processor = _build_post_processor(config, language=language)
 
     partial = FasterWhisperStreamingBackend(
         engine=_build_engine(profile, language=language),
@@ -195,7 +200,7 @@ def build_backend_pair(
             streaming=True,
             notes="Low-latency partial decoding backend.",
         ),
-        post_processor=post_processor,
+        post_processor=partial_post_processor,
     )
     final = FasterWhisperStreamingBackend(
         engine=_build_engine(profile, language=language),
@@ -205,7 +210,7 @@ def build_backend_pair(
             streaming=False,
             notes="High-quality final decoding backend.",
         ),
-        post_processor=post_processor,
+        post_processor=final_post_processor,
     )
     return BackendBuildResult(
         partial_backend=partial,

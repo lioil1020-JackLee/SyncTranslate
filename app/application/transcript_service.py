@@ -8,6 +8,24 @@ import re
 from app.domain.transcript_models import TranscriptItem
 
 
+_SENTENCE_END_RE = re.compile(r'[.?!。！？…]["\')\]\u300d\u300f\u3011\u300b\u3009]*$')
+_OPENING_PUNCTUATION = "\"'([{<\u300c\u300e\u3010\u300a\u3008"
+_NEW_SENTENCE_PREFIXES = (
+    "However",
+    "But",
+    "And",
+    "So",
+    "Then",
+    "Meanwhile",
+    "因為",
+    "所以",
+    "但是",
+    "然後",
+    "另外",
+    "接著",
+)
+
+
 class TranscriptService:
     def __init__(self, max_items: int | None = 200) -> None:
         self._items: deque[TranscriptItem] = deque(maxlen=max_items)
@@ -42,9 +60,8 @@ class TranscriptService:
             speaker_label=str(speaker_label or ""),
         )
         with self._lock:
-            if item.utterance_id:
-                if self._upsert_by_utterance_locked(item):
-                    return
+            if item.utterance_id and self._upsert_by_utterance_locked(item):
+                return
             self._remove_latest_partial_locked(source)
             if self._merge_with_previous_final_locked(item):
                 return
@@ -134,6 +151,8 @@ class TranscriptService:
             return False
         if previous.speaker_label != current.speaker_label:
             return False
+        if previous.utterance_id and current.utterance_id and previous.utterance_id != current.utterance_id:
+            return False
         previous_text = previous.text.strip()
         current_text = current.text.strip()
         if not previous_text or not current_text:
@@ -170,16 +189,16 @@ class TranscriptService:
 
     @staticmethod
     def _ends_sentence(text: str) -> bool:
-        return bool(re.search(r"[。！？!?.…;；:]$|\)$|\]$|\"$|』$|」$", text.strip()))
+        return bool(_SENTENCE_END_RE.search(text.strip()))
 
     @staticmethod
     def _starts_new_sentence(text: str) -> bool:
-        value = text.strip()
+        value = text.strip().lstrip(_OPENING_PUNCTUATION)
         if not value:
             return False
-        if value[0] in "\"'「『（(":
-            return False
-        return any(value.startswith(prefix) for prefix in ("但是", "不過", "可是", "另外", "然後", "而且", "所以", "接著", "第二", "第一", "第三"))
+        if value[0].isupper():
+            return True
+        return any(value.startswith(prefix) for prefix in _NEW_SENTENCE_PREFIXES)
 
     def clear(self) -> None:
         with self._lock:

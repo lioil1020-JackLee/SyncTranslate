@@ -45,11 +45,13 @@ _HALLUC_LATIN_SENTENCE_RE = re.compile(
 _PUNCT_SET = frozenset("。，、！？…—「」『』【】《》〈〉·～：；""''()（）\u3000 　\t\n\r.!?,;:-–")
 
 
-def _is_hallucination(text: str) -> bool:
+def _is_hallucination(text: str, *, language: str = "") -> bool:
     """Return True if *text* looks like a Whisper hallucination and should be suppressed."""
     stripped = text.strip()
     if not stripped:
         return False
+    normalized_language = _normalize_lang(language)
+    cjk_channel = normalized_language.startswith(("zh", "cmn", "yue")) or not normalized_language
     # Credit / attribution lines are safe to suppress when short (≤ 20 chars);
     # in legitimate conversational speech, such keywords appear inside longer sentences.
     if _HALLUC_CREDIT_RE.search(stripped) and len(stripped) <= 20:
@@ -57,11 +59,11 @@ def _is_hallucination(text: str) -> bool:
     # Count CJK characters (Chinese / Japanese kana / kanji)
     cjk_count = sum(1 for c in stripped if "\u4e00" <= c <= "\u9fff" or "\u3040" <= c <= "\u30ff")
     # Very short pure-ASCII output from non-speech audio (no CJK characters)
-    if cjk_count == 0 and _HALLUC_ASCII_NOISE_RE.match(stripped):
+    if cjk_channel and cjk_count == 0 and _HALLUC_ASCII_NOISE_RE.match(stripped):
         return True
     # Longer Latin-only text with no CJK: foreign-language hallucination on Chinese ASR
     # (e.g. Icelandic/English phrases generated on silence between segments)
-    if cjk_count == 0 and _HALLUC_LATIN_SENTENCE_RE.match(stripped):
+    if cjk_channel and cjk_count == 0 and _HALLUC_LATIN_SENTENCE_RE.match(stripped):
         return True
     # Pure punctuation / whitespace — no actual content at all (e.g. "。", "、", "…")
     content_chars = [c for c in stripped if c not in _PUNCT_SET]
@@ -142,7 +144,10 @@ class FasterWhisperEngine:
             condition_on_previous_text=bool(self.final_condition_on_previous_text),
         )
         text = result.text.strip()
-        if self.hallucination_filter and _is_hallucination(text):
+        if self.hallucination_filter and _is_hallucination(
+            text,
+            language=result.detected_language or self.language,
+        ):
             text = ""
         return TranscribeResult(
             text=text,
