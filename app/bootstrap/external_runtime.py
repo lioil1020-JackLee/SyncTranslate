@@ -22,6 +22,7 @@ def _site_packages_candidates(base: Path) -> list[Path]:
             runtime_dir = runtimes_root / name
             candidates.append(runtime_dir / "Lib" / "site-packages")
             candidates.append(runtime_dir / "site-packages")
+    candidates.append(base / ".venv" / "Lib" / "site-packages")
     return candidates
 
 
@@ -58,8 +59,13 @@ def _add_dll_directory(path: Path) -> None:
 
 
 def _configure_model_cache_env(base: Path) -> None:
-    models_root = base / "models"
-    if not models_root.exists():
+    model_candidates = [
+        base / "runtimes" / "models",
+        base / "_internal" / "runtimes" / "models",
+        base / "models",
+    ]
+    models_root = next((candidate for candidate in model_candidates if candidate.exists()), None)
+    if models_root is None:
         return
 
     modelscope_cache = models_root / "modelscope"

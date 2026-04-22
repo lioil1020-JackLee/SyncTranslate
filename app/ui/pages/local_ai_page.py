@@ -113,6 +113,9 @@ _GROUP_ROW_SPACING = 8
 # reduce page padding to allow slightly more content
 _PAGE_MIN_PADDING = 6
 _FIXED_LLM_MODEL = DEFAULT_FIXED_LLM_MODEL
+_LOCAL_ASR_MODEL_CANDIDATES: list[tuple[str, str]] = [
+    ("belle-zh-ct2（本機舊模型）", r".\runtimes\models\belle-zh-ct2"),
+]
 
 
 class PathPickerLineEdit(QLineEdit):
@@ -229,10 +232,9 @@ class LocalAiPage(QWidget):
             zh_asr = config.asr_channels.local
             en_asr = config.asr_channels.remote
             self._select_combo_data(self.asr_engine_combo, zh_asr.engine)
-            local_model = str(zh_asr.model or "large-v3-turbo")
-            fw_model = str(en_asr.model or "large-v3-turbo")
-            self.asr_model_combo.setText(f"faster-whisper ({local_model})")
-            self.remote_asr_model_combo.setText(f"faster-whisper ({fw_model})")
+            self._reload_asr_model_options()
+            self._select_asr_model(self.asr_model_combo, str(zh_asr.model or "large-v3-turbo"))
+            self._select_asr_model(self.remote_asr_model_combo, str(en_asr.model or "large-v3-turbo"))
             self._select_combo_data(self.asr_device_combo, zh_asr.device)
             self.asr_compute_label.setText(self._compute_type_for_device(zh_asr.device))
             self.asr_beam_spin.setValue(zh_asr.beam_size)
@@ -380,7 +382,7 @@ class LocalAiPage(QWidget):
         shared_device = str(self.asr_device_combo.currentData() or "cuda")
         shared_compute = self._compute_type_for_device(shared_device)
         zh_asr.engine = "faster_whisper"
-        zh_asr.model = zh_asr.model or "large-v3-turbo"
+        zh_asr.model = self._selected_asr_model(self.asr_model_combo)
         zh_asr.device = shared_device
         zh_asr.compute_type = shared_compute
         zh_asr.beam_size = self.asr_beam_spin.value()
@@ -405,7 +407,7 @@ class LocalAiPage(QWidget):
         config.runtime.asr_queue_maxsize_local = self.asr_queue_local_spin.value()
 
         en_asr.engine = "faster_whisper"
-        en_asr.model = en_asr.model or "large-v3-turbo"
+        en_asr.model = self._selected_asr_model(self.remote_asr_model_combo)
         en_asr.device = shared_device
         en_asr.compute_type = shared_compute
         en_asr.beam_size = self.remote_asr_beam_spin.value()
@@ -540,8 +542,8 @@ class LocalAiPage(QWidget):
         self._suspend_notify = True
         try:
             self._select_combo_data(self.experience_preset_combo, preset)
-            self.asr_model_combo.setText("faster-whisper (large-v3-turbo)")
-            self.remote_asr_model_combo.setText("faster-whisper (large-v3-turbo)")
+            self._select_asr_model(self.asr_model_combo, "large-v3-turbo")
+            self._select_asr_model(self.remote_asr_model_combo, "large-v3-turbo")
             self.asr_beam_spin.setValue(1)
             self.remote_asr_beam_spin.setValue(1)
             self.asr_condition_prev_check.setChecked(False)
@@ -827,15 +829,11 @@ class LocalAiPage(QWidget):
         self.asr_engine_combo.hide()
         self.asr_engine_combo.setToolTip("ASR 引擎統一使用 faster-whisper。")
 
-        self.asr_model_combo = QLabel("faster-whisper (large-v3-turbo)")
-        self.asr_model_combo.setStyleSheet("color: #ffffff;")
-        self.asr_model_combo.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.asr_model_combo.setToolTip("中文通道使用 faster-whisper。")
-
-        self.remote_asr_model_combo = QLabel("faster-whisper (large-v3-turbo)")
-        self.remote_asr_model_combo.setStyleSheet("color: #ffffff;")
-        self.remote_asr_model_combo.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.remote_asr_model_combo.setToolTip("非中文通道使用 faster-whisper。")
+        self.asr_model_combo = QComboBox()
+        self.remote_asr_model_combo = QComboBox()
+        self.asr_model_combo.setToolTip("中文通道使用的 ASR 模型，可切換官方 faster-whisper 或本機舊模型。")
+        self.remote_asr_model_combo.setToolTip("非中文通道使用的 ASR 模型，可切換官方 faster-whisper 或本機舊模型。")
+        self._reload_asr_model_options()
 
 
         self.asr_device_combo = QComboBox()
@@ -1458,6 +1456,8 @@ class LocalAiPage(QWidget):
         self.quick_save_btn.clicked.connect(lambda *_: self._on_save_config() if self._on_save_config else None)
         self.llm_backend_combo.currentIndexChanged.connect(self._on_backend_changed)
         self.asr_device_combo.currentIndexChanged.connect(self._on_asr_device_changed)
+        self.asr_model_combo.currentIndexChanged.connect(lambda *_: self._refresh_asr_runtime_hints())
+        self.remote_asr_model_combo.currentIndexChanged.connect(lambda *_: self._refresh_asr_runtime_hints())
 
         for widget in (
             self.asr_engine_combo,
@@ -1721,15 +1721,17 @@ class LocalAiPage(QWidget):
             mode_text = "目前模式：超穩定會議字幕。會更保守切段，優先降低 partial / final 抖動。"
         requested_device = str(self.asr_device_combo.currentData() or "cuda")
         compute_type = self._compute_type_for_device(requested_device)
+        local_model = self._selected_asr_model(self.asr_model_combo)
+        remote_model = self._selected_asr_model(self.remote_asr_model_combo)
         if requested_device == "cuda":
             return (
                 f"{mode_text} "
-                "ASR 路由：中文 -> faster-whisper（中文參數），非中文 -> faster-whisper（非中文參數）。"
+                f"ASR 路由：中文 -> {self._format_asr_model_label(local_model)}，非中文 -> {self._format_asr_model_label(remote_model)}。"
                 f" 目前設定裝置 CUDA，shared compute type={compute_type}；若不可用會自動回退 CPU。"
             )
         return (
             f"{mode_text} "
-            "ASR 路由：中文 -> faster-whisper（中文參數），非中文 -> faster-whisper（非中文參數）。"
+            f"ASR 路由：中文 -> {self._format_asr_model_label(local_model)}，非中文 -> {self._format_asr_model_label(remote_model)}。"
             " 目前設定裝置 CPU；若要提升速度可改為 CUDA 並確認 CUDA 版 Torch 已正確安裝。"
         )
 
@@ -1926,9 +1928,13 @@ class LocalAiPage(QWidget):
     @staticmethod
     def _discover_asr_models() -> list[str]:
         models = list(_OFFICIAL_FASTER_WHISPER_MODELS)
+        for _label, path_value in _LOCAL_ASR_MODEL_CANDIDATES:
+            candidate = Path(path_value)
+            resolved = candidate if candidate.is_absolute() else (Path.cwd() / candidate).resolve()
+            if resolved.exists() and path_value not in models:
+                models.insert(0, path_value)
         # 從 HuggingFace 快取掃描已下載的 faster-whisper 模型。
         try:
-            from pathlib import Path
             hf_cache = Path.home() / ".cache" / "huggingface" / "hub"
             if hf_cache.is_dir():
                 for entry in sorted(hf_cache.iterdir()):
@@ -1940,6 +1946,39 @@ class LocalAiPage(QWidget):
         except Exception:
             pass
         return models
+
+    def _reload_asr_model_options(self) -> None:
+        for combo in (self.asr_model_combo, self.remote_asr_model_combo):
+            current_value = str(combo.currentData() or combo.currentText() or "large-v3-turbo")
+            combo.blockSignals(True)
+            combo.clear()
+            for value in self._discover_asr_models():
+                combo.addItem(self._format_asr_model_label(value), value)
+            combo.blockSignals(False)
+            self._configure_combo_popup(combo)
+            self._select_asr_model(combo, current_value)
+
+    def _select_asr_model(self, combo: QComboBox, value: str) -> None:
+        normalized = str(value or "large-v3-turbo").strip() or "large-v3-turbo"
+        index = combo.findData(normalized)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+            return
+        combo.addItem(self._format_asr_model_label(normalized), normalized)
+        self._configure_combo_popup(combo)
+        combo.setCurrentIndex(combo.count() - 1)
+
+    @staticmethod
+    def _selected_asr_model(combo: QComboBox) -> str:
+        return str(combo.currentData() or combo.currentText() or "large-v3-turbo").strip() or "large-v3-turbo"
+
+    @staticmethod
+    def _format_asr_model_label(model_value: str) -> str:
+        value = str(model_value or "").strip()
+        for label, path_value in _LOCAL_ASR_MODEL_CANDIDATES:
+            if value == path_value:
+                return label
+        return f"faster-whisper ({value or 'large-v3-turbo'})"
 
     @staticmethod
     def _configure_combo_popup(combo: QComboBox) -> None:

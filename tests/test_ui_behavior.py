@@ -392,8 +392,8 @@ class LocalAiPageUiTests(_QtTestCase):
     def test_local_ai_page_uses_built_in_optimized_defaults(self) -> None:
         page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
 
-        self.assertEqual(page.asr_model_combo.text(), "faster-whisper (large-v3-turbo)")
-        self.assertEqual(page.remote_asr_model_combo.text(), "faster-whisper (large-v3-turbo)")
+        self.assertEqual(page.asr_model_combo.currentData(), "large-v3-turbo")
+        self.assertEqual(page.remote_asr_model_combo.currentData(), "large-v3-turbo")
         self.assertEqual(page.llm_model_label.text(), "hy-mt1.5-7b")
         self.assertEqual(page.remote_llm_model_label.text(), "hy-mt1.5-7b")
         self.assertEqual(page.asr_beam_spin.value(), 1)
@@ -429,6 +429,16 @@ class LocalAiPageUiTests(_QtTestCase):
         self.assertEqual(updated.runtime.asr_profile_local, "meeting_room")
         self.assertEqual(updated.runtime.asr_profile_remote, "meeting_room")
         self.assertIn("超穩定會議字幕", page._current_asr_runtime_hint_text())
+
+    def test_local_ai_page_can_select_belle_local_model(self) -> None:
+        page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
+        belle_path = r".\runtimes\models\belle-zh-ct2"
+        page.asr_model_combo.setCurrentIndex(page.asr_model_combo.findData(belle_path))
+
+        updated = AppConfig()
+        page.update_config(updated)
+
+        self.assertEqual(updated.asr_channels.local.model, belle_path)
 
     def test_local_ai_page_round_trips_advanced_runtime_and_profile_controls(self) -> None:
         page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)

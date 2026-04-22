@@ -5,6 +5,8 @@ import re
 from threading import Lock
 import wave
 from dataclasses import dataclass, field
+from pathlib import Path
+import sys
 
 import numpy as np
 
@@ -325,7 +327,7 @@ class FasterWhisperEngine:
         self._runtime_device = self._runtime_device or (self.device or "auto")
         self._runtime_compute_type = self._runtime_compute_type or self._resolve_compute_type(self._runtime_device)
         cache_key = (
-            self.model or "large-v3-turbo",
+            self._resolved_model_path(),
             self._runtime_device,
             self._runtime_compute_type,
         )
@@ -387,6 +389,23 @@ class FasterWhisperEngine:
             self._draft_failed = True
             self._draft_model = None
         return self._draft_model
+
+    def _resolved_model_path(self) -> str:
+        raw = str(self.model or "large-v3-turbo").strip() or "large-v3-turbo"
+        candidate = Path(raw)
+        if candidate.is_absolute() and candidate.exists():
+            return str(candidate)
+        base_dirs: list[Path] = [Path.cwd()]
+        if getattr(sys, "frozen", False):
+            base_dirs.append(Path(sys.executable).resolve().parent)
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            base_dirs.append(Path(meipass))
+        for base in base_dirs:
+            resolved = (base / candidate).resolve()
+            if resolved.exists():
+                return str(resolved)
+        return raw
 
 
 def _clear_model_cache_for_tests() -> None:
