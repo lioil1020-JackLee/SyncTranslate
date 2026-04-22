@@ -8,7 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 
 from app.infra.config.schema import AppConfig
-from app.ui.pages.live_caption_page import LiveCaptionPage
+from app.ui.pages.live_caption_page import LiveCaptionPage, _CHANNEL_DEFAULTS
 
 
 class _QtTestCase(unittest.TestCase):
@@ -21,16 +21,16 @@ class _QtTestCase(unittest.TestCase):
 
 
 class LiveCaptionLabelTests(_QtTestCase):
-    def test_manually_selected_asr_language_updates_original_panel_labels(self) -> None:
+    def test_selected_asr_model_updates_original_panel_labels(self) -> None:
         page = LiveCaptionPage()
         config = AppConfig()
-        config.runtime.remote_asr_language = "ja"
-        config.runtime.local_asr_language = "th"
+        config.asr_channels.remote.model = r".\runtimes\models\belle-zh-ct2"
+        config.asr_channels.local.model = "large-v3-turbo"
 
         page.apply_config(config)
 
-        self.assertIn("手動：日文", page.remote_original_label.text())
-        self.assertIn("手動：泰文", page.local_original_label.text())
+        self.assertIn("belle-zh-ct2", page.remote_original_label.text())
+        self.assertIn("large-v3-turbo", page.local_original_label.text())
 
     def test_tts_mode_keeps_translated_panel_labels(self) -> None:
         page = LiveCaptionPage()
@@ -43,8 +43,8 @@ class LiveCaptionLabelTests(_QtTestCase):
         page.apply_config(config)
         page.update_translation_voice_labels(config)
 
-        self.assertEqual(page.remote_translated_label.text(), "遠端翻譯")
-        self.assertEqual(page.local_translated_label.text(), "本地翻譯")
+        self.assertEqual(page.remote_translated_label.text(), _CHANNEL_DEFAULTS["remote"]["translated_label"])
+        self.assertEqual(page.local_translated_label.text(), _CHANNEL_DEFAULTS["local"]["translated_label"])
 
     def test_voice_choice_alone_no_longer_switches_panel_into_translation_mode(self) -> None:
         page = LiveCaptionPage()
@@ -59,8 +59,8 @@ class LiveCaptionLabelTests(_QtTestCase):
         page.local_tts_voice_combo.setCurrentIndex(page.local_tts_voice_combo.findData("none"))
         page.update_translation_voice_labels(config)
 
-        self.assertEqual(page.remote_translated_label.text(), "遠端輸出")
-        self.assertEqual(page.local_translated_label.text(), "本地輸出")
+        self.assertEqual(page.remote_translated_label.text(), _CHANNEL_DEFAULTS["remote"]["output_label"])
+        self.assertEqual(page.local_translated_label.text(), _CHANNEL_DEFAULTS["local"]["output_label"])
 
     def test_passthrough_mode_survives_config_round_trip(self) -> None:
         page = LiveCaptionPage()

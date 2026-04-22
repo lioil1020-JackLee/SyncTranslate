@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import Qt, QTimer
@@ -127,6 +128,7 @@ class LiveCaptionPage(QWidget):
         self._suspend_notify = False
         self._direction_controls_enabled = True
         self._detected_asr_language: dict[str, str] = {"local": "", "remote": ""}
+        self._configured_asr_models: dict[str, str] = {"local": "large-v3-turbo", "remote": "large-v3-turbo"}
 
         self.remote_asr_combo = QComboBox()
         self.local_asr_combo = QComboBox()
@@ -343,6 +345,10 @@ class LiveCaptionPage(QWidget):
     def apply_config(self, config: AppConfig) -> None:
         self._suspend_notify = True
         try:
+            self._configured_asr_models = {
+                "remote": self._config_asr_model_label(config, "remote"),
+                "local": self._config_asr_model_label(config, "local"),
+            }
             for channel in _CHANNELS:
                 target_value = self._config_translation_target(config, channel)
                 voice_value = self._config_tts_voice(config, channel)
@@ -728,7 +734,7 @@ class LiveCaptionPage(QWidget):
     def _refresh_panel_labels(self) -> None:
         for channel in _CHANNELS:
             self._channel_text_label(channel, "original").setText(
-                f"{_CHANNEL_DEFAULTS[channel]['original_label']}（{self._channel_source_label(channel)} ASR）"
+                f"{_CHANNEL_DEFAULTS[channel]['original_label']}（{self._channel_asr_model_label(channel)}）"
             )
             translated_text = (
                 _CHANNEL_DEFAULTS[channel]["translated_label"]
@@ -792,14 +798,8 @@ class LiveCaptionPage(QWidget):
             return self.remote_original_status if kind == "original" else self.remote_translated_status
         return self.local_original_status if kind == "original" else self.local_translated_status
 
-    def _channel_source_label(self, channel: str) -> str:
-        detected = self._detected_asr_language.get(channel, "")
-        asr_value = self._get_target_language(self._channel_combo(channel, "asr"), default="auto")
-        if asr_value != "auto":
-            return f"手動：{self._language_label(asr_value)}"
-        if detected:
-            return f"自動偵測：{self._language_label(detected)}"
-        return "自動偵測"
+    def _channel_asr_model_label(self, channel: str) -> str:
+        return self._configured_asr_models.get(channel, "large-v3-turbo")
 
     @staticmethod
     def _config_source_language(config: AppConfig, channel: str) -> str:
@@ -811,6 +811,15 @@ class LiveCaptionPage(QWidget):
     def _config_asr_language(config: AppConfig, channel: str) -> str:
         attr = "remote_asr_language" if channel == "remote" else "local_asr_language"
         return str(getattr(config.runtime, attr, "") or "")
+
+    @staticmethod
+    def _config_asr_model_label(config: AppConfig, channel: str) -> str:
+        asr_cfg = config.asr_channels.remote if channel == "remote" else config.asr_channels.local
+        raw = str(getattr(asr_cfg, "model", "") or "large-v3-turbo").strip() or "large-v3-turbo"
+        normalized = raw.replace("/", "\\").rstrip("\\")
+        if "\\" in normalized:
+            return Path(normalized).name or raw
+        return raw
 
     @staticmethod
     def _config_translation_target(config: AppConfig, channel: str) -> str:
