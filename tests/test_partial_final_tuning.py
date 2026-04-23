@@ -99,8 +99,8 @@ def test_short_pause_early_final_is_deferred_for_recent_partial() -> None:
     deferred = runtime._should_defer_early_final(
         now_ms=1240,
         decision=StreamingDecision(emit_final=True, is_early_final=True, reason="pause_turn"),
-        signal=EndpointSignal(pause_ms=260.0, speech_active=True, speech_ended=False),
-        segment_audio_ms=1800,
+        signal=EndpointSignal(pause_ms=160.0, speech_active=True, speech_ended=False),
+        segment_audio_ms=1400,
     )
 
     assert deferred is True

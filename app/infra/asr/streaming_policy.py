@@ -129,25 +129,31 @@ class StreamingPolicy:
 
         if should_finalize:
             decision.emit_final = True
-            decision.is_early_final = not ctx.signal.hard_endpoint
             decision.reset_endpointing_after_final = (
                 (finalize_on_soft or finalize_on_pause_turn) and not ctx.signal.hard_endpoint
             )
 
             if should_force_final:
                 decision.reason = "force_final(queue_pressure)"
+                decision.is_early_final = False
             elif ctx.signal.hard_endpoint:
                 decision.reason = "hard_endpoint"
+                decision.is_early_final = False
             elif finalize_on_speech_end:
                 decision.reason = "speech_ended"
+                decision.is_early_final = False
             elif finalize_on_soft:
                 decision.reason = "soft_endpoint"
+                decision.is_early_final = True
             elif finalize_on_pause_turn:
                 decision.reason = "pause_turn"
+                decision.is_early_final = True
             elif finalize_on_ceiling:
                 decision.reason = "ceiling"
+                decision.is_early_final = False
             else:
                 decision.reason = "adaptive_length"
+                decision.is_early_final = False
             return decision
 
         # --- partial logic ---

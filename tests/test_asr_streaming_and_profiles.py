@@ -157,7 +157,7 @@ class TestStreamingPolicyFinalization:
         )
         decision = policy.decide(ctx)
         assert decision.emit_final is True
-        assert decision.is_early_final is True
+        assert decision.is_early_final is False
 
     def test_pause_turn_triggers_final_before_hard_endpoint(self):
         policy = StreamingPolicy()
@@ -176,6 +176,7 @@ class TestStreamingPolicyFinalization:
         ctx = _make_ctx(segment_audio_ms=13000)
         decision = policy.decide(ctx)
         assert decision.emit_final is True
+        assert decision.is_early_final is False
         assert decision.reason == "ceiling"
 
     def test_force_final_on_queue_pressure(self):
@@ -188,17 +189,19 @@ class TestStreamingPolicyFinalization:
         )
         decision = policy.decide(ctx)
         assert decision.emit_final is True
+        assert decision.is_early_final is False
         assert "force_final" in decision.reason
 
     def test_adaptive_length_triggers_final(self):
         policy = StreamingPolicy()
         ctx = _make_ctx(
-            signal=_make_signal(speech_active=True, pause_ms=250.0),
+            signal=_make_signal(speech_active=True, pause_ms=190.0),
             segment_audio_ms=4500,
             adaptive_length_limit_ms=4000,
         )
         decision = policy.decide(ctx)
         assert decision.emit_final is True
+        assert decision.is_early_final is False
 
 
 # ---------------------------------------------------------------------------
@@ -330,8 +333,8 @@ class TestWorkerFinalizeThresholds:
             min_partial_audio_ms=1000,
             force_final_audio_ms=1800,
         )
-        assert soft_ms == 3000
-        assert speech_end_ms == 2280
+        assert soft_ms == 2400
+        assert speech_end_ms == 1560
 
     def test_thresholds_respect_force_final_floor(self):
         soft_ms, speech_end_ms = _scaled_finalize_thresholds(
@@ -340,7 +343,7 @@ class TestWorkerFinalizeThresholds:
             force_final_audio_ms=1800,
         )
         assert soft_ms == 1800
-        assert speech_end_ms == 900
+        assert speech_end_ms == 720
         assert speech_end_ms <= soft_ms
 
     def test_merge_final_with_last_partial_prefers_partial_when_final_drops_prefix(self):

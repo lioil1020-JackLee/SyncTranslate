@@ -114,7 +114,9 @@ class TranslationStitcher:
             (not event.is_final)
             and (
                 units >= effective_trigger
-                or (segment_ms >= 1400 and units >= 8)
+                or (segment_ms >= 900 and units >= 5)
+                or (segment_ms >= 1600 and units >= 3)
+                or (segment_ms >= 2600 and units >= 2)
             )
             and (now_ms - self._last_partial_call_ms >= self._min_partial_interval_ms)
         )

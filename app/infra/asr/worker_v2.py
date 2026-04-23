@@ -43,13 +43,13 @@ def _scaled_finalize_thresholds(
     # make the eventual final decode re-run over too much audio.
     soft_endpoint_finalize_audio_ms = max(
         base_force_final,
-        base_partial + 700,
-        int(round(base_soft_final * 0.50)),
+        base_partial + 520,
+        int(round(base_soft_final * 0.40)),
     )
     speech_end_finalize_audio_ms = max(
-        900,
-        base_partial + 360,
-        int(round(base_soft_final * 0.38)),
+        720,
+        base_partial + 220,
+        int(round(base_soft_final * 0.26)),
     )
     speech_end_finalize_audio_ms = min(speech_end_finalize_audio_ms, soft_endpoint_finalize_audio_ms)
     return soft_endpoint_finalize_audio_ms, speech_end_finalize_audio_ms
@@ -159,7 +159,7 @@ class SourceRuntimeV2:
         self._pre_roll_sample_rate = 16000
         self._in_segment = False
         self._force_final_queue_size = max(8, self._queue.maxsize // 4)
-        self._force_final_audio_ms = 1800
+        self._force_final_audio_ms = 1500
         self._prefer_conservative_finalize = False
         scaled_soft_ms, scaled_speech_end_ms = _scaled_finalize_thresholds(
             soft_final_audio_ms=self._base_soft_final_audio_ms,
@@ -179,8 +179,8 @@ class SourceRuntimeV2:
         )
         self._soft_endpoint_finalize_audio_ms = self._base_soft_endpoint_finalize_audio_ms
         self._speech_end_finalize_audio_ms = self._base_speech_end_finalize_audio_ms
-        self._adaptive_length_floor_ms = max(3200, self._soft_final_audio_ms)
-        self._adaptive_length_ceiling_ms = max(self._adaptive_length_floor_ms, 12000)
+        self._adaptive_length_floor_ms = max(2200, int(self._soft_final_audio_ms * 0.72))
+        self._adaptive_length_ceiling_ms = max(self._adaptive_length_floor_ms, 9000)
         self._drop_partial_until_final = False
         self._partial_cooldown_until_ms = 0
         self._adaptive_recent_audio_ms: deque[int] = deque(maxlen=10)
@@ -610,19 +610,19 @@ class SourceRuntimeV2:
             return False
         if self._last_partial_emit_ms <= 0 or not self._last_partial_text:
             return False
-        if decision.reason not in {"pause_turn", "adaptive_length"}:
+        if decision.reason not in {"pause_turn", "adaptive_length", "soft_endpoint"}:
             return False
         if now_ms < self._deferred_early_final_until_ms:
             return False
         pause_ms = float(signal.pause_ms)
-        if pause_ms >= 300.0:
+        if pause_ms >= 240.0:
             return False
-        if segment_audio_ms >= max(2400, int(self._base_soft_final_audio_ms * 0.8)):
+        if segment_audio_ms >= max(1600, int(self._base_soft_final_audio_ms * 0.55)):
             return False
         time_since_partial_ms = now_ms - self._last_partial_emit_ms
-        if time_since_partial_ms > max(900, self._partial_interval_ms * 2):
+        if time_since_partial_ms > max(700, int(self._partial_interval_ms * 1.5)):
             return False
-        hold_ms = max(160, min(320, int(round((420.0 - pause_ms) * 0.85))))
+        hold_ms = max(100, min(220, int(round((300.0 - pause_ms) * 0.72))))
         self._deferred_early_final_until_ms = now_ms + hold_ms
         self._debug(
             "v2 defer early final "
@@ -736,12 +736,12 @@ class SourceRuntimeV2:
             return method(audio, sample_rate)
 
     def _adaptive_length_limit_ms(self, *, signal: EndpointSignal) -> int:
-        if signal.pause_ms >= 420.0:
-            return max(self._adaptive_length_floor_ms, 4200)
-        if signal.pause_ms >= 260.0:
-            return max(self._adaptive_length_floor_ms, 5600)
-        if signal.pause_ms >= 120.0:
-            return max(self._adaptive_length_floor_ms, 7200)
+        if signal.pause_ms >= 280.0:
+            return max(self._adaptive_length_floor_ms, 2800)
+        if signal.pause_ms >= 180.0:
+            return max(self._adaptive_length_floor_ms, 3800)
+        if signal.pause_ms >= 90.0:
+            return max(self._adaptive_length_floor_ms, 5200)
         return self._adaptive_length_ceiling_ms
 
     def _recompute_adaptive_tuning(self, *, now_ms: int, segment_audio_ms: int, signal: EndpointSignal) -> None:
@@ -769,24 +769,30 @@ class SourceRuntimeV2:
         next_soft_endpoint_finalize_audio_ms = self._base_soft_endpoint_finalize_audio_ms
         next_speech_end_finalize_audio_ms = self._base_speech_end_finalize_audio_ms
 
-        if avg_final_audio_ms and avg_final_audio_ms <= 1800:
-            next_partial_interval_ms = max(self._partial_interval_floor_ms, self._base_partial_interval_ms - 120)
-            next_soft_final_audio_ms = max(self._force_final_audio_ms, int(round(self._base_soft_final_audio_ms * 0.88)))
-        elif avg_final_audio_ms >= 4200:
-            next_partial_interval_ms = max(next_partial_interval_ms, self._base_partial_interval_ms + 140)
+        if avg_final_audio_ms and avg_final_audio_ms <= 1600:
+            next_partial_interval_ms = max(self._partial_interval_floor_ms, self._base_partial_interval_ms - 140)
+            next_soft_final_audio_ms = max(self._force_final_audio_ms, int(round(self._base_soft_final_audio_ms * 0.76)))
+        elif avg_final_audio_ms >= 3200:
+            next_partial_interval_ms = max(self._partial_interval_floor_ms, self._base_partial_interval_ms - 40)
+            next_soft_final_audio_ms = max(self._force_final_audio_ms, int(round(self._base_soft_final_audio_ms * 0.70)))
+        elif avg_final_audio_ms >= 2400:
+            next_soft_final_audio_ms = max(self._force_final_audio_ms, int(round(self._base_soft_final_audio_ms * 0.80)))
 
         if avg_partial_latency_ms >= 850 or avg_final_latency_ms >= 1400:
-            next_partial_interval_ms = max(next_partial_interval_ms, self._base_partial_interval_ms + 260)
-            next_soft_final_audio_ms = max(self._force_final_audio_ms, int(round(self._base_soft_final_audio_ms * 0.82)))
+            next_partial_interval_ms = max(next_partial_interval_ms, self._base_partial_interval_ms + 120)
+            next_soft_final_audio_ms = max(self._force_final_audio_ms, int(round(self._base_soft_final_audio_ms * 0.72)))
 
         if self._last_degradation_level == DEGRADATION_CONGESTED:
-            next_partial_interval_ms = max(next_partial_interval_ms, self._base_partial_interval_ms + 180)
+            next_partial_interval_ms = max(next_partial_interval_ms, self._base_partial_interval_ms + 120)
         elif self._last_degradation_level == DEGRADATION_DEGRADED:
-            next_partial_interval_ms = max(next_partial_interval_ms, self._base_partial_interval_ms + 320)
-            next_soft_final_audio_ms = max(self._force_final_audio_ms, int(round(self._base_soft_final_audio_ms * 0.78)))
+            next_partial_interval_ms = max(next_partial_interval_ms, self._base_partial_interval_ms + 200)
+            next_soft_final_audio_ms = max(self._force_final_audio_ms, int(round(self._base_soft_final_audio_ms * 0.68)))
 
-        if signal.pause_ms >= 220.0 and segment_audio_ms >= self._base_soft_final_audio_ms:
-            next_soft_final_audio_ms = min(next_soft_final_audio_ms, self._base_soft_final_audio_ms)
+        if signal.pause_ms >= 160.0 and segment_audio_ms >= max(1800, int(self._base_soft_final_audio_ms * 0.7)):
+            next_soft_final_audio_ms = min(
+                next_soft_final_audio_ms,
+                max(self._force_final_audio_ms, int(round(self._base_soft_final_audio_ms * 0.78))),
+            )
 
         next_partial_interval_ms = max(self._partial_interval_floor_ms, int(next_partial_interval_ms))
         next_soft_final_audio_ms = max(self._force_final_audio_ms, int(next_soft_final_audio_ms))

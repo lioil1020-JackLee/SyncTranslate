@@ -57,10 +57,16 @@ class AsrTranscriptValidatorV2:
             return TranscriptValidationResult(text="", accepted=False, reason="too-dense", score=0.0)
         # Low speech-ratio gating is mainly useful on CJK channels where short noise bursts
         # may produce fluent hallucinations; keep non-CJK path less aggressive.
-        effective_min_speech_ratio = self._min_speech_ratio_for_long_text
-        if is_final:
-            effective_min_speech_ratio *= 0.45
-        if is_cjk_language and len(value) >= 14 and speech_ratio < effective_min_speech_ratio:
+        effective_min_speech_ratio = self._min_speech_ratio_for_long_text * (0.32 if is_final else 0.72)
+        long_cjk_text = len(value) >= (20 if is_final else 16)
+        sustained_audio = duration_sec >= (1.2 if is_final else 0.9)
+        if (
+            is_cjk_language
+            and long_cjk_text
+            and sustained_audio
+            and chars_per_second >= 3.0
+            and speech_ratio < effective_min_speech_ratio
+        ):
             return TranscriptValidationResult(text="", accepted=False, reason="low-speech-ratio", score=0.0)
         if self._looks_like_loop(value):
             return TranscriptValidationResult(text="", accepted=False, reason="looped-phrase", score=0.0)

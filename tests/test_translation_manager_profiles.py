@@ -494,6 +494,36 @@ class TranslatorManagerProfileTests(unittest.TestCase):
         self.assertGreater(int(snapshot["min_partial_interval_ms"]), 320)
 
     @patch("app.infra.translation.engine.create_translation_provider")
+    def test_partial_translation_can_start_on_short_sentence_after_brief_pause(self, mock_factory) -> None:
+        providers = [_FakeProvider(), _FakeProvider()]
+        mock_factory.side_effect = providers
+
+        config = AppConfig()
+        config.language.meeting_target = "en"
+        manager = TranslatorManager(config)
+        translated = manager.process(
+            ASREventWithSource(
+                source="remote",
+                utterance_id="partial-short",
+                revision=1,
+                pipeline_revision=1,
+                config_fingerprint="fp",
+                created_at=0.0,
+                text="one two three",
+                is_final=False,
+                is_early_final=False,
+                start_ms=0,
+                end_ms=1800,
+                latency_ms=50,
+                detected_language="en",
+            )
+        )
+
+        self.assertIsNotNone(translated)
+        assert translated is not None
+        self.assertEqual(translated.text, "caption:one two three")
+
+    @patch("app.infra.translation.engine.create_translation_provider")
     def test_llm_switches_to_stable_profile_when_recent_failures_are_high(self, mock_factory) -> None:
         providers = [
             _ScriptedProvider(["caption:local"]),
