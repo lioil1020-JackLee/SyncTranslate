@@ -460,8 +460,19 @@ class SourceRuntimeV2:
             final_text=final_text,
             last_partial_text=self._last_partial_text,
         )
-        text = self._last_partial_text.strip() if merge_reason else final_text
+        text = final_text
+        used_partial_fallback = False
         if merge_reason:
+            fallback_partial = self._last_partial_text.strip()
+            if merge_reason == "empty-final" and not self._should_promote_empty_final_partial(fallback_partial):
+                self._debug(
+                    "v2 final suppress_empty_partial_fallback "
+                    f"partial={fallback_partial!r}"
+                )
+            else:
+                text = fallback_partial
+                used_partial_fallback = True
+        if used_partial_fallback:
             self._debug(
                 "v2 final fallback_to_partial "
                 f"reason={merge_reason} final={final_text!r} partial={self._last_partial_text.strip()!r}"
@@ -557,6 +568,29 @@ class SourceRuntimeV2:
             return containment_reason
 
         return ""
+
+    @staticmethod
+    def _should_promote_empty_final_partial(partial_text: str) -> bool:
+        value = (partial_text or "").strip()
+        if not value:
+            return False
+        if SourceRuntimeV2._looks_like_repetitive_loop(value):
+            return False
+
+        compact = "".join(value.split())
+        if len(compact) < 4:
+            return False
+
+        cjk_count = sum(1 for ch in compact if "\u4e00" <= ch <= "\u9fff")
+        if cjk_count:
+            # Very short CJK fillers such as "好" / "謝謝" are often noise-driven
+            # partials when the final decode returns empty. Do not promote them.
+            return cjk_count >= 6
+
+        words = [token for token in value.split() if token]
+        if len(words) < 3 and len(compact) < 12:
+            return False
+        return True
 
     @staticmethod
     def _reason_partial_clearly_contains_final(

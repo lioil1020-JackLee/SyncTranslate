@@ -376,7 +376,7 @@ class LiveCaptionPage(QWidget):
         self._refresh_asr_backend_hints()
 
     def update_config(self, config: AppConfig) -> None:
-        config.direction.mode = "bidirectional"
+        config.direction.mode = self.selected_mode()
         enabled_channels: list[str] = []
         for channel in _CHANNELS:
             mode = self.selected_tts_output_mode_for_channel(channel)
@@ -412,6 +412,14 @@ class LiveCaptionPage(QWidget):
             config.runtime.tts_output_mode = "passthrough"
 
     def selected_mode(self) -> str:
+        remote_enabled = self._selected_asr_language("remote") != "none"
+        local_enabled = self._selected_asr_language("local") != "none"
+        if remote_enabled and local_enabled:
+            return "bidirectional"
+        if remote_enabled:
+            return "meeting_to_local"
+        if local_enabled:
+            return "local_to_meeting"
         return "bidirectional"
 
     def selected_asr_language_mode(self) -> str:

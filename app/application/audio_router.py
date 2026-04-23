@@ -103,7 +103,7 @@ class AudioRouter:
         self.stop()
         self._state.start_session()
         self._tts_manager.start()
-        self._mode = "bidirectional"
+        self._mode = self._normalize_mode(mode)
         self._routes = routes
         self._sample_rate = int(sample_rate)
         self._chunk_ms = int(chunk_ms)
@@ -459,11 +459,27 @@ class AudioRouter:
         }
 
     def _asr_needed_for_source(self, source: str) -> bool:
+        if not self._mode_allows_source(source):
+            return False
         runtime = getattr(self._runtime_config, "runtime", None)
         if runtime is None:
             return True
         attr = "remote_asr_language" if source == "remote" else "local_asr_language"
         return str(getattr(runtime, attr, "auto") or "auto").strip().lower() != "none"
+
+    def _mode_allows_source(self, source: str) -> bool:
+        if self._mode == "meeting_to_local":
+            return source == "remote"
+        if self._mode == "local_to_meeting":
+            return source == "local"
+        return True
+
+    @staticmethod
+    def _normalize_mode(mode: str) -> str:
+        normalized = str(mode or "").strip().lower()
+        if normalized in {"meeting_to_local", "local_to_meeting", "bidirectional"}:
+            return normalized
+        return "bidirectional"
 
     def _has_passthrough_enabled(self) -> bool:
         return self._tts_manager.is_passthrough_enabled("local") or self._tts_manager.is_passthrough_enabled("remote")

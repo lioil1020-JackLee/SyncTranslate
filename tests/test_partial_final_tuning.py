@@ -169,3 +169,13 @@ def test_empty_final_can_retry_on_shorter_tail() -> None:
 
     assert retried.text == "recovered final"
     assert len(calls) == 1
+
+
+def test_short_empty_final_partial_is_not_promoted() -> None:
+    assert SourceRuntimeV2._should_promote_empty_final_partial("好") is False
+    assert SourceRuntimeV2._should_promote_empty_final_partial("好，謝謝。") is False
+
+
+def test_substantial_empty_final_partial_can_still_be_promoted() -> None:
+    assert SourceRuntimeV2._should_promote_empty_final_partial("我們先休息一下，等等再說") is True
+    assert SourceRuntimeV2._should_promote_empty_final_partial("let us take a short break first") is True

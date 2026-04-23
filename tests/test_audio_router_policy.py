@@ -393,6 +393,19 @@ class AudioRouterPolicyTests(unittest.TestCase):
         self.assertNotIn("local", input_manager.start_calls)
         self.assertNotIn("local", asr_manager.start_calls)
 
+    def test_local_to_meeting_mode_starts_only_local_asr_path(self) -> None:
+        router, input_manager, asr_manager, _, _ = _build_router(enabled_by_source={"remote": True, "local": True})
+        config = type("Cfg", (), {"runtime": type("Rt", (), {"remote_asr_language": "en", "local_asr_language": "zh-TW"})()})()
+        router.refresh_runtime_config(config)  # type: ignore[arg-type]
+        routes = AudioRouteConfig(meeting_in="remote-dev", microphone_in="local-dev", speaker_out="spk", meeting_out="mtg")
+
+        router.start("local_to_meeting", routes, sample_rate=24000, chunk_ms=40)
+
+        self.assertIn("local", input_manager.start_calls)
+        self.assertIn("local", asr_manager.start_calls)
+        self.assertNotIn("remote", input_manager.start_calls)
+        self.assertNotIn("remote", asr_manager.start_calls)
+
     def test_local_source_passthrough_targets_remote_output_channel(self) -> None:
         router, _, _, _, tts = _build_router()
         router.set_output_mode("remote", "passthrough")

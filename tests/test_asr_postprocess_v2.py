@@ -141,6 +141,10 @@ class AsrPostprocessV2Tests(unittest.TestCase):
     def test_hallucination_filter_can_still_block_latin_sentence_on_cjk_channel(self) -> None:
         self.assertTrue(_is_hallucination("You can keep your safety.", language="zh-TW"))
 
+    def test_hallucination_filter_blocks_credit_and_service_overlay_phrases(self) -> None:
+        self.assertTrue(_is_hallucination("字幕志願者 李宗盛", language="zh-TW"))
+        self.assertTrue(_is_hallucination("服務員 買單", language="zh-TW"))
+
     def test_postprocessor_stats_track_rejection_reason(self) -> None:
         processor = BackendPostProcessor(
             language="zh-TW",

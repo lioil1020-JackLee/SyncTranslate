@@ -520,6 +520,10 @@ class LocalAiPage(QWidget):
         else:
             config.runtime.asr_profile_local = "meeting_room"
             config.runtime.asr_profile_remote = "meeting_room"
+        config.runtime.asr_final_correction_enabled = True
+        config.runtime.asr_result_validator_enabled = True
+        config.runtime.enable_postprocessor = True
+        self._apply_model_sensitive_asr_tuning(config, preset=selected_preset)
         config.llm.caption_profile = caption_profile
         config.llm.speech_profile = speech_profile
         config.llm_channels.local.caption_profile = caption_profile
@@ -1734,6 +1738,36 @@ class LocalAiPage(QWidget):
             f"ASR 路由：中文 -> {self._format_asr_model_label(local_model)}，非中文 -> {self._format_asr_model_label(remote_model)}。"
             " 目前設定裝置 CPU；若要提升速度可改為 CUDA 並確認 CUDA 版 Torch 已正確安裝。"
         )
+
+    @staticmethod
+    def _apply_model_sensitive_asr_tuning(config: AppConfig, *, preset: str) -> None:
+        LocalAiPage._stabilize_asr_profile(config.asr_channels.local, preset=preset)
+        LocalAiPage._stabilize_asr_profile(config.asr_channels.remote, preset=preset)
+
+    @staticmethod
+    def _stabilize_asr_profile(profile, *, preset: str) -> None:
+        model_value = str(getattr(profile, "model", "") or "").strip().lower()
+        is_belle = "belle-zh-ct2" in model_value
+        if is_belle:
+            profile.beam_size = max(2, int(getattr(profile, "beam_size", 1)))
+            profile.final_beam_size = max(5, int(getattr(profile, "final_beam_size", 3)))
+            profile.streaming.final_history_seconds = max(16, int(profile.streaming.final_history_seconds))
+            profile.streaming.soft_final_audio_ms = max(
+                2200 if preset == "dialogue" else 3600,
+                int(profile.streaming.soft_final_audio_ms),
+            )
+            profile.vad.min_silence_duration_ms = max(
+                320 if preset == "dialogue" else 520,
+                int(profile.vad.min_silence_duration_ms),
+            )
+            profile.vad.startup_suppress_ms = max(200, int(profile.vad.startup_suppress_ms))
+            profile.no_speech_threshold = max(0.32, float(profile.no_speech_threshold))
+            profile.temperature_fallback = "0.0"
+            return
+
+        if any(token in model_value for token in ("distil", "turbo")) and preset == "dialogue":
+            profile.streaming.soft_final_audio_ms = min(int(profile.streaming.soft_final_audio_ms), 1800)
+            profile.vad.min_silence_duration_ms = min(int(profile.vad.min_silence_duration_ms), 280)
 
     def _notify_settings_changed(self) -> None:
         if self._suspend_notify:

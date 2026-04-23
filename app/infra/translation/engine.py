@@ -103,18 +103,23 @@ class TranslatorManager:
             "remote": remote_llm.speech_profile,
         }
         correction_enabled = bool(getattr(config.runtime, "asr_final_correction_enabled", False))
+        self._correction_enabled = correction_enabled
+        self._correction_auto_sources = {
+            "local": self._supports_auto_asr_correction(local_llm),
+            "remote": self._supports_auto_asr_correction(remote_llm),
+        }
         correction_context_items = int(getattr(config.runtime, "asr_final_correction_context_items", 3))
         correction_max_chars = int(getattr(config.runtime, "asr_final_correction_max_chars", 120))
         self._correctors = {
             "local": AsrTextCorrector(
                 local_llm,
-                enabled=correction_enabled,
+                enabled=correction_enabled or self._correction_auto_sources["local"],
                 context_items=correction_context_items,
                 max_chars=correction_max_chars,
             ),
             "remote": AsrTextCorrector(
                 remote_llm,
-                enabled=correction_enabled,
+                enabled=correction_enabled or self._correction_auto_sources["remote"],
                 context_items=correction_context_items,
                 max_chars=correction_max_chars,
             ),
@@ -228,6 +233,8 @@ class TranslatorManager:
         if corrector is None:
             return event
         language, _ = self._resolve_languages(source, getattr(event, "detected_language", ""))
+        if not self._should_attempt_asr_correction(source=source, text=event.text, language=language):
+            return event
         result = corrector.correct(event.text, language=language)
         if not result.applied:
             return event
@@ -327,3 +334,24 @@ class TranslatorManager:
         if channel.profiles == default.profiles and base.profiles != default.profiles:
             merged.profiles = deepcopy(base.profiles)
         return merged
+
+    @staticmethod
+    def _supports_auto_asr_correction(config: LlmConfig) -> bool:
+        return str(getattr(config, "backend", "") or "").strip().lower() == "lm_studio"
+
+    def _should_attempt_asr_correction(self, *, source: str, text: str, language: str) -> bool:
+        value = str(text or "").strip()
+        if not value:
+            return False
+        if self._correction_enabled:
+            return True
+        if not self._correction_auto_sources.get(source, False):
+            return False
+        normalized_language = str(language or "").strip().lower()
+        compact = "".join(value.split())
+        if not compact:
+            return False
+        cjk_count = sum(1 for ch in compact if "\u4e00" <= ch <= "\u9fff")
+        if normalized_language.startswith(("zh", "cmn", "yue")) or cjk_count >= max(2, len(compact) // 2):
+            return 4 <= len(compact) <= 32 and cjk_count >= 2
+        return False

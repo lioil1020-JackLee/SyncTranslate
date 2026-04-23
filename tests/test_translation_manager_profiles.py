@@ -165,6 +165,46 @@ class TranslatorManagerProfileTests(unittest.TestCase):
         self.assertIs(corrected, event)
         mock_correct.assert_not_called()
 
+    @patch("app.infra.translation.engine.AsrTextCorrector.correct")
+    @patch("app.infra.translation.engine.create_translation_provider")
+    def test_correct_asr_event_auto_corrects_short_cjk_final_even_when_flag_is_off(
+        self,
+        mock_factory,
+        mock_correct,
+    ) -> None:
+        providers = [_FakeProvider(), _FakeProvider()]
+        mock_factory.side_effect = providers
+        mock_correct.return_value = AsrCorrectionResult(
+            text="裝腔作勢",
+            raw_text="撞槍做事",
+            applied=True,
+        )
+
+        config = AppConfig()
+        config.runtime.asr_final_correction_enabled = False
+        manager = TranslatorManager(config)
+        event = ASREventWithSource(
+            source="local",
+            utterance_id="u-auto-correct",
+            revision=3,
+            pipeline_revision=1,
+            config_fingerprint="fp",
+            created_at=0.0,
+            text="撞槍做事",
+            is_final=True,
+            is_early_final=False,
+            start_ms=0,
+            end_ms=900,
+            latency_ms=50,
+            detected_language="zh-TW",
+        )
+
+        corrected = manager.correct_asr_event(event)
+
+        self.assertEqual(corrected.text, "裝腔作勢")
+        self.assertTrue(corrected.correction_applied)
+        mock_correct.assert_called_once()
+
     @patch("app.infra.translation.engine.create_translation_provider")
     def test_tts_speaks_caption_translation_text_directly(self, mock_factory) -> None:
         providers = [_FakeProvider(), _FakeProvider()]

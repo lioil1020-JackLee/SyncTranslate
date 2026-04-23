@@ -53,9 +53,10 @@ class SessionControllerTests(unittest.TestCase):
         controller = SessionController(router)  # type: ignore[arg-type]
         routes = AudioRouteConfig(meeting_in="m", microphone_in="l", speaker_out="s", meeting_out="o")
 
-        start_result = controller.start(routes, sample_rate=24000, chunk_ms=40)
+        start_result = controller.start(routes, sample_rate=24000, chunk_ms=40, mode="meeting_to_local")
         self.assertTrue(start_result.ok)
         self.assertEqual(controller.current_state(), SessionState.RUNNING)
+        self.assertEqual(router.start_calls[-1], ("meeting_to_local", 24000, 40))
 
         stop_result = controller.stop()
         self.assertTrue(stop_result.ok)
@@ -97,6 +98,17 @@ class SessionControllerTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(controller.current_state(), SessionState.FAILED)
         self.assertIn("Session stop failed", result.message)
+
+    def test_running_start_result_reports_requested_mode(self) -> None:
+        router = _FakeAudioRouter()
+        controller = SessionController(router)  # type: ignore[arg-type]
+        routes = AudioRouteConfig()
+        controller.start(routes, sample_rate=24000, mode="local_to_meeting")
+
+        result = controller.start(routes, sample_rate=24000, mode="local_to_meeting")
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.payload, {"mode": "local_to_meeting"})
 
 
 if __name__ == "__main__":

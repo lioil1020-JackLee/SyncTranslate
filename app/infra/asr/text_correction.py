@@ -99,7 +99,9 @@ class AsrTextCorrector:
         if normalized_language.startswith(("zh", "cmn", "yue")):
             if _contains_cjk(raw) and not _contains_cjk(candidate):
                 return False
-            if len(normalized_raw) >= 6 and ratio < 0.55:
+            if _looks_like_safe_cjk_surface_fix(raw, candidate):
+                return True
+            if len(normalized_raw) >= 10 and ratio < 0.55:
                 return False
         return True
 
@@ -110,6 +112,40 @@ def _normalize_for_compare(text: str) -> str:
 
 def _contains_cjk(text: str) -> bool:
     return any("\u4e00" <= ch <= "\u9fff" for ch in (text or ""))
+
+
+def _looks_like_safe_cjk_surface_fix(raw_text: str, candidate_text: str) -> bool:
+    raw = _strip_spacing_and_punctuation(raw_text)
+    candidate = _strip_spacing_and_punctuation(candidate_text)
+    if not raw or not candidate:
+        return False
+    if raw == candidate:
+        return True
+    if not (_is_all_cjk(raw) and _is_all_cjk(candidate)):
+        return False
+    if len(raw) != len(candidate):
+        return False
+    if not 2 <= len(raw) <= 12:
+        return False
+    if _ascii_digit_skeleton(raw_text) != _ascii_digit_skeleton(candidate_text):
+        return False
+    return True
+
+
+def _strip_spacing_and_punctuation(text: str) -> str:
+    return "".join(ch for ch in (text or "").strip() if _is_cjk_char(ch))
+
+
+def _is_cjk_char(ch: str) -> bool:
+    return "\u4e00" <= ch <= "\u9fff"
+
+
+def _is_all_cjk(text: str) -> bool:
+    return bool(text) and all(_is_cjk_char(ch) for ch in text)
+
+
+def _ascii_digit_skeleton(text: str) -> str:
+    return "".join(ch for ch in (text or "") if ch.isascii() and ch.isdigit())
 
 
 def _looks_like_structured_junk(text: str) -> bool:
@@ -126,4 +162,4 @@ def _looks_like_structured_junk(text: str) -> bool:
     return False
 
 
-__all__ = ["AsrCorrectionResult", "AsrTextCorrector"]
+__all__ = ["AsrCorrectionResult", "AsrTextCorrector", "_looks_like_safe_cjk_surface_fix"]

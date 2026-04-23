@@ -379,6 +379,7 @@ class MainWindow(QMainWindow):
                 route=route,
                 sample_rate=self.config.runtime.sample_rate,
                 chunk_ms=self.config.runtime.chunk_ms,
+                mode=self.live_caption_page.selected_mode(),
             )
         except Exception as exc:
             self._report_error(f"start_session failed: {exc}")
@@ -939,6 +940,7 @@ class MainWindow(QMainWindow):
         route=None,
         sample_rate: int | None = None,
         chunk_ms: int | None = None,
+        mode: str | None = None,
     ) -> None:
         if not self.session_controller or self._session_action_running:
             return
@@ -971,6 +973,7 @@ class MainWindow(QMainWindow):
                         route,
                         sample_rate=sample_rate,
                         chunk_ms=chunk_ms or self.config.runtime.chunk_ms,
+                        mode=str(mode or getattr(self.config.direction, "mode", "bidirectional") or "bidirectional"),
                     )
                 self._session_action_queue.put((action, True, result))
             except Exception as exc:

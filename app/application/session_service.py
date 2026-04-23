@@ -46,17 +46,24 @@ class SessionController:
         with self._lock:
             return self._last_failure
 
-    def start(self, routes: AudioRouteConfig, sample_rate: int, chunk_ms: int = 100) -> SessionResult:
+    def start(
+        self,
+        routes: AudioRouteConfig,
+        sample_rate: int,
+        chunk_ms: int = 100,
+        *,
+        mode: str = "bidirectional",
+    ) -> SessionResult:
         with self._lock:
             if self._state in (SessionState.STARTING, SessionState.STOPPING):
                 return SessionResult(ok=False, message=f"Session is {self._state.value}, try again shortly")
             if self._state == SessionState.RUNNING:
-                return SessionResult(ok=True, message="Session already running", payload={"mode": "bidirectional"})
+                return SessionResult(ok=True, message="Session already running", payload={"mode": mode})
             self._state = SessionState.STARTING
             self._last_failure = ""
 
         try:
-            self._audio_router.start("bidirectional", routes, sample_rate, chunk_ms=chunk_ms)
+            self._audio_router.start(mode, routes, sample_rate, chunk_ms=chunk_ms)
         except Exception as exc:
             try:
                 self._audio_router.stop()
@@ -71,8 +78,8 @@ class SessionController:
             self._started_at = time.time()
         return SessionResult(
             ok=True,
-            message="Session started: bidirectional",
-            payload={"mode": "bidirectional", "state": SessionState.RUNNING.value},
+            message=f"Session started: {mode}",
+            payload={"mode": mode, "state": SessionState.RUNNING.value},
         )
 
     def stop(self) -> SessionResult:

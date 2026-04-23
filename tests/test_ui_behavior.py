@@ -194,6 +194,25 @@ class LiveCaptionPageUiTests(_QtTestCase):
         self.assertFalse(updated.runtime.local_translation_enabled)
         self.assertFalse(updated.runtime.local_tts_enabled)
 
+    def test_selected_mode_reflects_single_direction_runtime(self) -> None:
+        page = LiveCaptionPage()
+        page.local_asr_combo.setCurrentIndex(page.local_asr_combo.findData("none"))
+        page.remote_asr_combo.setCurrentIndex(page.remote_asr_combo.findData("zh-TW"))
+
+        self.assertEqual(page.selected_mode(), "meeting_to_local")
+
+        updated = AppConfig()
+        page.update_config(updated)
+
+        self.assertEqual(updated.direction.mode, "meeting_to_local")
+
+    def test_selected_mode_remains_bidirectional_when_both_channels_are_active(self) -> None:
+        page = LiveCaptionPage()
+        page.local_asr_combo.setCurrentIndex(page.local_asr_combo.findData("zh-TW"))
+        page.remote_asr_combo.setCurrentIndex(page.remote_asr_combo.findData("en"))
+
+        self.assertEqual(page.selected_mode(), "bidirectional")
+
     def test_direction_controls_lock_only_language_and_voice_controls(self) -> None:
         page = LiveCaptionPage()
 
@@ -519,6 +538,29 @@ class LocalAiPageUiTests(_QtTestCase):
         self.assertEqual(updated.llm.caption_profile, "dialogue_fast")
         self.assertEqual(updated.runtime.asr_profile_local, "turn_taking")
         self.assertEqual(updated.runtime.asr_profile_remote, "turn_taking")
+
+    def test_local_ai_page_enables_final_correction_in_exported_runtime(self) -> None:
+        page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
+
+        updated = AppConfig()
+        page.update_config(updated)
+
+        self.assertTrue(updated.runtime.asr_final_correction_enabled)
+        self.assertTrue(updated.runtime.asr_result_validator_enabled)
+        self.assertTrue(updated.runtime.enable_postprocessor)
+
+    def test_belle_model_gets_more_conservative_runtime_tuning(self) -> None:
+        page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
+        belle_path = r".\runtimes\models\belle-zh-ct2"
+        page.asr_model_combo.setCurrentIndex(page.asr_model_combo.findData(belle_path))
+
+        updated = AppConfig()
+        page.update_config(updated)
+
+        self.assertEqual(updated.asr_channels.local.model, belle_path)
+        self.assertGreaterEqual(updated.asr_channels.local.beam_size, 2)
+        self.assertGreaterEqual(updated.asr_channels.local.final_beam_size, 5)
+        self.assertGreaterEqual(updated.asr_channels.local.streaming.final_history_seconds, 16)
 
     def test_switching_to_dialogue_preset_applies_conversation_values(self) -> None:
         page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)

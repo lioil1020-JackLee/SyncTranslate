@@ -45,6 +45,35 @@ _HALLUC_LATIN_SENTENCE_RE = re.compile(
 _PUNCT_SET = frozenset("。，、！？…—「」『』【】《》〈〉·～：；""''()（）\u3000 　\t\n\r.!?,;:-–")
 
 
+_KNOWN_NON_SPEECH_SUBSTRINGS = (
+    "字幕志願者",
+    "字幕志愿者",
+    "字幕提供",
+    "中文字幕",
+    "感謝收看",
+    "感謝您的收看",
+    "感谢收看",
+    "感谢您的收看",
+    "謝謝大家",
+    "谢谢大家",
+    "請不吝點贊",
+    "请不吝点赞",
+    "訂閱",
+    "订阅",
+    "轉發",
+    "转发",
+    "打賞",
+    "打赏",
+    "amara.org",
+)
+_KNOWN_SERVICE_PHRASES = (
+    "服務員買單",
+    "服务员买单",
+    "服務員結帳",
+    "服务员结账",
+)
+
+
 def _is_hallucination(text: str, *, language: str = "") -> bool:
     """Return True if *text* looks like a Whisper hallucination and should be suppressed."""
     stripped = text.strip()
@@ -52,6 +81,12 @@ def _is_hallucination(text: str, *, language: str = "") -> bool:
         return False
     normalized_language = _normalize_lang(language)
     cjk_channel = normalized_language.startswith(("zh", "cmn", "yue")) or not normalized_language
+    compact = re.sub(r"\s+", "", stripped)
+    lowered = compact.lower()
+    if any(token.lower() in lowered for token in _KNOWN_NON_SPEECH_SUBSTRINGS):
+        return True
+    if any(token in compact for token in _KNOWN_SERVICE_PHRASES) and len(compact) <= 8:
+        return True
     # Credit / attribution lines are safe to suppress when short (≤ 20 chars);
     # in legitimate conversational speech, such keywords appear inside longer sentences.
     if _HALLUC_CREDIT_RE.search(stripped) and len(stripped) <= 20:
