@@ -49,6 +49,10 @@ jobs:
           & $sharedPy -c "import torch, torchaudio; print('torch=' + torch.__version__); print('cuda=' + str(torch.cuda.is_available()))"
           $fwPy = "runtimes/faster_whisper/Scripts/python.exe"
           & $fwPy -c "import faster_whisper; print('faster_whisper ok')"
+          if (!(Test-Path "runtimes/models/belle-zh-ct2/config.json")) {
+            throw "Belle model is missing expected config.json"
+          }
+          Write-Host "belle model ok"
 
       - name: Run test suite
         shell: pwsh

@@ -33,6 +33,7 @@ dev = [
     "pytest>=8.4.2",
 ]
 build = [
+    "huggingface-hub>=1.1.1",
     "pyinstaller>=6.16.0",
 ]
 
