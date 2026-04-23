@@ -550,9 +550,18 @@ class LocalAiPageUiTests(_QtTestCase):
         self.assertTrue(updated.runtime.enable_postprocessor)
 
     def test_belle_model_gets_more_conservative_runtime_tuning(self) -> None:
+        belle_dir = Path("runtimes/models/belle-zh-ct2")
+        created_belle_dir = not belle_dir.exists()
+        belle_dir.mkdir(parents=True, exist_ok=True)
+        if created_belle_dir:
+            self.addCleanup(lambda: belle_dir.rmdir() if belle_dir.exists() else None)
+
         page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
         belle_path = r".\runtimes\models\belle-zh-ct2"
-        page.asr_model_combo.setCurrentIndex(page.asr_model_combo.findData(belle_path))
+        belle_index = page.asr_model_combo.findData(belle_path)
+
+        self.assertGreaterEqual(belle_index, 0)
+        page.asr_model_combo.setCurrentIndex(belle_index)
 
         updated = AppConfig()
         page.update_config(updated)
