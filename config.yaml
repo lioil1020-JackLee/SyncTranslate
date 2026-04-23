@@ -9,7 +9,7 @@ audio:
   meeting_out_volume: 1.0
 language:
   meeting_source: en
-  meeting_target: zh-TW
+  meeting_target: en
   local_source: zh-TW
   local_target: en
 asr_channels:
@@ -275,9 +275,9 @@ runtime:
   local_echo_guard_resume_delay_ms: 300
   remote_echo_guard_resume_delay_ms: 300
   tts_output_mode: passthrough
-  remote_asr_language: en
+  remote_asr_language: zh-TW
   local_asr_language: zh-TW
-  remote_translation_target: zh-TW
+  remote_translation_target: en
   local_translation_target: en
   remote_tts_voice: none
   local_tts_voice: none
