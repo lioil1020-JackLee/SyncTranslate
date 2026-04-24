@@ -13,9 +13,10 @@ from app.infra.asr.backend_v2 import build_backend_pair
 from app.infra.asr.contracts import ASREventWithSource
 from app.infra.asr.endpoint_profiles import get_endpoint_profile
 from app.infra.asr.endpointing_v2 import EndpointSignal, build_endpointing_runtime
+from app.infra.asr.language_profiles import resolve_language_asr_profile
 from app.infra.asr.pipeline_v2 import AsrV2PipelineSpec, build_v2_pipeline_spec, resolve_requested_asr_language
 from app.infra.asr.worker_v2 import SourceRuntimeV2, V2RuntimeEvent
-from app.infra.config.schema import AppConfig
+from app.infra.config.schema import AppConfig, RuntimeConfig
 
 
 class ASRManagerV2:
@@ -232,7 +233,13 @@ class ASRManagerV2:
         language = self._asr_language_for_source(source)
         resolution = resolve_backend_for_language(language)
         profile = self._profile_for_source(source)
-        build_result = build_backend_pair(self._config, source=source, language=language)
+        language_profile = resolve_language_asr_profile(profile, language=language)
+        build_result = build_backend_pair(
+            self._config,
+            source=source,
+            language=language,
+            profile_override=language_profile.asr,
+        )
         if isinstance(build_result, tuple):
             partial_backend, final_backend = build_result
             resolution = resolve_backend_for_language(language)
@@ -254,23 +261,23 @@ class ASRManagerV2:
             "normalized_language": resolution.normalized_language,
         }
         # Resolve endpoint profile for this source channel
-        _profile_name = (
-            getattr(self._config.runtime, "asr_profile_remote", None)
-            if source == "remote"
-            else getattr(self._config.runtime, "asr_profile_local", None)
-        )
+        _profile_name = self._endpoint_profile_name_for_source(source, language_profile=language_profile)
         _ep_profile = get_endpoint_profile(_profile_name)
         _ep_kwargs = _ep_profile.to_worker_kwargs()
+        noise_reduce_strength, music_suppress_strength = self._frontend_enhancement_strengths(
+            language,
+            source=source,
+        )
 
         runtime = SourceRuntimeV2(
             source=source,
             partial_backend=partial_backend,
             final_backend=final_backend,
             endpointing=endpointing,
-            partial_interval_ms=_ep_kwargs.get("partial_interval_ms", profile.streaming.partial_interval_ms),
-            partial_history_seconds=profile.streaming.partial_history_seconds,
-            final_history_seconds=profile.streaming.final_history_seconds,
-            soft_final_audio_ms=_ep_kwargs.get("soft_final_audio_ms", profile.streaming.soft_final_audio_ms),
+            partial_interval_ms=_ep_kwargs.get("partial_interval_ms", language_profile.asr.streaming.partial_interval_ms),
+            partial_history_seconds=language_profile.asr.streaming.partial_history_seconds,
+            final_history_seconds=language_profile.asr.streaming.final_history_seconds,
+            soft_final_audio_ms=_ep_kwargs.get("soft_final_audio_ms", language_profile.asr.streaming.soft_final_audio_ms),
             pre_roll_ms=_ep_kwargs.get("pre_roll_ms", int(getattr(self._config.runtime, "asr_pre_roll_ms", 500))),
             min_partial_audio_ms=_ep_kwargs.get("min_partial_audio_ms", int(getattr(self._config.runtime, "asr_partial_min_audio_ms", 280))),
             queue_maxsize=self._queue_maxsize_for_source(source),
@@ -285,15 +292,11 @@ class ASRManagerV2:
             frontend_max_gain=float(getattr(self._config.runtime, "asr_frontend_max_gain", 3.0)),
             frontend_highpass_alpha=float(getattr(self._config.runtime, "asr_frontend_highpass_alpha", 0.96)),
             enhancement_enabled=bool(getattr(self._config.runtime, "asr_enhancement_enabled", True)),
-            enhancement_noise_reduce_strength=float(
-                getattr(self._config.runtime, "asr_enhancement_noise_reduce_strength", 0.42)
-            ),
+            enhancement_noise_reduce_strength=noise_reduce_strength,
             enhancement_noise_adapt_rate=float(
                 getattr(self._config.runtime, "asr_enhancement_noise_adapt_rate", 0.18)
             ),
-            enhancement_music_suppress_strength=float(
-                getattr(self._config.runtime, "asr_enhancement_music_suppress_strength", 0.2)
-            ),
+            enhancement_music_suppress_strength=music_suppress_strength,
             on_debug=self._on_error,
         )
         self._runtimes[source] = runtime
@@ -314,6 +317,46 @@ class ASRManagerV2:
             return self._config.asr_channels.remote
         return self._config.asr_channels.local
 
+    def _endpoint_profile_name_for_source(self, source: str, *, language_profile) -> str:
+        configured = (
+            getattr(self._config.runtime, "asr_profile_remote", None)
+            if source == "remote"
+            else getattr(self._config.runtime, "asr_profile_local", None)
+        )
+        configured_name = str(configured or "").strip()
+        if configured_name and configured_name not in {"default", "meeting_room"}:
+            return configured_name
+        return language_profile.endpoint_profile or configured_name or "default"
+
+    def _frontend_enhancement_strengths(self, language: str, *, source: str = "local") -> tuple[float, float]:
+        profile = resolve_language_asr_profile(self._profile_for_source(source), language=language)
+        runtime = self._config.runtime
+        defaults = RuntimeConfig()
+        configured_noise = float(
+            getattr(runtime, "asr_enhancement_noise_reduce_strength", defaults.asr_enhancement_noise_reduce_strength)
+        )
+        configured_music = float(
+            getattr(
+                runtime,
+                "asr_enhancement_music_suppress_strength",
+                defaults.asr_enhancement_music_suppress_strength,
+            )
+        )
+        noise = (
+            float(profile.frontend.noise_reduce_strength)
+            if abs(configured_noise - defaults.asr_enhancement_noise_reduce_strength) < 1e-9
+            else configured_noise
+        )
+        music = (
+            float(profile.frontend.music_suppress_strength)
+            if abs(configured_music - defaults.asr_enhancement_music_suppress_strength) < 1e-9
+            else configured_music
+        )
+        return (
+            noise,
+            music,
+        )
+
     def _queue_maxsize_for_source(self, source: str) -> int:
         runtime = self._config.runtime
         if source == "remote":
@@ -329,21 +372,27 @@ class ASRManagerV2:
     def _speaker_diarizer_for_source(self, source: str):
         return None
 
+    def _effective_language_profile_for_source(self, source: str):
+        return resolve_language_asr_profile(
+            self._profile_for_source(source),
+            language=self._asr_language_for_source(source),
+        )
+
     def _threshold_for_source(self, source: str) -> float:
-        vad = self._profile_for_source(source).vad
+        vad = self._effective_language_profile_for_source(source).asr.vad
         backend = str(getattr(vad, "backend", "rms") or "rms").strip().lower()
         if backend in {"silero", "silero_vad", "neural", "neural_endpoint"}:
             return float(getattr(vad, "neural_threshold", 0.5))
         return float(getattr(vad, "rms_threshold", 0.02))
 
     def _partial_interval_for_source(self, source: str) -> int:
-        return int(self._profile_for_source(source).streaming.partial_interval_ms)
+        return int(self._effective_language_profile_for_source(source).asr.streaming.partial_interval_ms)
 
     def _min_silence_for_source(self, source: str) -> int:
-        return int(self._profile_for_source(source).vad.min_silence_duration_ms)
+        return int(self._effective_language_profile_for_source(source).asr.vad.min_silence_duration_ms)
 
     def _soft_final_for_source(self, source: str) -> int:
-        return int(self._profile_for_source(source).streaming.soft_final_audio_ms)
+        return int(self._effective_language_profile_for_source(source).asr.streaming.soft_final_audio_ms)
 
     @staticmethod
     def _collapse_stereo_for_asr(chunk: np.ndarray) -> np.ndarray:

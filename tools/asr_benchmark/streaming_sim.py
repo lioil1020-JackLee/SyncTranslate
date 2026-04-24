@@ -29,6 +29,12 @@ from typing import Any
 
 import numpy as np
 
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
@@ -251,6 +257,7 @@ def run_streaming_sim(
     from app.infra.asr.endpointing_v2 import build_endpointing_runtime
     from app.infra.asr.backend_resolution import resolve_backend_for_language
     from app.infra.asr.endpoint_profiles import get_endpoint_profile
+    from app.infra.asr.language_profiles import resolve_language_asr_profile
     from app.infra.asr.text_correction import AsrTextCorrector
     from app.infra.asr.worker_v2 import SourceRuntimeV2, V2RuntimeEvent
     from app.infra.config.schema import VadSettings, AsrStreamingSettings
@@ -259,8 +266,9 @@ def run_streaming_sim(
     config = load_config(str(config_path))
 
     # Get profile for source
-    profile = config.asr_channels.remote if source == "remote" else config.asr_channels.local
-    profile = deepcopy(profile)
+    base_profile = config.asr_channels.remote if source == "remote" else config.asr_channels.local
+    language_profile = resolve_language_asr_profile(base_profile, language=language)
+    profile = deepcopy(language_profile.asr)
 
     # Apply top-level ASR overrides
     if asr_overrides:
@@ -289,8 +297,6 @@ def run_streaming_sim(
     if verbose:
         print(f"[sim] VAD backend={profile.vad.backend} neural_threshold={profile.vad.neural_threshold} "
               f"min_silence={profile.vad.min_silence_duration_ms}ms", flush=True)
-        print(f"[sim] soft_final_audio_ms={profile.streaming.soft_final_audio_ms} "
-              f"partial_interval_ms={profile.streaming.partial_interval_ms}", flush=True)
         if asr_overrides:
             print(f"[sim] ASR overrides={asr_overrides}", flush=True)
         if runtime_overrides:
@@ -310,7 +316,7 @@ def run_streaming_sim(
     if verbose:
         print("[sim] Building backends...", flush=True)
     t0 = time.monotonic()
-    build_result = build_backend_pair(config, source=source, language=language)
+    build_result = build_backend_pair(config, source=source, language=language, profile_override=profile)
     if isinstance(build_result, tuple):
         partial_backend, final_backend = build_result
         resolution = resolve_backend_for_language(language)
@@ -347,20 +353,26 @@ def run_streaming_sim(
     )
     # Priority for timing params: streaming_overrides > config.runtime > hard-coded defaults
     # We do NOT let endpoint profile override explicit CLI/sweep values in benchmark context.
+    if language_profile.endpoint_profile and str(_profile_name or "").strip() in {"", "default", "meeting_room"}:
+        _profile_name = language_profile.endpoint_profile
     _ep_kwargs = get_endpoint_profile(_profile_name).to_worker_kwargs()
     _base_pre_roll_ms = int(getattr(config.runtime, "asr_pre_roll_ms", 500))
     _base_min_partial_ms = int(getattr(config.runtime, "asr_partial_min_audio_ms", 280))
     _resolved_timing: dict[str, Any] = {
-        "soft_final_audio_ms": profile.streaming.soft_final_audio_ms,
-        "pre_roll_ms": _base_pre_roll_ms,
-        "min_partial_audio_ms": _base_min_partial_ms,
-        "partial_interval_ms": profile.streaming.partial_interval_ms,
+        "soft_final_audio_ms": _ep_kwargs.get("soft_final_audio_ms", profile.streaming.soft_final_audio_ms),
+        "pre_roll_ms": _ep_kwargs.get("pre_roll_ms", _base_pre_roll_ms),
+        "min_partial_audio_ms": _ep_kwargs.get("min_partial_audio_ms", _base_min_partial_ms),
+        "partial_interval_ms": _ep_kwargs.get("partial_interval_ms", profile.streaming.partial_interval_ms),
     }
     # streaming_overrides have highest priority (CLI / sweep params)
     if streaming_overrides:
         _resolved_timing.update({k: v for k, v in streaming_overrides.items() if k in _resolved_timing})
     if worker_overrides:
         _resolved_timing.update({k: v for k, v in worker_overrides.items() if k in _resolved_timing})
+    if verbose:
+        print(f"[sim] endpoint_profile={_profile_name or 'default'} "
+              f"soft_final_audio_ms={_resolved_timing['soft_final_audio_ms']} "
+              f"partial_interval_ms={_resolved_timing['partial_interval_ms']}", flush=True)
 
     # Collect events
     finals: list[str] = []
@@ -535,7 +547,8 @@ def run_streaming_sim(
         "audio_duration_ms": audio_duration_ms,
         "sim_elapsed_ms": round(elapsed * 1000),
         "speed": round(audio_duration_ms / max(1, elapsed * 1000), 2),
-        "final_count": stats.final_count,
+        "final_count": len(finals),
+        "worker_final_count": stats.final_count,
         "partial_count": stats.partial_count,
         "dropped_chunks": stats.dropped_chunks,
         "transcript": full_transcript,
@@ -551,8 +564,11 @@ def run_streaming_sim(
             "speech_pad_ms": profile.vad.speech_pad_ms,
         },
         "streaming_params": {
-            "soft_final_audio_ms": profile.streaming.soft_final_audio_ms,
-            "partial_interval_ms": profile.streaming.partial_interval_ms,
+            "endpoint_profile": _profile_name or "default",
+            "soft_final_audio_ms": _resolved_timing["soft_final_audio_ms"],
+            "partial_interval_ms": _resolved_timing["partial_interval_ms"],
+            "pre_roll_ms": _resolved_timing["pre_roll_ms"],
+            "min_partial_audio_ms": _resolved_timing["min_partial_audio_ms"],
         },
     }
     return result

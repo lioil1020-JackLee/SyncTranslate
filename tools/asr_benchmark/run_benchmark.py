@@ -46,6 +46,12 @@ from typing import Any
 
 import numpy as np
 
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 # ---------------------------------------------------------------------------
 # Bootstrap external AI runtime (faster-whisper runtime)
 # ---------------------------------------------------------------------------
@@ -260,6 +266,7 @@ def _run_file(
     from app.infra.config.settings_store import load_config
     from app.infra.asr.backend_resolution import resolve_backend_for_language
     from app.infra.asr.backend_v2 import _build_engine
+    from app.infra.asr.language_profiles import resolve_language_asr_profile
 
     audio, sample_rate = _load_wav(audio_path)
     audio_duration_ms = round(len(audio) / sample_rate * 1000)
@@ -301,7 +308,7 @@ def _run_file(
     print("[benchmark] Loading model...", flush=True)
     t0 = time.monotonic()
     chunk_count = 1
-    tuned_profile = deepcopy(asr_profile)
+    tuned_profile = deepcopy(resolve_language_asr_profile(asr_profile, language=asr_language).asr)
     if accuracy_mode == "quality":
         tuned_profile.condition_on_previous_text = False
         tuned_profile.final_condition_on_previous_text = False

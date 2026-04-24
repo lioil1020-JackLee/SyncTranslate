@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from app.infra.config.schema import VadSettings
+from app.infra.asr.resampling import resample_audio
 
 
 @dataclass(slots=True)
@@ -26,6 +27,8 @@ class EndpointSignal:
     speech_ms: float = 0.0
     silence_ms: float = 0.0
     speech_probability: float = 0.0
+    speech_threshold: float = 0.0
+    is_speech_frame: bool = False
     rms: float = 0.0
 
 
@@ -79,7 +82,8 @@ class EndpointingRuntime:
         return self._update_with_probability(probability=probability, chunk_ms=chunk_ms, rms=rms)
 
     def _update_with_probability(self, *, probability: float, chunk_ms: float, rms: float) -> EndpointSignal:
-        has_speech = probability >= self._speech_threshold()
+        speech_threshold = self._speech_threshold()
+        has_speech = probability >= speech_threshold
         min_speech_ms = max(40.0, float(getattr(self._config, "min_speech_duration_ms", 150)))
         min_silence_ms = max(120.0, float(getattr(self._config, "min_silence_duration_ms", 520)))
         speech_pad_ms = max(0.0, float(getattr(self._config, "speech_pad_ms", 320)))
@@ -146,6 +150,8 @@ class EndpointingRuntime:
             speech_ms=self._speech_ms,
             silence_ms=self._silence_ms,
             speech_probability=probability,
+            speech_threshold=speech_threshold,
+            is_speech_frame=has_speech,
             rms=rms,
         )
 
@@ -218,7 +224,7 @@ class _SileroStreamingVad:
     def probability(self, *, chunk: np.ndarray, sample_rate: float) -> float:
         if not self.available:
             return 0.0
-        resampled = _resample_linear(np.asarray(chunk, dtype=np.float32), sample_rate=int(sample_rate), target_rate=16000)
+        resampled = resample_audio(np.asarray(chunk, dtype=np.float32), sample_rate=int(sample_rate), target_rate=16000)
         if resampled.size == 0:
             return self._last_probability
         if self._buffer.size:
@@ -280,16 +286,6 @@ def build_endpointing_runtime(
     patched_config = VadSettings(**asdict(vad_config))
     patched_config.backend = descriptor.name
     return EndpointingRuntime(descriptor, patched_config, device=device)
-
-
-def _resample_linear(audio: np.ndarray, *, sample_rate: int, target_rate: int) -> np.ndarray:
-    if sample_rate <= 0 or target_rate <= 0 or sample_rate == target_rate or audio.size <= 1:
-        return audio.astype(np.float32, copy=False)
-    src_len = int(audio.shape[0])
-    dst_len = max(1, int(round(src_len * target_rate / sample_rate)))
-    src_x = np.linspace(0.0, 1.0, src_len, endpoint=False)
-    dst_x = np.linspace(0.0, 1.0, dst_len, endpoint=False)
-    return np.interp(dst_x, src_x, audio).astype(np.float32, copy=False)
 
 
 __all__ = [

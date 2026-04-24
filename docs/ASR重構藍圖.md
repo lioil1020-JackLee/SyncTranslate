@@ -9,6 +9,7 @@ ASR 重構已進入收尾與實測調校階段：
 - 中文鏈路已接入 `faster-whisper + silero-vad`
 - 非中文與 `auto` 仍走 `faster-whisper`
 - lazy registry / runtime stats / diagnostics 已落地
+- 2026-04-25 起，離線辨識暫不再優先優化；目前瓶頸集中在即時串流切段、尾端靜音與短幻聽
 
 也就是說，這份文件不再描述「是否要重構」，而是描述：
 
@@ -48,6 +49,19 @@ ASR 重構已進入收尾與實測調校階段：
 - lazy registry
 - device fallback
 - runtime stats 暴露
+- language-specific ASR profile：中文 `no_speech_threshold = 0.25`，並使用較保守的 VAD / endpointing 設定
+- 16k resampling 共用化，faster-whisper、Silero VAD 與 backend 前處理使用同一組 resampler
+
+### 3.1 即時串流品質保護
+
+已完成：
+
+- `worker_v2.py` 累積 segment-local VAD / RMS 統計
+- final validator 會使用 segment-local speech ratio，避免全域 frontend 統計誤判
+- 短尾端幻聽過濾：
+  - 英文常見空白尾音：`You`、`Thank you`、`Bye`
+  - 中文影片片尾 / CTA：短 `訂閱`、`按讚`、`安妞哦`、短笑聲片尾
+- empty-final partial fallback 會拒絕短 CTA partial，避免 final 空白時把片尾幻聽補回 transcript
 
 ### 4. Diagnostics
 
@@ -109,16 +123,16 @@ ASR 重構已進入收尾與實測調校階段：
 
 ## 尚未完成
 
-### 1. v2 實測回放工具
+### 1. v2 壞案例回放工具
 
-單一路徑 v2 已落地，但仍缺更方便的壞案例回放與比對工具。
+單一路徑 v2 已落地，`tools/asr_benchmark/streaming_sim.py` 可做中英串流回放；仍缺更方便的壞案例切片與逐段比對工具。
 
 下一步要做：
 
 - 離線回放一段音訊並輸出 frontend / endpointing / partial / final / validator 節奏
 - 更快重現「畫面體感差」但不容易定位的案例
 
-### 2. 中文鏈路實測穩定度
+### 2. 中文即時串流穩定度
 
 目前仍需要更多真實驗收，尤其是：
 
@@ -126,6 +140,7 @@ ASR 重構已進入收尾與實測調校階段：
 - 雙通道同時中文發話
 - VoiceMeeter B1 / B2 同源輸入
 - CPU 與 CUDA 的差異
+- 含背景音、片頭片尾與 YouTube CTA 的長音訊
 
 ### 3. ASR final correction
 
@@ -150,8 +165,8 @@ ASR 重構已進入收尾與實測調校階段：
 
 ### 高優先
 
-- 持續做中文新聞 / 會議語音實測
-- 把 diagnostics / replay 做得更直觀
+- 持續做中文新聞 / 會議語音 / 影片音訊實測
+- 把 streaming replay 做成可切片、可輸出每段 VAD / final / rejection reason 的報表
 - 釐清 CUDA 環境與 `effective device`
 
 ### 中優先

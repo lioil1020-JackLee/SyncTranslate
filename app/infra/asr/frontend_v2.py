@@ -224,16 +224,20 @@ class AsrAudioFrontendV2:
             return 0.0
         frame = max(64, int(sample_rate * self._speech_frame_ms / 1000.0))
         if audio.size <= frame:
-            return 1.0 if baseline_rms > 0.0 else 0.0
-        threshold = max(0.003, baseline_rms * self._speech_gate_ratio)
-        voiced = 0
-        total = 0
+            return 1.0 if baseline_rms >= 0.003 else 0.0
+        frame_rms: list[float] = []
         for start in range(0, max(1, audio.size - frame + 1), frame):
             end = min(audio.size, start + frame)
-            rms = _rms(audio[start:end])
-            if rms >= threshold:
-                voiced += 1
-            total += 1
+            frame_rms.append(_rms(audio[start:end]))
+        if not frame_rms:
+            return 0.0
+        rms_values = np.asarray(frame_rms, dtype=np.float32)
+        noise_floor = float(np.percentile(rms_values, 20.0))
+        threshold = max(0.003, noise_floor * self._speech_gate_ratio)
+        if baseline_rms >= 0.006:
+            threshold = min(threshold, baseline_rms * 0.85)
+        voiced = int(np.count_nonzero(rms_values >= threshold))
+        total = int(rms_values.size)
         return float(voiced) / float(max(1, total))
 
 

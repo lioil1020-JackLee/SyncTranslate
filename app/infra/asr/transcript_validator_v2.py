@@ -47,7 +47,11 @@ class AsrTranscriptValidatorV2:
         is_cjk_language = self._is_cjk_family_language(language)
         duration_sec = max(0.001, float(np.asarray(audio).reshape(-1).size) / float(max(1, sample_rate)))
         chars_per_second = len(value) / duration_sec
-        speech_ratio = self._speech_ratio_from_stats_or_audio(audio, frontend_stats=frontend_stats)
+        speech_ratio = self._speech_ratio_from_stats_or_audio(
+            audio,
+            sample_rate=sample_rate,
+            frontend_stats=frontend_stats,
+        )
         if self._looks_like_markup_leak(value):
             return TranscriptValidationResult(text="", accepted=False, reason="markup-leak", score=0.0)
         # Non-CJK transcripts naturally need more characters to represent the same content.
@@ -133,7 +137,13 @@ class AsrTranscriptValidatorV2:
         punctuation = sum(ch in "，。！？、；：" for ch in text)
         return cjk > 0 and cjk <= 4 and punctuation == 0 and len(text) >= 6
 
-    def _speech_ratio_from_stats_or_audio(self, audio: np.ndarray, *, frontend_stats: dict[str, object] | None) -> float:
+    def _speech_ratio_from_stats_or_audio(
+        self,
+        audio: np.ndarray,
+        *,
+        sample_rate: int,
+        frontend_stats: dict[str, object] | None,
+    ) -> float:
         if frontend_stats:
             try:
                 ratio = float(frontend_stats.get("speech_ratio", 0.0))
@@ -144,18 +154,24 @@ class AsrTranscriptValidatorV2:
         signal = np.asarray(audio, dtype=np.float32).reshape(-1)
         if signal.size == 0:
             return 0.0
-        frame = max(160, int(16000 * 0.02))
-        baseline = float(np.sqrt(np.mean(np.square(signal), dtype=np.float32)))
-        threshold = max(0.003, baseline * 1.35)
-        voiced = 0
-        total = 0
+        frame = max(64, int(max(1, sample_rate) * 0.02))
+        if signal.size <= frame:
+            baseline = float(np.sqrt(np.mean(np.square(signal), dtype=np.float32)))
+            return 1.0 if baseline >= 0.003 else 0.0
+        frame_rms: list[float] = []
         for start in range(0, max(1, signal.size - frame + 1), frame):
             end = min(signal.size, start + frame)
-            rms = float(np.sqrt(np.mean(np.square(signal[start:end]), dtype=np.float32)))
-            if rms >= threshold:
-                voiced += 1
-            total += 1
-        return float(voiced) / float(max(1, total))
+            frame_rms.append(float(np.sqrt(np.mean(np.square(signal[start:end]), dtype=np.float32))))
+        if not frame_rms:
+            return 0.0
+        rms_values = np.asarray(frame_rms, dtype=np.float32)
+        baseline = float(np.sqrt(np.mean(np.square(signal), dtype=np.float32)))
+        noise_floor = float(np.percentile(rms_values, 20.0))
+        threshold = max(0.003, noise_floor * 1.35)
+        if baseline >= 0.006:
+            threshold = min(threshold, baseline * 0.85)
+        voiced = int(np.count_nonzero(rms_values >= threshold))
+        return float(voiced) / float(max(1, int(rms_values.size)))
 
 
 __all__ = ["AsrTranscriptValidatorV2", "TranscriptValidationResult"]

@@ -9,6 +9,8 @@ SyncTranslate 是一個以 Windows 桌面為主的即時雙向字幕 / 翻譯 / 
 - `none` 會直接停用該通道 ASR
 - 模型採懶載入與共享 registry，避免啟動時重複初始化
 - diagnostics / session report 會輸出每通道實際使用的 backend、effective device、初始化狀態
+- 依 ASR 語言套用 `language_profiles.py` 的辨識參數，中文、英文、日文、韓文、泰文會使用不同 VAD / endpoint / prompt / no-speech 設定
+- 即時串流路徑會使用 segment-local VAD 統計與短尾端幻聽過濾，降低空白尾音被辨識成 `You`、`Thank you`、片尾訂閱提示等文字的機率
 
 專案內部現在只維護單一路徑 `ASR v2`。舊版執行路徑已移除，僅保留極小的相容 helper 供測試與舊介面引用。
 
@@ -201,6 +203,17 @@ powershell -ExecutionPolicy Bypass -File .\tools\runtime_setup\relocate_ai_runti
 - `runtime.degradation_policy_enabled`：streaming 降級保護
 - `runtime.enable_structured_logging`：jsonl 結構化日誌
 - `runtime.asr_queue_maxsize_local` / `runtime.asr_queue_maxsize_remote`
+
+### ASR 辨識率調校狀態（2026-04-25）
+
+目前離線辨識已達穩定水準，主要不再調整離線 decoder；後續優化重點放在即時串流。
+
+- 離線英文 benchmark：normalized WER 約 `0.8%`
+- 離線中文 benchmark：normalized CER 約 `6.8%`
+- 即時英文 benchmark：尾端幻聽過濾後 normalized accuracy 約 `95.7%`
+- 即時中文長故事 benchmark：目前約 `80%` 到 `83%`，主要瓶頸仍是背景音、片頭片尾與即時切段波動
+
+使用時請優先確認 `runtime.local_asr_language` / `runtime.remote_asr_language` 與實際說話語言一致。語言鎖錯時，辨識率會明顯下降。
 
 UI 內建兩種快速模式：
 

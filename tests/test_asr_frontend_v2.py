@@ -38,6 +38,16 @@ class AsrFrontendV2Tests(unittest.TestCase):
 
         self.assertLess(chunk.speech_ratio, 0.5)
 
+    def test_frontend_reports_high_speech_ratio_for_continuous_voiced_signal(self) -> None:
+        frontend = AsrAudioFrontendV2(enhancement_enabled=False)
+        t = np.linspace(0.0, 0.4, 6400, endpoint=False, dtype=np.float32)
+        envelope = 0.55 + 0.45 * np.sin(2.0 * np.pi * 3.0 * t).astype(np.float32)
+        signal = (0.04 * envelope * np.sin(2.0 * np.pi * 180.0 * t)).astype(np.float32)
+
+        chunk = frontend.process(signal, 16000)
+
+        self.assertGreater(chunk.speech_ratio, 0.7)
+
     def test_frontend_surfaces_enhancement_stats(self) -> None:
         frontend = AsrAudioFrontendV2()
         t = np.linspace(0.0, 0.2, 3200, endpoint=False, dtype=np.float32)

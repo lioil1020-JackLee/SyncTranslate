@@ -9,6 +9,8 @@ from unittest.mock import patch
 from app.infra.asr.manager_v2 import ASRManagerV2
 from app.infra.asr.language_policy import VadSegmenter
 from app.infra.config.schema import AppConfig
+from app.infra.asr.backend_v2 import _sanitize_initial_prompt_for_language
+from app.infra.asr.language_profiles import normalize_asr_language, resolve_language_asr_profile
 from app.infra.asr.stream_worker import (
     StreamingAsr,
     _looks_like_known_non_speech_text,
@@ -103,6 +105,82 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
 
         self.assertEqual(manager._asr_language_for_source("local"), "")
         self.assertEqual(manager._asr_language_for_source("remote"), "")
+
+    def test_non_cjk_asr_ignores_cjk_initial_prompt_bias(self) -> None:
+        self.assertEqual(
+            _sanitize_initial_prompt_for_language("以下是繁體中文口語敘事逐字稿。", language="th"),
+            "",
+        )
+        self.assertEqual(
+            _sanitize_initial_prompt_for_language("以下是繁體中文口語敘事逐字稿。", language="auto"),
+            "",
+        )
+        self.assertEqual(
+            _sanitize_initial_prompt_for_language("This is a Thai transcript.", language="th"),
+            "This is a Thai transcript.",
+        )
+
+    def test_non_chinese_runtime_uses_more_conservative_frontend_enhancement(self) -> None:
+        cfg = AppConfig()
+        cfg.runtime.asr_enhancement_noise_reduce_strength = 0.42
+        cfg.runtime.asr_enhancement_music_suppress_strength = 0.2
+        manager = ASRManagerV2(cfg)
+
+        self.assertEqual(manager._frontend_enhancement_strengths("th"), (0.08, 0.0))
+        self.assertEqual(manager._frontend_enhancement_strengths("zh-TW"), (0.42, 0.2))
+
+    def test_language_profile_resolver_returns_independent_profiles(self) -> None:
+        base = AppConfig().asr_channels.local
+
+        zh = resolve_language_asr_profile(base, language="zh-TW")
+        en = resolve_language_asr_profile(base, language="en")
+        ja = resolve_language_asr_profile(base, language="ja")
+        ko = resolve_language_asr_profile(base, language="ko")
+        th = resolve_language_asr_profile(base, language="th")
+
+        self.assertEqual(normalize_asr_language("zh-TW"), "zh")
+        self.assertEqual(zh.endpoint_profile, "meeting_room")
+        self.assertEqual(zh.asr.final_beam_size, 4)
+        self.assertEqual(zh.asr.temperature_fallback, "0.0")
+        self.assertEqual(zh.asr.no_speech_threshold, 0.25)
+        self.assertEqual(en.endpoint_profile, "turn_taking")
+        self.assertEqual(ja.endpoint_profile, "headset")
+        self.assertEqual(ko.endpoint_profile, "headset")
+        self.assertEqual(th.endpoint_profile, "meeting_room")
+        self.assertNotEqual(ja.asr.vad.min_silence_duration_ms, en.asr.vad.min_silence_duration_ms)
+        self.assertNotEqual(ko.asr.no_speech_threshold, th.asr.no_speech_threshold)
+        self.assertNotEqual(th.asr.streaming.soft_final_audio_ms, en.asr.streaming.soft_final_audio_ms)
+
+    def test_manager_thresholds_follow_effective_language_profile(self) -> None:
+        cfg = AppConfig()
+        cfg.runtime.remote_asr_language = "th"
+        cfg.runtime.local_asr_language = "en"
+        manager = ASRManagerV2(cfg)
+
+        self.assertEqual(manager._threshold_for_source("local"), 0.32)
+        self.assertEqual(manager._threshold_for_source("remote"), 0.30)
+        self.assertEqual(manager._min_silence_for_source("local"), 420)
+        self.assertEqual(manager._min_silence_for_source("remote"), 560)
+
+    def test_manager_respects_explicit_accuracy_endpoint_profile(self) -> None:
+        cfg = AppConfig()
+        cfg.runtime.local_asr_language = "en"
+        cfg.runtime.asr_profile_local = "max_accuracy"
+        manager = ASRManagerV2(cfg)
+        language_profile = manager._effective_language_profile_for_source("local")
+
+        self.assertEqual(
+            manager._endpoint_profile_name_for_source("local", language_profile=language_profile),
+            "max_accuracy",
+        )
+
+    def test_custom_frontend_enhancement_runtime_values_override_language_defaults(self) -> None:
+        cfg = AppConfig()
+        cfg.runtime.asr_enhancement_noise_reduce_strength = 0.31
+        cfg.runtime.asr_enhancement_music_suppress_strength = 0.11
+        manager = ASRManagerV2(cfg)
+
+        self.assertEqual(manager._frontend_enhancement_strengths("th"), (0.31, 0.11))
 
     def test_tts_voice_fallback_covers_ja_ko_th(self) -> None:
         cfg = AppConfig()

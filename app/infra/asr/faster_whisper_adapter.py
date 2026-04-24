@@ -10,6 +10,8 @@ import sys
 
 import numpy as np
 
+from app.infra.asr.resampling import resample_audio
+
 # ---------------------------------------------------------------------------
 # Hallucination filter
 # Whisper frequently outputs these patterns when processing music, silence, or
@@ -83,7 +85,8 @@ def _is_hallucination(text: str, *, language: str = "") -> bool:
     cjk_channel = normalized_language.startswith(("zh", "cmn", "yue")) or not normalized_language
     compact = re.sub(r"\s+", "", stripped)
     lowered = compact.lower()
-    if any(token.lower() in lowered for token in _KNOWN_NON_SPEECH_SUBSTRINGS):
+    matched_non_speech = [token for token in _KNOWN_NON_SPEECH_SUBSTRINGS if token.lower() in lowered]
+    if matched_non_speech and len(compact) <= 32:
         return True
     if any(token in compact for token in _KNOWN_SERVICE_PHRASES) and len(compact) <= 8:
         return True
@@ -329,15 +332,11 @@ class FasterWhisperEngine:
                 gain = min(3.0, target_rms / rms)
                 mono = np.clip(mono * gain, -1.0, 1.0)
         target_sample_rate = 16000
-        if sample_rate <= 0 or sample_rate == target_sample_rate or mono.size <= 1:
-            return mono, int(sample_rate if sample_rate > 0 else target_sample_rate)
-
-        src_len = int(mono.shape[0])
-        dst_len = max(1, int(round(src_len * target_sample_rate / sample_rate)))
-        src_x = np.linspace(0.0, 1.0, src_len, endpoint=False)
-        dst_x = np.linspace(0.0, 1.0, dst_len, endpoint=False)
-        resampled = np.interp(dst_x, src_x, mono).astype(np.float32, copy=False)
-        return resampled, target_sample_rate
+        if sample_rate <= 0:
+            return mono, target_sample_rate
+        if sample_rate == target_sample_rate or mono.size <= 1:
+            return mono, int(sample_rate)
+        return resample_audio(mono, sample_rate=int(sample_rate), target_rate=target_sample_rate), target_sample_rate
 
     @staticmethod
     def _encode_wav_bytes(*, audio: np.ndarray, sample_rate: int) -> io.BytesIO:

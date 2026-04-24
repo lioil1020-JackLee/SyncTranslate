@@ -27,7 +27,7 @@ asr_channels:
     speculative_draft_model: ''
     speculative_num_beams: 1
     temperature_fallback: 0.0
-    no_speech_threshold: 0.4
+    no_speech_threshold: 0.25
     vad:
       enabled: true
       backend: silero_vad
@@ -41,7 +41,7 @@ asr_channels:
       partial_interval_ms: 460
       partial_history_seconds: 2
       final_history_seconds: 20
-      soft_final_audio_ms: 3200
+      soft_final_audio_ms: 3600
   remote:
     engine: faster_whisper
     model: large-v3-turbo
@@ -246,7 +246,7 @@ runtime:
   tts_max_chars: 160
   tts_drop_backlog_threshold: 3
   llm_streaming_tokens: 16
-  max_pipeline_latency_ms: 3200
+  max_pipeline_latency_ms: 6000
   asr_frontend_enabled: true
   asr_frontend_target_rms: 0.05
   asr_frontend_max_gain: 3.0

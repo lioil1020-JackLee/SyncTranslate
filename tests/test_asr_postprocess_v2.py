@@ -92,6 +92,21 @@ class AsrPostprocessV2Tests(unittest.TestCase):
         self.assertFalse(result.accepted)
         self.assertEqual(result.reason, "low-speech-ratio")
 
+    def test_validator_audio_fallback_keeps_continuous_cjk_speech(self) -> None:
+        validator = AsrTranscriptValidatorV2(enabled=True, min_speech_ratio_for_long_text=0.2)
+        t = np.arange(32000, dtype=np.float32) / 16000.0
+        audio = (0.018 * np.sin(2.0 * np.pi * 220.0 * t)).astype(np.float32)
+
+        result = validator.validate(
+            "這是一段穩定而連續的中文語音內容應該被保留下來",
+            audio=audio,
+            sample_rate=16000,
+            language="zh-TW",
+            frontend_stats=None,
+        )
+
+        self.assertTrue(result.accepted)
+
     def test_validator_allows_cjk_final_with_borderline_low_speech_ratio(self) -> None:
         validator = AsrTranscriptValidatorV2(enabled=True, min_speech_ratio_for_long_text=0.2)
         audio = np.zeros((32000,), dtype=np.float32)
@@ -140,6 +155,14 @@ class AsrPostprocessV2Tests(unittest.TestCase):
 
     def test_hallucination_filter_can_still_block_latin_sentence_on_cjk_channel(self) -> None:
         self.assertTrue(_is_hallucination("You can keep your safety.", language="zh-TW"))
+
+    def test_hallucination_filter_keeps_long_transcript_with_subscribe_word(self) -> None:
+        text = (
+            "哈囉我是樂樂要訂閱我的頻道哦今天要說的故事是賣火柴的小女孩"
+            "這是新年前的最後一個夜晚外面大雪紛飛天氣非常寒冷"
+        )
+
+        self.assertFalse(_is_hallucination(text, language="zh-TW"))
 
     def test_hallucination_filter_blocks_credit_and_service_overlay_phrases(self) -> None:
         self.assertTrue(_is_hallucination("字幕志願者 李宗盛", language="zh-TW"))

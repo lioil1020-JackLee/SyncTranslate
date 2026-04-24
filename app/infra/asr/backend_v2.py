@@ -8,6 +8,7 @@ import numpy as np
 from app.infra.asr.backend_resolution import BackendResolution, resolve_backend_for_language
 from app.infra.asr.faster_whisper_adapter import FasterWhisperEngine
 from app.infra.asr.lexical_bias_v2 import AsrLexicalBiaser
+from app.infra.asr.resampling import resample_audio
 from app.infra.asr.transcript_validator_v2 import AsrTranscriptValidatorV2
 from app.infra.config.schema import AppConfig, AsrConfig
 
@@ -183,12 +184,13 @@ def build_backend_pair(
     *,
     source: str,
     language: str,
+    profile_override: AsrConfig | None = None,
 ) -> BackendBuildResult:
     resolution = resolve_backend_for_language(language)
     if resolution.disabled:
         raise ValueError("ASR runtime must not be created when language is set to none")
 
-    profile = config.asr_channels.remote if source == "remote" else config.asr_channels.local
+    profile = profile_override or (config.asr_channels.remote if source == "remote" else config.asr_channels.local)
     partial_post_processor = _build_post_processor(config, language=language)
     final_post_processor = _build_post_processor(config, language=language)
 
@@ -236,6 +238,7 @@ def _build_post_processor(config: AppConfig, *, language: str) -> BackendPostPro
 
 
 def _build_engine(profile: AsrConfig, *, language: str) -> FasterWhisperEngine:
+    initial_prompt = _sanitize_initial_prompt_for_language(profile.initial_prompt, language=language)
     return FasterWhisperEngine(
         model=profile.model,
         device=profile.device,
@@ -244,7 +247,7 @@ def _build_engine(profile: AsrConfig, *, language: str) -> FasterWhisperEngine:
         final_beam_size=profile.final_beam_size,
         condition_on_previous_text=profile.condition_on_previous_text,
         final_condition_on_previous_text=profile.final_condition_on_previous_text,
-        initial_prompt=profile.initial_prompt,
+        initial_prompt=initial_prompt,
         hotwords=profile.hotwords,
         speculative_draft_model=profile.speculative_draft_model,
         speculative_num_beams=profile.speculative_num_beams,
@@ -253,6 +256,25 @@ def _build_engine(profile: AsrConfig, *, language: str) -> FasterWhisperEngine:
         hallucination_filter=bool(getattr(profile, "hallucination_filter", True)),
         language=language,
     )
+
+
+def _sanitize_initial_prompt_for_language(prompt: str, *, language: str) -> str:
+    value = str(prompt or "").strip()
+    if not value:
+        return ""
+    normalized_language = str(language or "").strip().lower().replace("_", "-")
+    is_cjk_language = normalized_language.startswith(("zh", "cmn", "yue", "ja", "ko"))
+    contains_cjk = any(
+        ("\u4e00" <= ch <= "\u9fff") or ("\u3040" <= ch <= "\u30ff") or ("\uac00" <= ch <= "\ud7af")
+        for ch in value
+    )
+    # Do not bias non-CJK or auto-language decoding with a leftover
+    # Chinese/Japanese/Korean prompt.
+    if (not normalized_language or normalized_language == "auto") and contains_cjk:
+        return ""
+    if normalized_language and not is_cjk_language and contains_cjk:
+        return ""
+    return value
 
 
 def _prepare_audio16k(audio: np.ndarray, sample_rate: int) -> np.ndarray:
@@ -272,17 +294,7 @@ def _prepare_audio16k(audio: np.ndarray, sample_rate: int) -> np.ndarray:
     peak = float(np.max(np.abs(mono))) if mono.size else 0.0
     if peak > 1.0:
         mono = mono / max(peak, 1.0)
-    return _resample_linear(mono, sample_rate=sample_rate, target_rate=16000)
-
-
-def _resample_linear(audio: np.ndarray, *, sample_rate: int, target_rate: int) -> np.ndarray:
-    if sample_rate <= 0 or target_rate <= 0 or sample_rate == target_rate or audio.size <= 1:
-        return audio.astype(np.float32, copy=False)
-    src_len = int(audio.shape[0])
-    dst_len = max(1, int(round(src_len * target_rate / sample_rate)))
-    src_x = np.linspace(0.0, 1.0, src_len, endpoint=False)
-    dst_x = np.linspace(0.0, 1.0, dst_len, endpoint=False)
-    return np.interp(dst_x, src_x, audio).astype(np.float32, copy=False)
+    return resample_audio(mono, sample_rate=sample_rate, target_rate=16000)
 
 
 __all__ = [
@@ -292,5 +304,6 @@ __all__ = [
     "FasterWhisperStreamingBackend",
     "build_backend_pair",
     "_build_engine",
+    "_sanitize_initial_prompt_for_language",
     "_prepare_audio16k",
 ]

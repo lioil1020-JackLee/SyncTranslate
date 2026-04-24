@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -84,6 +85,50 @@ class SourceRuntimeV2Stats:
     degradation_level: str = DEGRADATION_NORMAL
 
 
+@dataclass(slots=True)
+class SegmentSignalStats:
+    audio_ms: int = 0
+    speech_ms: int = 0
+    trailing_silence_ms: int = 0
+    speech_ratio: float = 0.0
+    mean_rms: float = 0.0
+    max_rms: float = 0.0
+    mean_probability: float = 0.0
+    max_probability: float = 0.0
+    speech_threshold: float = 0.0
+
+
+_SHORT_TAIL_HALLUCINATION_NORMALIZED = {
+    "you",
+    "bye",
+    "byebye",
+    "thankyou",
+    "thanks",
+    "thankyouall",
+    "thankyoueveryone",
+    "thankseveryone",
+    "thanksall",
+    "thankyouforwatching",
+    "thanksforwatching",
+    "thanksforyourwatching",
+    "goodnight",
+}
+
+_TAIL_HALLUCINATION_PATTERNS = (
+    re.compile(r"^\s*thank(s| you)( everyone| all)?[.! ]*$", re.IGNORECASE),
+    re.compile(r"^\s*thank(s| you)?\s+for\s+watching[.! ]*$", re.IGNORECASE),
+    re.compile(r"^\s*thanks\s+for\s+your\s+watching[.! ]*$", re.IGNORECASE),
+    re.compile(r"^\s*bye(-| )?bye?[.! ]*$", re.IGNORECASE),
+)
+
+_CJK_TAIL_HALLUCINATION_PATTERNS = (
+    re.compile(r"^[哈呵嘿哇嗚呃嗯啊]{2,}[!！。,.，\s]*$"),
+    re.compile(r"^(記得)?按(下|讚).*(訂閱|小鈴鐺)?.*$"),
+    re.compile(r"^.*(安妞|按鈕哦|訂閱按鈕|小鈴鐺|頻道嘍|頻道囉|記得按讚).{0,8}$"),
+    re.compile(r"^歡迎收看.*下次見[!！。,.，\s]*$"),
+)
+
+
 class SourceRuntimeV2:
     def __init__(
         self,
@@ -154,6 +199,14 @@ class SourceRuntimeV2:
         self._segment_chunks: list[np.ndarray] = []
         self._segment_sample_rate = 16000
         self._segment_start_ms = 0
+        self._segment_signal_audio_ms = 0.0
+        self._segment_signal_speech_ms = 0.0
+        self._segment_signal_trailing_silence_ms = 0.0
+        self._segment_signal_rms_weighted_sum = 0.0
+        self._segment_signal_probability_weighted_sum = 0.0
+        self._segment_signal_max_rms = 0.0
+        self._segment_signal_max_probability = 0.0
+        self._segment_signal_threshold = 0.0
         self._pre_roll_chunks: deque[np.ndarray] = deque()
         self._pre_roll_sample_count = 0
         self._pre_roll_sample_rate = 16000
@@ -211,6 +264,7 @@ class SourceRuntimeV2:
         self._segment_chunks = []
         self._segment_sample_rate = 16000
         self._segment_start_ms = 0
+        self._reset_segment_signal_stats()
         self._pre_roll_chunks.clear()
         self._pre_roll_sample_count = 0
         self._pre_roll_sample_rate = 16000
@@ -304,6 +358,7 @@ class SourceRuntimeV2:
         if chunk.size == 0:
             return
         sample_rate_int = prepared.sample_rate
+        chunk_ms = int(round(chunk.shape[0] * 1000 / max(1, sample_rate_int)))
         self._append_pre_roll(chunk, sample_rate_int)
         signal = self._endpointing.update(chunk, sample_rate_int)
         self._last_signal = signal
@@ -315,6 +370,7 @@ class SourceRuntimeV2:
         if self._in_segment:
             self._segment_chunks.append(chunk)
             self._segment_sample_rate = sample_rate_int
+            self._record_segment_signal(signal=signal, chunk_ms=chunk_ms)
             segment_audio_ms = self._segment_audio_ms()
             backlog = self._queue.qsize()
 
@@ -373,6 +429,7 @@ class SourceRuntimeV2:
         self._segment_sample_rate = sample_rate
         self._segment_start_ms = now_ms
         self._segment_chunks = list(self._pre_roll_chunks)
+        self._reset_segment_signal_stats()
         self._last_partial_emit_ms = 0
         self._last_partial_text = ""
         self._last_partial_latency_ms = 0
@@ -382,6 +439,7 @@ class SourceRuntimeV2:
         self._in_segment = False
         self._segment_chunks = []
         self._segment_start_ms = 0
+        self._reset_segment_signal_stats()
         self._last_partial_emit_ms = 0
         self._last_partial_text = ""
         self._last_partial_latency_ms = 0
@@ -440,12 +498,15 @@ class SourceRuntimeV2:
         if self._on_event is None:
             return
         audio = self._limited_audio(self._final_history_seconds)
+        segment_stats = self._segment_signal_stats(audio=audio, sample_rate=self._segment_sample_rate)
+        frontend_stats = self._segment_frontend_stats(segment_stats)
         start = time.perf_counter()
         result = self._transcribe_backend(
             self._final_backend,
             method_name="transcribe_final",
             audio=audio,
             sample_rate=self._segment_sample_rate,
+            frontend_stats=frontend_stats,
         )
         result = self._retry_empty_final_with_shorter_tail(
             result=result,
@@ -481,6 +542,14 @@ class SourceRuntimeV2:
             return
         latency_ms = int((time.perf_counter() - start) * 1000)
         audio_ms = int(audio.shape[0] * 1000 / max(1, self._segment_sample_rate))
+        drop_reason = self._tail_hallucination_drop_reason(
+            text,
+            audio_ms=audio_ms,
+            segment_stats=segment_stats,
+        )
+        if drop_reason:
+            self._debug(f"v2 final dropped reason={drop_reason} text={text!r}")
+            return
         self._adaptive_recent_audio_ms.append(max(0, audio_ms))
         self._adaptive_final_latencies.append(max(0, latency_ms))
         self._on_event(
@@ -580,6 +649,8 @@ class SourceRuntimeV2:
         compact = "".join(value.split())
         if len(compact) < 4:
             return False
+        if SourceRuntimeV2._looks_like_short_cta_tail(value):
+            return False
 
         cjk_count = sum(1 for ch in compact if "\u4e00" <= ch <= "\u9fff")
         if cjk_count:
@@ -591,6 +662,16 @@ class SourceRuntimeV2:
         if len(words) < 3 and len(compact) < 12:
             return False
         return True
+
+    @staticmethod
+    def _looks_like_short_cta_tail(text: str) -> bool:
+        value = (text or "").strip()
+        if not value:
+            return False
+        compact = "".join(value.split())
+        if len(compact) > 24:
+            return False
+        return any(pattern.match(value) for pattern in _CJK_TAIL_HALLUCINATION_PATTERNS)
 
     @staticmethod
     def _reason_partial_clearly_contains_final(
@@ -714,6 +795,103 @@ class SourceRuntimeV2:
         total_samples = sum(int(chunk.shape[0]) for chunk in self._segment_chunks)
         return int(total_samples * 1000 / max(1, self._segment_sample_rate))
 
+    def _reset_segment_signal_stats(self) -> None:
+        self._segment_signal_audio_ms = 0.0
+        self._segment_signal_speech_ms = 0.0
+        self._segment_signal_trailing_silence_ms = 0.0
+        self._segment_signal_rms_weighted_sum = 0.0
+        self._segment_signal_probability_weighted_sum = 0.0
+        self._segment_signal_max_rms = 0.0
+        self._segment_signal_max_probability = 0.0
+        self._segment_signal_threshold = 0.0
+
+    def _record_segment_signal(self, *, signal: EndpointSignal, chunk_ms: int) -> None:
+        duration_ms = max(0.0, float(chunk_ms))
+        if duration_ms <= 0.0:
+            return
+        probability = max(0.0, float(signal.speech_probability))
+        threshold = max(0.0, float(signal.speech_threshold))
+        rms = max(0.0, float(signal.rms))
+        is_speech_frame = bool(signal.is_speech_frame) or (threshold > 0.0 and probability >= threshold)
+        self._segment_signal_audio_ms += duration_ms
+        self._segment_signal_rms_weighted_sum += rms * duration_ms
+        self._segment_signal_probability_weighted_sum += probability * duration_ms
+        self._segment_signal_max_rms = max(self._segment_signal_max_rms, rms)
+        self._segment_signal_max_probability = max(self._segment_signal_max_probability, probability)
+        self._segment_signal_threshold = max(self._segment_signal_threshold, threshold)
+        if is_speech_frame:
+            self._segment_signal_speech_ms += duration_ms
+            self._segment_signal_trailing_silence_ms = 0.0
+        else:
+            self._segment_signal_trailing_silence_ms += duration_ms
+
+    def _segment_signal_stats(self, *, audio: np.ndarray, sample_rate: int) -> SegmentSignalStats:
+        audio_ms = int(round(self._segment_signal_audio_ms))
+        if audio_ms <= 0 and audio.size > 0:
+            audio_ms = int(audio.shape[0] * 1000 / max(1, sample_rate))
+        speech_ms = int(round(self._segment_signal_speech_ms))
+        speech_ratio = float(speech_ms) / float(max(1, audio_ms))
+        mean_rms = self._segment_signal_rms_weighted_sum / max(1.0, self._segment_signal_audio_ms)
+        mean_probability = self._segment_signal_probability_weighted_sum / max(1.0, self._segment_signal_audio_ms)
+        return SegmentSignalStats(
+            audio_ms=audio_ms,
+            speech_ms=speech_ms,
+            trailing_silence_ms=int(round(self._segment_signal_trailing_silence_ms)),
+            speech_ratio=max(0.0, min(1.0, speech_ratio)),
+            mean_rms=max(0.0, float(mean_rms)),
+            max_rms=max(0.0, float(self._segment_signal_max_rms)),
+            mean_probability=max(0.0, float(mean_probability)),
+            max_probability=max(0.0, float(self._segment_signal_max_probability)),
+            speech_threshold=max(0.0, float(self._segment_signal_threshold)),
+        )
+
+    def _segment_frontend_stats(self, segment_stats: SegmentSignalStats) -> dict[str, object]:
+        stats = dict(self._frontend.stats())
+        stats["segment_speech_ratio"] = round(segment_stats.speech_ratio, 4)
+        stats["segment_audio_ms"] = segment_stats.audio_ms
+        stats["segment_speech_ms"] = segment_stats.speech_ms
+        stats["segment_trailing_silence_ms"] = segment_stats.trailing_silence_ms
+        if segment_stats.audio_ms > 0:
+            stats["speech_ratio"] = round(segment_stats.speech_ratio, 4)
+        return stats
+
+    @staticmethod
+    def _tail_hallucination_drop_reason(
+        text: str,
+        *,
+        audio_ms: int,
+        segment_stats: SegmentSignalStats,
+    ) -> str:
+        value = (text or "").strip()
+        if not value:
+            return ""
+        normalized = "".join(ch.lower() for ch in value if ch.isalnum())
+        compact = re.sub(r"\s+", " ", value)
+        effective_audio_ms = max(0, int(audio_ms), int(segment_stats.audio_ms))
+        trailing_silence_ms = max(0, int(segment_stats.trailing_silence_ms))
+        speech_ratio = max(0.0, min(1.0, float(segment_stats.speech_ratio)))
+        mean_rms = max(0.0, float(segment_stats.mean_rms))
+        max_rms = max(0.0, float(segment_stats.max_rms))
+
+        if SourceRuntimeV2._looks_like_short_cta_tail(value):
+            return "cjk-tail-hallucination"
+
+        weak_speech = speech_ratio < 0.24
+        weak_energy = mean_rms < 0.008 and max_rms < 0.030
+        tail_dominant = trailing_silence_ms >= max(650, int(effective_audio_ms * 0.55))
+        tiny_uncertain_segment = effective_audio_ms <= 650 and speech_ratio < 0.45
+        weak_evidence = weak_speech or weak_energy or tail_dominant or tiny_uncertain_segment
+
+        if normalized in _SHORT_TAIL_HALLUCINATION_NORMALIZED and weak_evidence:
+            return "short-tail-hallucination"
+        if any(pattern.match(compact) for pattern in _TAIL_HALLUCINATION_PATTERNS) and weak_evidence:
+            return "short-tail-hallucination"
+        if any(pattern.match(compact) for pattern in _CJK_TAIL_HALLUCINATION_PATTERNS) and (
+            weak_evidence or effective_audio_ms <= 1200
+        ):
+            return "cjk-tail-hallucination"
+        return ""
+
     def _debug(self, message: str) -> None:
         with self._stats_lock:
             self._last_debug = message
@@ -759,11 +937,14 @@ class SourceRuntimeV2:
         method_name: str,
         audio: np.ndarray,
         sample_rate: int,
+        frontend_stats: dict[str, object] | None = None,
     ):
         method = getattr(backend, method_name)
-        frontend_stats = self._frontend.stats()
+        effective_frontend_stats = dict(self._frontend.stats())
+        if frontend_stats:
+            effective_frontend_stats.update(frontend_stats)
         try:
-            return method(audio, sample_rate, frontend_stats=frontend_stats)
+            return method(audio, sample_rate, frontend_stats=effective_frontend_stats)
         except TypeError as exc:
             if "frontend_stats" not in str(exc):
                 raise

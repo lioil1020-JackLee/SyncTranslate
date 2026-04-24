@@ -5,7 +5,7 @@ from app.application.transcript_service import TranscriptBuffer
 from app.domain.runtime_state import StateManager
 from app.infra.asr.endpointing_v2 import EndpointSignal
 from app.infra.asr.streaming_policy import StreamingDecision
-from app.infra.asr.worker_v2 import SourceRuntimeV2
+from app.infra.asr.worker_v2 import SegmentSignalStats, SourceRuntimeV2
 from app.infra.config.schema import AppConfig
 from app.infra.asr.backend_v2 import BackendTranscript
 
@@ -179,3 +179,75 @@ def test_short_empty_final_partial_is_not_promoted() -> None:
 def test_substantial_empty_final_partial_can_still_be_promoted() -> None:
     assert SourceRuntimeV2._should_promote_empty_final_partial("我們先休息一下，等等再說") is True
     assert SourceRuntimeV2._should_promote_empty_final_partial("let us take a short break first") is True
+
+
+def test_empty_final_does_not_promote_short_subscribe_partial() -> None:
+    assert SourceRuntimeV2._should_promote_empty_final_partial("有頻道囉! 記得按讚!") is False
+
+
+def test_short_tail_hallucination_drops_weak_thank_you() -> None:
+    reason = SourceRuntimeV2._tail_hallucination_drop_reason(
+        "Thank you.",
+        audio_ms=900,
+        segment_stats=SegmentSignalStats(
+            audio_ms=900,
+            speech_ms=80,
+            trailing_silence_ms=760,
+            speech_ratio=0.09,
+            mean_rms=0.003,
+            max_rms=0.012,
+        ),
+    )
+
+    assert reason == "short-tail-hallucination"
+
+
+def test_short_tail_hallucination_keeps_clear_thank_you() -> None:
+    reason = SourceRuntimeV2._tail_hallucination_drop_reason(
+        "Thank you.",
+        audio_ms=900,
+        segment_stats=SegmentSignalStats(
+            audio_ms=900,
+            speech_ms=760,
+            trailing_silence_ms=80,
+            speech_ratio=0.84,
+            mean_rms=0.026,
+            max_rms=0.065,
+        ),
+    )
+
+    assert reason == ""
+
+
+def test_cjk_tail_hallucination_drops_weak_subscribe_outro() -> None:
+    reason = SourceRuntimeV2._tail_hallucination_drop_reason(
+        "一個安妞哦!",
+        audio_ms=900,
+        segment_stats=SegmentSignalStats(
+            audio_ms=900,
+            speech_ms=120,
+            trailing_silence_ms=620,
+            speech_ratio=0.13,
+            mean_rms=0.004,
+            max_rms=0.015,
+        ),
+    )
+
+    assert reason == "cjk-tail-hallucination"
+
+
+def test_cjk_tail_hallucination_drops_short_retry_outro_even_with_segment_context() -> None:
+    reason = SourceRuntimeV2._tail_hallucination_drop_reason(
+        "哎呀, 安妞哦!",
+        audio_ms=4000,
+        segment_stats=SegmentSignalStats(
+            audio_ms=5200,
+            speech_ms=4200,
+            trailing_silence_ms=200,
+            speech_ratio=0.81,
+            mean_rms=0.022,
+            max_rms=0.07,
+        ),
+    )
+
+    assert reason == "cjk-tail-hallucination"
