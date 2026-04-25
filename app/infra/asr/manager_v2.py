@@ -215,12 +215,14 @@ class ASRManagerV2:
         key = source if source in {"local", "remote"} else "local"
         runtime = self._runtimes.get(key)
         if runtime is None:
-            resolution = resolve_backend_for_language(self._asr_language_for_source(key))
+            language = self._asr_language_for_source(key)
+            resolution = resolve_backend_for_language(language)
             profile = self._profile_for_source(key)
+            language_profile = resolve_language_asr_profile(profile, language=language)
             endpoint_runtime = build_endpointing_runtime(
                 str(getattr(self._config.runtime, "asr_v2_endpointing", "neural_endpoint")),
-                profile.vad,
-                device=profile.device,
+                language_profile.asr.vad,
+                device=language_profile.asr.device,
                 resolved_backend_name=resolution.backend_name,
             )
             return endpoint_runtime.snapshot()
@@ -249,8 +251,8 @@ class ASRManagerV2:
             resolution = build_result.resolution
         endpointing = build_endpointing_runtime(
             str(getattr(self._config.runtime, "asr_v2_endpointing", "neural_endpoint")),
-            profile.vad,
-            device=profile.device,
+            language_profile.asr.vad,
+            device=language_profile.asr.device,
             resolved_backend_name=resolution.backend_name,
         )
         self._source_resolution[source] = {

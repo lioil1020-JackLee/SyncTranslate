@@ -158,7 +158,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\runtime_setup\prepare_external_
 uv run python .\main.py
 ```
 
-執行系統檢查：
+執行健康檢查：
 
 ```powershell
 uv run python .\main.py --check
@@ -168,6 +168,12 @@ uv run python .\main.py --check
 
 ```powershell
 uv run pytest -q
+```
+
+執行實際入口 smoke（更接近直接開 app 後按健康檢查）：
+
+```powershell
+uv run python .\tools\runtime_smoke\run_runtime_smoke.py --config config.yaml
 ```
 
 如果要打包 onedir：
@@ -210,17 +216,19 @@ powershell -ExecutionPolicy Bypass -File .\tools\runtime_setup\relocate_ai_runti
 
 - 離線英文 benchmark：normalized WER 約 `0.8%`
 - 離線中文 benchmark：normalized CER 約 `6.8%`
-- 即時英文 benchmark：尾端幻聽過濾後 normalized accuracy 約 `95.7%`
-- 即時中文長故事 benchmark：目前約 `80%` 到 `83%`，主要瓶頸仍是背景音、片頭片尾與即時切段波動
+- 即時英文 benchmark：尾端幻聽過濾後 normalized accuracy 約 `99.3%`
+- 即時中文長故事 benchmark：overlay / 片尾過濾與 final correction 關閉後約 `86.3%`，主要瓶頸仍是背景音與即時切段波動
 
 使用時請優先確認 `runtime.local_asr_language` / `runtime.remote_asr_language` 與實際說話語言一致。語言鎖錯時，辨識率會明顯下降。
 
-UI 內建兩種快速模式：
+UI 內建三種快速模式：
 
 - `超穩定會議字幕`
-  - 偏向長句字幕、會議監聽、降低 partial / final 抖動
+  - ASR 使用 `meeting_room`，LLM / TTS 也偏穩定；適合長句字幕、會議監聽、降低 partial / final 抖動
+- `低延遲對話（穩定 ASR）`
+  - ASR 使用 `meeting_room`，LLM / TTS 使用低延遲對話設定；建議中文雙向對話優先使用
 - `低延遲雙向對話`
-  - 偏向短句往返、提早切段、降低對話等待感
+  - ASR 使用 `turn_taking`，偏向短句往返、提早切段、降低對話等待感；中文準確率可能低於穩定 ASR 模式
 
 ASR 路由規則：
 

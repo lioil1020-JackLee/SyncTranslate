@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 import numpy as np
 import sys
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 from app.infra.asr.manager_v2 import ASRManagerV2
@@ -161,6 +161,38 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
         self.assertEqual(manager._threshold_for_source("remote"), 0.30)
         self.assertEqual(manager._min_silence_for_source("local"), 420)
         self.assertEqual(manager._min_silence_for_source("remote"), 560)
+
+    @patch("app.infra.asr.manager_v2.build_endpointing_runtime")
+    @patch("app.infra.asr.manager_v2.build_backend_pair")
+    def test_runtime_endpointing_uses_effective_language_profile_vad(self, mock_build_backend_pair, mock_endpointing) -> None:
+        cfg = AppConfig()
+        cfg.runtime.local_asr_language = "zh-TW"
+        cfg.asr_channels.local.vad.neural_threshold = 0.12
+        fake_partial = SimpleNamespace(descriptor=SimpleNamespace(name="fake:partial"))
+        fake_final = SimpleNamespace(descriptor=SimpleNamespace(name="fake:final"))
+        mock_build_backend_pair.return_value = (fake_partial, fake_final)
+        mock_endpointing.return_value = object()
+        manager = ASRManagerV2(cfg)
+
+        manager._runtime_of("local")
+
+        vad_arg = mock_endpointing.call_args.args[1]
+        self.assertEqual(vad_arg.neural_threshold, 0.45)
+        self.assertEqual(vad_arg.min_silence_duration_ms, 520)
+
+    @patch("app.infra.asr.manager_v2.build_endpointing_runtime")
+    def test_endpoint_snapshot_uses_effective_language_profile_vad(self, mock_endpointing) -> None:
+        cfg = AppConfig()
+        cfg.runtime.local_asr_language = "zh-TW"
+        cfg.asr_channels.local.vad.neural_threshold = 0.12
+        mock_endpointing.return_value = SimpleNamespace(snapshot=lambda: {"ok": True})
+        manager = ASRManagerV2(cfg)
+
+        self.assertEqual(manager.endpoint_snapshot("local"), {"ok": True})
+
+        vad_arg = mock_endpointing.call_args.args[1]
+        self.assertEqual(vad_arg.neural_threshold, 0.45)
+        self.assertEqual(vad_arg.min_silence_duration_ms, 520)
 
     def test_manager_respects_explicit_accuracy_endpoint_profile(self) -> None:
         cfg = AppConfig()

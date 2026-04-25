@@ -883,28 +883,28 @@ class MainWindow(QMainWindow):
 
     def run_system_check(self) -> None:
         if self._healthcheck_service.running:
-            self.statusBar().showMessage("系統檢查進行中")
+            self.statusBar().showMessage("健康檢查進行中")
             return
         self._sync_ui_to_config()
         try:
             started = self._healthcheck_service.start(config=self.config)
         except Exception as exc:
             self._report_error(f"system_check start failed: {exc}")
-            self.statusBar().showMessage("系統檢查啟動失敗")
+            self.statusBar().showMessage("健康檢查啟動失敗")
             return
         if not started:
-            self.statusBar().showMessage("系統檢查進行中")
+            self.statusBar().showMessage("健康檢查進行中")
             return
-        self.local_ai_page.set_runtime_status("系統檢查進行中")
-        self.diagnostics_page.set_health_details("系統檢查進行中...")
-        self.statusBar().showMessage("系統檢查進行中...")
+        self.local_ai_page.set_runtime_status("健康檢查進行中")
+        self.diagnostics_page.set_health_details("健康檢查進行中...")
+        self.statusBar().showMessage("健康檢查進行中...")
 
     def _drain_health_check_results(self) -> None:
         update = self._healthcheck_service.poll()
         if update is None:
             return
         if update.kind == "timeout":
-            summary = "系統檢查：失敗"
+            summary = "健康檢查：逾時"
             message = update.message
             self.local_ai_page.set_runtime_status(summary)
             self.diagnostics_page.set_health_details(message)
@@ -914,7 +914,7 @@ class MainWindow(QMainWindow):
 
         if update.kind == "error":
             message = update.message
-            summary = "系統檢查：失敗"
+            summary = "健康檢查：失敗"
             self.local_ai_page.set_runtime_status(summary)
             self.diagnostics_page.set_health_details(message)
             self.statusBar().showMessage(summary)
@@ -924,13 +924,13 @@ class MainWindow(QMainWindow):
         report = update.report
         if report is None:
             self._report_error("system_check failed: report is missing")
-            self.statusBar().showMessage("系統檢查：失敗")
+            self.statusBar().showMessage("健康檢查：失敗")
             return
-        summary = "系統檢查：正常" if report.ok else "系統檢查：失敗"
+        summary = "健康檢查：正常" if report.ok else "健康檢查：有異常"
         self.local_ai_page.set_runtime_status(summary)
-        self.diagnostics_page.set_asr_details(f"{'正常' if report.asr_ok else '失敗'} - {report.asr_message}")
-        self.diagnostics_page.set_llm_details(f"{'正常' if report.llm_ok else '失敗'} - {report.llm_message}")
-        self.diagnostics_page.set_tts_details(f"{'正常' if report.tts_ok else '失敗'} - {report.tts_message}")
+        self.diagnostics_page.set_asr_details(f"{'正常' if report.asr_ok else '異常'} - {report.asr_message}")
+        self.diagnostics_page.set_llm_details(f"{'正常' if report.llm_ok else '異常'} - {report.llm_message}")
+        self.diagnostics_page.set_tts_details(f"{'正常' if report.tts_ok else '異常'} - {report.tts_message}")
         self.statusBar().showMessage(summary)
 
     def _run_session_action(

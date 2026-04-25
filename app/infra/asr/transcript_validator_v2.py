@@ -54,6 +54,8 @@ class AsrTranscriptValidatorV2:
         )
         if self._looks_like_markup_leak(value):
             return TranscriptValidationResult(text="", accepted=False, reason="markup-leak", score=0.0)
+        if self._looks_like_non_speech_overlay(value):
+            return TranscriptValidationResult(text="", accepted=False, reason="non-speech-overlay", score=0.0)
         # Non-CJK transcripts naturally need more characters to represent the same content.
         # Relax density threshold to avoid over-filtering English/Japanese/Korean outputs.
         density_limit = self._max_chars_per_second if is_cjk_language else self._max_chars_per_second * 2.2
@@ -128,6 +130,42 @@ class AsrTranscriptValidatorV2:
         if any(token in lowered for token in suspicious_tokens):
             return True
         if lowered.startswith(("assistant:", "user:", "system:", "translation:", "output:")):
+            return True
+        return False
+
+    @staticmethod
+    def _looks_like_non_speech_overlay(text: str) -> bool:
+        compact = re.sub(r"\s+", "", (text or "").strip())
+        if not compact or len(compact) > 32:
+            return False
+        lowered = compact.lower()
+        overlay_tokens = (
+            "字幕志願者",
+            "字幕志愿者",
+            "字幕視聽者",
+            "字幕视听者",
+            "字幕提供",
+            "中文字幕",
+            "詞曲",
+            "词曲",
+            "作詞",
+            "作词",
+            "作曲",
+            "感謝收看",
+            "感謝您的收看",
+            "感谢收看",
+            "感谢您的收看",
+            "請訂閱",
+            "请订阅",
+            "記得按讚",
+            "记得点赞",
+            "按下訂閱",
+            "按下订阅",
+            "amara.org",
+        )
+        if any(token.lower() in lowered for token in overlay_tokens):
+            return True
+        if 4 <= len(compact) <= 12 and all(ch in "へヘ嘿哈呵哇啊嗯" for ch in compact):
             return True
         return False
 

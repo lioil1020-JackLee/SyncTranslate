@@ -61,6 +61,7 @@ ASR 重構已進入收尾與實測調校階段：
 - 短尾端幻聽過濾：
   - 英文常見空白尾音：`You`、`Thank you`、`Bye`
   - 中文影片片尾 / CTA：短 `訂閱`、`按讚`、`安妞哦`、短笑聲片尾
+  - 短字幕 overlay / 製作 credit：`字幕志願者`、`字幕視聽者`、`詞曲`、`作詞`、`作曲`
 - empty-final partial fallback 會拒絕短 CTA partial，避免 final 空白時把片尾幻聽補回 transcript
 
 ### 4. Diagnostics
@@ -98,7 +99,7 @@ ASR 重構已進入收尾與實測調校階段：
 
 **Phase 2：StreamingPolicy 與 ASR Profiles**
 - `StreamingPolicy`（normal / congested / degraded 三段降級保護）
-- 6 個內建 endpoint profile（default / meeting_room / headset / noisy_environment / max_accuracy / low_latency）
+- 7 個內建 endpoint profile（default / meeting_room / headset / noisy_environment / max_accuracy / low_latency / turn_taking）
 
 **Phase 3：音訊前處理鏈與 Benchmark 工具**
 - `AudioFrontendChain`（HighpassStage / LoudnessStage / NoiseReductionStage / MusicSuppressionStage）
@@ -144,7 +145,9 @@ ASR 重構已進入收尾與實測調校階段：
 
 ### 3. ASR final correction
 
-相關欄位與模組已存在，但仍需持續驗證：
+相關欄位與模組已存在，但目前預設保持關閉。2026-04-25 中文長故事實測顯示，LLM final correction 可能過度改寫 ASR 文字，因此只建議在短句語音輸入或明確驗證過的場景開啟。
+
+仍需持續驗證：
 
 - final-only 校正是否真的比 raw ASR 更穩
 - 是否有過度改寫

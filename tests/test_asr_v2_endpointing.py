@@ -119,8 +119,8 @@ class AsrV2EndpointingTests(unittest.TestCase):
         )
         manager = ASRManagerV2(cfg, pipeline_revision=7)
         manager.start("local", lambda _event: None)
-        speech = np.full((1600,), 0.05, dtype=np.float32)
-        silence = np.zeros((3200,), dtype=np.float32)
+        speech = np.full((4000,), 0.05, dtype=np.float32)
+        silence = np.zeros((9600,), dtype=np.float32)
 
         manager.submit("local", speech, 16000)
         time.sleep(0.06)
@@ -162,12 +162,12 @@ class AsrV2EndpointingTests(unittest.TestCase):
         manager.start("local", events.append)
 
         speech = np.full((16000,), 0.05, dtype=np.float32)
-        silence = np.zeros((3200,), dtype=np.float32)
+        silence = np.zeros((9600,), dtype=np.float32)
         manager.submit("local", speech, 16000)
         time.sleep(0.12)
         manager.submit("local", silence, 16000)
         manager.submit("local", silence, 16000)
-        time.sleep(0.2)
+        time.sleep(0.3)
 
         self.assertGreaterEqual(len(events), 2)
         self.assertTrue(any(not event.is_final for event in events))

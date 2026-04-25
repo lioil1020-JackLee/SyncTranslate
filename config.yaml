@@ -250,7 +250,7 @@ runtime:
   tts_max_chars: 96
   tts_drop_backlog_threshold: 2
   llm_streaming_tokens: 12
-  max_pipeline_latency_ms: 2200
+  max_pipeline_latency_ms: 6000
   asr_frontend_enabled: true
   asr_frontend_target_rms: 0.05
   asr_frontend_max_gain: 3.0
@@ -264,7 +264,7 @@ runtime:
   asr_result_validator_enabled: true
   asr_result_max_chars_per_second: 14.0
   asr_result_min_speech_ratio_for_long_text: 0.18
-  asr_final_correction_enabled: true
+  asr_final_correction_enabled: false
   asr_final_correction_context_items: 3
   asr_final_correction_max_chars: 120
   speaker_diarization_enabled: false
@@ -291,6 +291,6 @@ runtime:
   enable_partial_stabilization: true
   enable_structured_logging: true
   runtime_log_format: jsonl
-  asr_profile_local: turn_taking
-  asr_profile_remote: turn_taking
+  asr_profile_local: meeting_room
+  asr_profile_remote: meeting_room
   degradation_policy_enabled: true

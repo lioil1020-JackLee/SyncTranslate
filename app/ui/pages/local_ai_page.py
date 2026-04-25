@@ -84,6 +84,7 @@ _LLM_PROFILE_OPTIONS: list[tuple[str, str]] = [
 
 _EXPERIENCE_PRESET_OPTIONS: list[tuple[str, str]] = [
     ("超穩定會議字幕", "meeting_monitor"),
+    ("低延遲對話（穩定 ASR）", "dialogue_stable_asr"),
     ("低延遲雙向對話", "dialogue"),
 ]
 
@@ -520,7 +521,7 @@ class LocalAiPage(QWidget):
         else:
             config.runtime.asr_profile_local = "meeting_room"
             config.runtime.asr_profile_remote = "meeting_room"
-        config.runtime.asr_final_correction_enabled = True
+        config.runtime.asr_final_correction_enabled = False
         config.runtime.asr_result_validator_enabled = True
         config.runtime.enable_postprocessor = True
         self._apply_model_sensitive_asr_tuning(config, preset=selected_preset)
@@ -569,7 +570,10 @@ class LocalAiPage(QWidget):
             self.local_echo_guard_delay_spin.setValue(300)
             self.remote_echo_guard_delay_spin.setValue(300)
 
-            if preset == "dialogue":
+            dialogue_like = preset in {"dialogue", "dialogue_stable_asr"}
+            low_latency_asr = preset == "dialogue"
+
+            if low_latency_asr:
                 self.asr_partial_interval_spin.setValue(240)
                 self.remote_asr_partial_interval_spin.setValue(220)
                 self.asr_partial_history_spin.setValue(1)
@@ -600,46 +604,6 @@ class LocalAiPage(QWidget):
                 self.remote_asr_hallucination_filter_check.setChecked(True)
                 self.asr_queue_local_spin.setValue(96)
                 self.asr_queue_remote_spin.setValue(96)
-
-                self.llm_temperature_spin.setValue(0.0)
-                self.remote_llm_temperature_spin.setValue(0.0)
-                self.llm_top_p_spin.setValue(0.70)
-                self.remote_llm_top_p_spin.setValue(0.70)
-                self.llm_repeat_penalty_spin.setValue(1.06)
-                self.remote_llm_repeat_penalty_spin.setValue(1.06)
-                self.llm_max_tokens_spin.setValue(80)
-                self.remote_llm_max_tokens_spin.setValue(80)
-                self.llm_trigger_tokens_spin.setValue(10)
-                self.remote_llm_trigger_tokens_spin.setValue(10)
-                self.llm_context_items_spin.setValue(3)
-                self.remote_llm_context_items_spin.setValue(3)
-                self.llm_queue_local_spin.setValue(16)
-                self.llm_queue_remote_spin.setValue(16)
-                self._select_combo_data(self.llm_caption_profile_combo, "dialogue_fast")
-                self._select_combo_data(self.llm_speech_profile_combo, "dialogue_fast")
-
-                self._select_combo_data(self.base_tts.style_preset_combo, "fast_response")
-                self.base_tts.length_scale_spin.setValue(1.02)
-                self.base_tts.noise_scale_spin.setValue(0.60)
-                self.base_tts.noise_w_spin.setValue(0.65)
-                self.tts_queue_local_spin.setValue(12)
-                self.tts_queue_remote_spin.setValue(12)
-
-                self._select_combo_data(self.runtime_latency_mode_combo, "low_latency")
-                self.runtime_asr_pre_roll_spin.setValue(180)
-                self.runtime_stable_partial_min_repeats_spin.setValue(1)
-                self.runtime_partial_stability_delta_spin.setValue(8)
-                self.runtime_asr_partial_min_audio_spin.setValue(220)
-                self.runtime_asr_partial_floor_spin.setValue(200)
-                self.runtime_llm_partial_floor_spin.setValue(180)
-                self.runtime_early_final_check.setChecked(True)
-                self.runtime_tts_partial_min_chars_spin.setValue(8)
-                self.runtime_llm_streaming_tokens_spin.setValue(12)
-                self.runtime_max_pipeline_latency_spin.setValue(2200)
-                self.runtime_tts_max_wait_spin.setValue(1200)
-                self.runtime_tts_max_chars_spin.setValue(96)
-                self.runtime_tts_drop_threshold_spin.setValue(2)
-                self._select_combo_data(self.runtime_tts_cancel_policy_combo, "older_only")
             else:
                 self.asr_condition_prev_check.setChecked(False)
                 self.remote_asr_condition_prev_check.setChecked(False)
@@ -674,6 +638,56 @@ class LocalAiPage(QWidget):
                 self.asr_queue_local_spin.setValue(160)
                 self.asr_queue_remote_spin.setValue(160)
 
+            if dialogue_like:
+                self.llm_temperature_spin.setValue(0.0)
+                self.remote_llm_temperature_spin.setValue(0.0)
+                self.llm_top_p_spin.setValue(0.70)
+                self.remote_llm_top_p_spin.setValue(0.70)
+                self.llm_repeat_penalty_spin.setValue(1.06)
+                self.remote_llm_repeat_penalty_spin.setValue(1.06)
+                self.llm_max_tokens_spin.setValue(80)
+                self.remote_llm_max_tokens_spin.setValue(80)
+                self.llm_trigger_tokens_spin.setValue(10)
+                self.remote_llm_trigger_tokens_spin.setValue(10)
+                self.llm_context_items_spin.setValue(3)
+                self.remote_llm_context_items_spin.setValue(3)
+                self.llm_queue_local_spin.setValue(16)
+                self.llm_queue_remote_spin.setValue(16)
+                self._select_combo_data(self.llm_caption_profile_combo, "dialogue_fast")
+                self._select_combo_data(self.llm_speech_profile_combo, "dialogue_fast")
+
+                self._select_combo_data(self.base_tts.style_preset_combo, "fast_response")
+                self.base_tts.length_scale_spin.setValue(1.02)
+                self.base_tts.noise_scale_spin.setValue(0.60)
+                self.base_tts.noise_w_spin.setValue(0.65)
+                self.tts_queue_local_spin.setValue(12)
+                self.tts_queue_remote_spin.setValue(12)
+
+                self._select_combo_data(self.runtime_latency_mode_combo, "low_latency")
+                self.runtime_llm_partial_floor_spin.setValue(180)
+                self.runtime_tts_partial_min_chars_spin.setValue(8)
+                self.runtime_llm_streaming_tokens_spin.setValue(12)
+                self.runtime_tts_max_wait_spin.setValue(1200)
+                self.runtime_tts_max_chars_spin.setValue(96)
+                self.runtime_tts_drop_threshold_spin.setValue(2)
+                self._select_combo_data(self.runtime_tts_cancel_policy_combo, "older_only")
+                if low_latency_asr:
+                    self.runtime_asr_pre_roll_spin.setValue(180)
+                    self.runtime_stable_partial_min_repeats_spin.setValue(1)
+                    self.runtime_partial_stability_delta_spin.setValue(8)
+                    self.runtime_asr_partial_min_audio_spin.setValue(220)
+                    self.runtime_asr_partial_floor_spin.setValue(200)
+                    self.runtime_early_final_check.setChecked(True)
+                    self.runtime_max_pipeline_latency_spin.setValue(2200)
+                else:
+                    self.runtime_asr_pre_roll_spin.setValue(360)
+                    self.runtime_stable_partial_min_repeats_spin.setValue(3)
+                    self.runtime_partial_stability_delta_spin.setValue(6)
+                    self.runtime_asr_partial_min_audio_spin.setValue(360)
+                    self.runtime_asr_partial_floor_spin.setValue(280)
+                    self.runtime_early_final_check.setChecked(False)
+                    self.runtime_max_pipeline_latency_spin.setValue(6000)
+            else:
                 self.llm_temperature_spin.setValue(0.0)
                 self.remote_llm_temperature_spin.setValue(0.0)
                 self.llm_top_p_spin.setValue(0.78)
@@ -725,19 +739,21 @@ class LocalAiPage(QWidget):
         remote_asr = str(getattr(config.runtime, "asr_profile_remote", "") or "")
         caption = str(getattr(config.llm, "caption_profile", "") or "")
         speech = str(getattr(config.llm, "speech_profile", "") or "")
-        if (
-            local_asr == "turn_taking"
-            or remote_asr == "turn_taking"
-            or caption == "dialogue_fast"
-            or speech == "dialogue_fast"
-        ):
+        dialogue_llm = caption == "dialogue_fast" or speech == "dialogue_fast"
+        if local_asr == "turn_taking" or remote_asr == "turn_taking":
             return "dialogue"
+        if dialogue_llm:
+            return "dialogue_stable_asr"
         return "meeting_monitor"
 
     def _update_preset_labels(self, preset: str) -> None:
         if preset == "dialogue":
-            self.channel_strategy_label.setText("低延遲優先：短句會更快切段與送翻譯，讓來回對話比較跟手。")
-            self.optimized_profile_label.setText("適合一來一往對談、口譯協助、問答互動；穩定度會略低於會議模式。")
+            self.channel_strategy_label.setText("最低延遲優先：ASR 使用 turn_taking，短句會更快切段與送翻譯。")
+            self.optimized_profile_label.setText("適合短句問答與強互動；中文準確率可能低於穩定 ASR 模式。")
+            return
+        if preset == "dialogue_stable_asr":
+            self.channel_strategy_label.setText("混合模式：ASR 使用 meeting_room 保辨識穩定，LLM / TTS 使用低延遲對話設定。")
+            self.optimized_profile_label.setText("建議中文雙向對話使用；回覆較跟手，但不犧牲中文切段穩定度。")
             return
         self.channel_strategy_label.setText("穩定度優先：保留較長上下文、較慢切 final，盡量避免字幕抖動與碎句。")
         self.optimized_profile_label.setText("適合會議監聽、長句發言、影片字幕與長時間收聽。")
@@ -1720,7 +1736,9 @@ class LocalAiPage(QWidget):
     def _current_asr_runtime_hint_text(self) -> str:
         preset = str(self.experience_preset_combo.currentData() or "meeting_monitor")
         if preset == "dialogue":
-            mode_text = "目前模式：低延遲雙向對話。會更快送出 partial / final，適合短句來回。"
+            mode_text = "目前模式：低延遲雙向對話。ASR 使用 turn_taking，會更快送出 partial / final。"
+        elif preset == "dialogue_stable_asr":
+            mode_text = "目前模式：低延遲對話（穩定 ASR）。ASR 使用 meeting_room，LLM / TTS 使用低延遲設定。"
         else:
             mode_text = "目前模式：超穩定會議字幕。會更保守切段，優先降低 partial / final 抖動。"
         requested_device = str(self.asr_device_combo.currentData() or "cuda")

@@ -62,7 +62,7 @@ class HealthCheckService:
                 self._started_at = 0.0
                 return HealthCheckUpdate(
                     kind="timeout",
-                    message=f"系統檢查逾時，超過 {int(self._timeout_sec)} 秒",
+                    message=f"健康檢查逾時，超過 {int(self._timeout_sec)} 秒",
                 )
 
         try:
@@ -78,9 +78,9 @@ class HealthCheckService:
             return HealthCheckUpdate(kind="error", message=str(payload))
 
         if isinstance(payload, LocalHealthReport):
-            summary = "系統檢查：正常" if payload.ok else "系統檢查：失敗"
+            summary = "健康檢查：正常" if payload.ok else "健康檢查：有異常"
             return HealthCheckUpdate(kind="success", message=summary, report=payload)
-        return HealthCheckUpdate(kind="error", message="system check 回傳格式錯誤")
+        return HealthCheckUpdate(kind="error", message="健康檢查回傳格式錯誤")
 
     def _worker(self, snapshot_path: str) -> None:
         try:
@@ -88,11 +88,13 @@ class HealthCheckService:
             if completed.returncode != 0:
                 stderr = (completed.stderr or "").strip()
                 stdout = (completed.stdout or "").strip()
-                detail = stderr or stdout or f"system check subprocess exited with code {completed.returncode}"
+                detail = self._summarize_subprocess_error(
+                    stderr or stdout or f"健康檢查子程序結束，代碼 {completed.returncode}"
+                )
                 raise RuntimeError(detail)
             payload = (completed.stdout or "").strip()
             if not payload:
-                raise RuntimeError("system check subprocess returned no result")
+                raise RuntimeError("健康檢查子程序未回傳結果")
             report = LocalHealthReport(**json.loads(payload))
             self._queue.put((True, report))
         except Exception as exc:
@@ -121,8 +123,20 @@ class HealthCheckService:
         kwargs["startupinfo"] = startupinfo
         return kwargs
 
+    @staticmethod
+    def _summarize_subprocess_error(text: str) -> str:
+        lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
+        if not lines:
+            return "健康檢查子程序失敗"
+        if lines[0].startswith("Traceback"):
+            return f"健康檢查子程序啟動失敗：{lines[-1]}"
+        return lines[0] if len(lines) == 1 else f"{lines[0]} | {lines[-1]}"
+
     def _run_subprocess(self, *, snapshot_path: str) -> subprocess.CompletedProcess[str]:
         hidden_kwargs = self._hidden_subprocess_kwargs()
+        env = os.environ.copy()
+        env.setdefault("PYTHONUTF8", "1")
+        env.setdefault("PYTHONIOENCODING", "utf-8")
         if getattr(sys, "frozen", False):
             return subprocess.run(
                 [
@@ -134,18 +148,24 @@ class HealthCheckService:
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
+                errors="replace",
+                env=env,
                 **hidden_kwargs,
             )
+        entrypoint = self._project_root() / "main.py"
         return subprocess.run(
             [
                 sys.executable,
-                "-m",
-                "app.local_ai.healthcheck_worker",
+                str(entrypoint),
+                "--healthcheck-worker",
+                "--healthcheck-config",
                 snapshot_path,
             ],
             capture_output=True,
             text=True,
             encoding="utf-8",
+            errors="replace",
+            env=env,
             cwd=str(self._project_root()),
             **hidden_kwargs,
         )

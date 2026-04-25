@@ -168,6 +168,34 @@ class AsrPostprocessV2Tests(unittest.TestCase):
         self.assertTrue(_is_hallucination("字幕志願者 李宗盛", language="zh-TW"))
         self.assertTrue(_is_hallucination("服務員 買單", language="zh-TW"))
 
+    def test_validator_rejects_short_subtitle_overlay_text(self) -> None:
+        validator = AsrTranscriptValidatorV2(enabled=True)
+        audio = np.full((16000,), 0.02, dtype=np.float32)
+
+        result = validator.validate(
+            "字幕視聽者 李宗盛",
+            audio=audio,
+            sample_rate=16000,
+            language="zh-TW",
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.reason, "non-speech-overlay")
+
+    def test_validator_rejects_short_song_credit_overlay_text(self) -> None:
+        validator = AsrTranscriptValidatorV2(enabled=True)
+        audio = np.full((16000,), 0.02, dtype=np.float32)
+
+        result = validator.validate(
+            "詞曲 曲 李宗盛",
+            audio=audio,
+            sample_rate=16000,
+            language="zh-TW",
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.reason, "non-speech-overlay")
+
     def test_postprocessor_stats_track_rejection_reason(self) -> None:
         processor = BackendPostProcessor(
             language="zh-TW",

@@ -107,7 +107,7 @@ def main(argv: list[str] | None = None) -> int:
 
 def _format_worker_exception(exc: BaseException) -> str:
     if isinstance(exc, KeyboardInterrupt):
-        return "system check interrupted"
+        return "健康檢查已中斷"
     text = str(exc).strip()
     return text or exc.__class__.__name__
 

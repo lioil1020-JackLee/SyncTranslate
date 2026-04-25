@@ -33,7 +33,7 @@ class SettingsPage(QWidget):
         content_layout.addWidget(
             self._build_section(
                 "診斷摘要",
-                "只顯示目前 ASR / LLM / TTS 的系統檢查結果摘要。",
+                "只顯示目前 ASR / LLM / TTS 的健康檢查結果摘要。",
                 diagnostics_page,
             )
         )

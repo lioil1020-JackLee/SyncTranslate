@@ -539,13 +539,33 @@ class LocalAiPageUiTests(_QtTestCase):
         self.assertEqual(updated.runtime.asr_profile_local, "turn_taking")
         self.assertEqual(updated.runtime.asr_profile_remote, "turn_taking")
 
-    def test_local_ai_page_enables_final_correction_in_exported_runtime(self) -> None:
+    def test_local_ai_page_distinguishes_stable_asr_dialogue_from_turn_taking(self) -> None:
+        page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
+        cfg = AppConfig()
+        cfg.llm.caption_profile = "dialogue_fast"
+        cfg.llm.speech_profile = "dialogue_fast"
+        cfg.runtime.asr_profile_local = "meeting_room"
+        cfg.runtime.asr_profile_remote = "meeting_room"
+
+        page.apply_config(cfg)
+
+        self.assertEqual(page.experience_preset_combo.currentData(), "dialogue_stable_asr")
+
+        updated = AppConfig()
+        page.update_config(updated)
+
+        self.assertEqual(updated.llm.caption_profile, "dialogue_fast")
+        self.assertEqual(updated.llm.speech_profile, "dialogue_fast")
+        self.assertEqual(updated.runtime.asr_profile_local, "meeting_room")
+        self.assertEqual(updated.runtime.asr_profile_remote, "meeting_room")
+
+    def test_local_ai_page_keeps_final_correction_disabled_in_exported_runtime(self) -> None:
         page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
 
         updated = AppConfig()
         page.update_config(updated)
 
-        self.assertTrue(updated.runtime.asr_final_correction_enabled)
+        self.assertFalse(updated.runtime.asr_final_correction_enabled)
         self.assertTrue(updated.runtime.asr_result_validator_enabled)
         self.assertTrue(updated.runtime.enable_postprocessor)
 
