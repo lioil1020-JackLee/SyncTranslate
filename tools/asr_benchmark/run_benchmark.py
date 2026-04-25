@@ -264,24 +264,15 @@ def _run_file(
     which is tuned for real-time use and not suitable for offline benchmarking.
     """
     from app.infra.config.settings_store import load_config
-    from app.infra.asr.backend_resolution import resolve_backend_for_language
     from app.infra.asr.backend_v2 import _build_engine
     from app.infra.asr.language_profiles import resolve_language_asr_profile
+    from app.infra.asr.backend_resolution import resolve_backend_for_language
+    from app.infra.asr.profile_selection import asr_profile_for_language
 
     audio, sample_rate = _load_wav(audio_path)
     audio_duration_ms = round(len(audio) / sample_rate * 1000)
 
     config = load_config(str(config_path))
-
-    # Pick the right channel's AsrConfig
-    asr_channels = getattr(config, "asr_channels", None)
-    if asr_channels is not None and hasattr(asr_channels, source):
-        asr_profile = getattr(asr_channels, source)
-    elif hasattr(config, "asr"):
-        asr_profile = config.asr
-    else:
-        from app.infra.config.schema import AsrConfig
-        asr_profile = AsrConfig()
 
     # Determine language
     asr_language = ""
@@ -293,6 +284,8 @@ def _run_file(
         asr_language = str(getattr(config.asr, "language", "") or "")
     if language_override:
         asr_language = str(language_override).strip()
+
+    asr_profile = asr_profile_for_language(config, asr_language)
 
     # Benchmark now uses unified faster-whisper backend for all languages.
     backend_name = "faster_whisper_v2"

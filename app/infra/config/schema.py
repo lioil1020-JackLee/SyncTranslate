@@ -389,6 +389,7 @@ class AppConfig:
             speculative_num_beams=int(asr_raw.get("speculative_num_beams", _asr_d.speculative_num_beams)),
             temperature_fallback=str(asr_raw.get("temperature_fallback", _asr_d.temperature_fallback)),
             no_speech_threshold=float(asr_raw.get("no_speech_threshold", _asr_d.no_speech_threshold)),
+            hallucination_filter=bool(asr_raw.get("hallucination_filter", _asr_d.hallucination_filter)),
             vad=VadSettings(**(asr_raw.get("vad") or {})),
             streaming=AsrStreamingSettings(**(asr_raw.get("streaming") or {})),
         )
@@ -422,6 +423,7 @@ class AppConfig:
                 ),
                 temperature_fallback=str(asr_local_raw.get("temperature_fallback", asr.temperature_fallback)),
                 no_speech_threshold=float(asr_local_raw.get("no_speech_threshold", asr.no_speech_threshold)),
+                hallucination_filter=bool(asr_local_raw.get("hallucination_filter", asr.hallucination_filter)),
                 vad=VadSettings(**(asr_local_raw.get("vad") or asdict(asr.vad))),
                 streaming=AsrStreamingSettings(**(asr_local_raw.get("streaming") or asdict(asr.streaming))),
             ),
@@ -451,6 +453,7 @@ class AppConfig:
                 ),
                 temperature_fallback=str(asr_remote_raw.get("temperature_fallback", asr.temperature_fallback)),
                 no_speech_threshold=float(asr_remote_raw.get("no_speech_threshold", asr.no_speech_threshold)),
+                hallucination_filter=bool(asr_remote_raw.get("hallucination_filter", asr.hallucination_filter)),
                 vad=VadSettings(**(asr_remote_raw.get("vad") or asdict(asr.vad))),
                 streaming=AsrStreamingSettings(**(asr_remote_raw.get("streaming") or asdict(asr.streaming))),
             ),

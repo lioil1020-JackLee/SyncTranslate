@@ -47,19 +47,18 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
         _clear_model_cache_for_tests()
         super().tearDown()
 
-    def test_asr_profile_and_queue_always_follow_source_channel(self) -> None:
+    def test_asr_profile_follows_language_family_while_queue_follows_source_channel(self) -> None:
         cfg = AppConfig()
-        # Swap away from previous zh/en assumptions.
-        cfg.language.local_source = "en"
-        cfg.language.meeting_source = "ja"
-        cfg.asr_channels.local.model = "local-asr-model"
-        cfg.asr_channels.remote.model = "remote-asr-model"
+        cfg.runtime.local_asr_language = "en"
+        cfg.runtime.remote_asr_language = "zh-TW"
+        cfg.asr_channels.local.model = "chinese-asr-model"
+        cfg.asr_channels.remote.model = "non-chinese-asr-model"
         cfg.runtime.asr_queue_maxsize_local = 25
         cfg.runtime.asr_queue_maxsize_remote = 31
         manager = ASRManagerV2(cfg)
 
-        self.assertEqual(manager._asr_profile_for_source("local").model, "local-asr-model")
-        self.assertEqual(manager._asr_profile_for_source("remote").model, "remote-asr-model")
+        self.assertEqual(manager._asr_profile_for_source("local").model, "non-chinese-asr-model")
+        self.assertEqual(manager._asr_profile_for_source("remote").model, "chinese-asr-model")
         self.assertEqual(manager._asr_queue_maxsize_for_source("local"), 25)
         self.assertEqual(manager._asr_queue_maxsize_for_source("remote"), 31)
 
@@ -79,11 +78,13 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
         self.assertEqual(local_provider._client.model, "hy-mt1.5-7b")
         self.assertEqual(remote_provider._client.model, "hy-mt1.5-7b")
 
-    def test_shared_models_do_not_override_direction_specific_selection(self) -> None:
+    def test_shared_models_do_not_override_language_family_selection(self) -> None:
         cfg = AppConfig()
+        cfg.runtime.local_asr_language = "en"
+        cfg.runtime.remote_asr_language = "zh-TW"
         cfg.asr.model = "shared-asr-model"
-        cfg.asr_channels.local.model = "local-asr-model"
-        cfg.asr_channels.remote.model = "remote-asr-model"
+        cfg.asr_channels.local.model = "chinese-asr-model"
+        cfg.asr_channels.remote.model = "non-chinese-asr-model"
         cfg.llm.model = "shared-llm-model"
         cfg.llm_channels.local.model = "local-model"
         cfg.llm_channels.remote.model = "remote-model"
@@ -91,8 +92,8 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
         asr_manager = ASRManagerV2(cfg)
         translator_manager = TranslatorManager(cfg)
 
-        self.assertEqual(asr_manager._asr_profile_for_source("local").model, "local-asr-model")
-        self.assertEqual(asr_manager._asr_profile_for_source("remote").model, "remote-asr-model")
+        self.assertEqual(asr_manager._asr_profile_for_source("local").model, "non-chinese-asr-model")
+        self.assertEqual(asr_manager._asr_profile_for_source("remote").model, "chinese-asr-model")
         self.assertEqual(translator_manager._providers["local"]._client.model, "hy-mt1.5-7b")
         self.assertEqual(translator_manager._providers["remote"]._client.model, "hy-mt1.5-7b")
 
@@ -179,6 +180,28 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
         vad_arg = mock_endpointing.call_args.args[1]
         self.assertEqual(vad_arg.neural_threshold, 0.45)
         self.assertEqual(vad_arg.min_silence_duration_ms, 520)
+
+    @patch("app.infra.asr.manager_v2.build_endpointing_runtime")
+    @patch("app.infra.asr.manager_v2.build_backend_pair")
+    def test_runtime_backend_profile_override_uses_language_family_model(
+        self, mock_build_backend_pair, mock_endpointing
+    ) -> None:
+        cfg = AppConfig()
+        cfg.runtime.remote_asr_language = "zh-TW"
+        cfg.runtime.local_asr_language = "en"
+        cfg.asr_channels.local.model = "chinese-asr-model"
+        cfg.asr_channels.remote.model = "non-chinese-asr-model"
+        fake_partial = SimpleNamespace(descriptor=SimpleNamespace(name="fake:partial"))
+        fake_final = SimpleNamespace(descriptor=SimpleNamespace(name="fake:final"))
+        mock_build_backend_pair.return_value = (fake_partial, fake_final)
+        mock_endpointing.return_value = object()
+        manager = ASRManagerV2(cfg)
+
+        manager._runtime_of("remote")
+        self.assertEqual(mock_build_backend_pair.call_args.kwargs["profile_override"].model, "chinese-asr-model")
+
+        manager._runtime_of("local")
+        self.assertEqual(mock_build_backend_pair.call_args.kwargs["profile_override"].model, "non-chinese-asr-model")
 
     @patch("app.infra.asr.manager_v2.build_endpointing_runtime")
     def test_endpoint_snapshot_uses_effective_language_profile_vad(self, mock_endpointing) -> None:

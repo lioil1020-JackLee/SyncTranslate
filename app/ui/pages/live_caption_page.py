@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.infra.config.schema import AppConfig
+from app.infra.asr.profile_selection import asr_profile_family_for_language
 from app.infra.tts.voice_policy import default_voice_for_language
 
 _STATUS_TEXT = {
@@ -45,6 +46,7 @@ _LANG_LABELS: dict[str, str] = {
 
 _ASR_CHOICES: list[tuple[str, str]] = [
     ("none", "無"),
+    ("auto", "自動"),
     ("zh-TW", "中文"),
     ("en", "英文"),
     ("ja", "日文"),
@@ -128,7 +130,10 @@ class LiveCaptionPage(QWidget):
         self._suspend_notify = False
         self._direction_controls_enabled = True
         self._detected_asr_language: dict[str, str] = {"local": "", "remote": ""}
-        self._configured_asr_models: dict[str, str] = {"local": "large-v3-turbo", "remote": "large-v3-turbo"}
+        self._configured_asr_models: dict[str, str] = {
+            "chinese": "large-v3-turbo",
+            "non_chinese": "large-v3-turbo",
+        }
 
         self.remote_asr_combo = QComboBox()
         self.local_asr_combo = QComboBox()
@@ -336,18 +341,16 @@ class LiveCaptionPage(QWidget):
 
     def _normalize_asr_language(self, value: str, default: str) -> str:
         normalized = (value or "").strip()
-        if normalized in {"none", "zh-TW", "en", "ja", "ko", "th"}:
+        if normalized in {"none", "auto", "zh-TW", "en", "ja", "ko", "th"}:
             return normalized
-        if normalized.lower() == "auto":
-            return default
         return default
 
     def apply_config(self, config: AppConfig) -> None:
         self._suspend_notify = True
         try:
             self._configured_asr_models = {
-                "remote": self._config_asr_model_label(config, "remote"),
-                "local": self._config_asr_model_label(config, "local"),
+                "chinese": self._asr_model_label_from_profile(config.asr_channels.local),
+                "non_chinese": self._asr_model_label_from_profile(config.asr_channels.remote),
             }
             for channel in _CHANNELS:
                 target_value = self._config_translation_target(config, channel)
@@ -807,7 +810,11 @@ class LiveCaptionPage(QWidget):
         return self.local_original_status if kind == "original" else self.local_translated_status
 
     def _channel_asr_model_label(self, channel: str) -> str:
-        return self._configured_asr_models.get(channel, "large-v3-turbo")
+        selected_language = self._selected_asr_language(channel)
+        family = asr_profile_family_for_language(selected_language)
+        if family == "disabled":
+            return "停用"
+        return self._configured_asr_models.get(family, "large-v3-turbo")
 
     @staticmethod
     def _config_source_language(config: AppConfig, channel: str) -> str:
@@ -821,8 +828,7 @@ class LiveCaptionPage(QWidget):
         return str(getattr(config.runtime, attr, "") or "")
 
     @staticmethod
-    def _config_asr_model_label(config: AppConfig, channel: str) -> str:
-        asr_cfg = config.asr_channels.remote if channel == "remote" else config.asr_channels.local
+    def _asr_model_label_from_profile(asr_cfg) -> str:
         raw = str(getattr(asr_cfg, "model", "") or "large-v3-turbo").strip() or "large-v3-turbo"
         normalized = raw.replace("/", "\\").rstrip("\\")
         if "\\" in normalized:

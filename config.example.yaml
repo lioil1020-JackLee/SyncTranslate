@@ -12,8 +12,8 @@ language:
   meeting_target: zh-TW
   local_source: zh-TW
   local_target: en
-asr_channels:
-  local:
+asr_profiles:
+  chinese:
     engine: faster_whisper
     model: large-v3-turbo
     device: cuda
@@ -42,7 +42,7 @@ asr_channels:
       partial_history_seconds: 2
       final_history_seconds: 20
       soft_final_audio_ms: 3600
-  remote:
+  non_chinese:
     engine: faster_whisper
     model: large-v3-turbo
     device: cuda

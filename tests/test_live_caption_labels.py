@@ -21,16 +21,55 @@ class _QtTestCase(unittest.TestCase):
 
 
 class LiveCaptionLabelTests(_QtTestCase):
-    def test_selected_asr_model_updates_original_panel_labels(self) -> None:
+    def test_original_panel_labels_follow_asr_language_family(self) -> None:
         page = LiveCaptionPage()
         config = AppConfig()
-        config.asr_channels.remote.model = r".\runtimes\models\belle-zh-ct2"
-        config.asr_channels.local.model = "large-v3-turbo"
+        config.runtime.remote_asr_language = "zh-TW"
+        config.runtime.local_asr_language = "en"
+        config.asr_channels.local.model = r".\runtimes\models\belle-zh-ct2"
+        config.asr_channels.remote.model = "large-v3-turbo"
 
         page.apply_config(config)
 
         self.assertIn("belle-zh-ct2", page.remote_original_label.text())
         self.assertIn("large-v3-turbo", page.local_original_label.text())
+
+    def test_original_panel_model_label_updates_when_asr_language_changes(self) -> None:
+        page = LiveCaptionPage()
+        config = AppConfig()
+        config.runtime.remote_asr_language = "zh-TW"
+        config.asr_channels.local.model = r".\runtimes\models\belle-zh-ct2"
+        config.asr_channels.remote.model = "large-v3-turbo"
+
+        page.apply_config(config)
+        self.assertIn("belle-zh-ct2", page.remote_original_label.text())
+
+        page.remote_asr_combo.setCurrentIndex(page.remote_asr_combo.findData("en"))
+
+        self.assertIn("large-v3-turbo", page.remote_original_label.text())
+
+    def test_auto_asr_label_reflects_configured_runtime_profile_not_detection(self) -> None:
+        page = LiveCaptionPage()
+        config = AppConfig()
+        config.runtime.remote_asr_language = "auto"
+        config.asr_channels.local.model = r".\runtimes\models\belle-zh-ct2"
+        config.asr_channels.remote.model = "large-v3-turbo"
+
+        page.apply_config(config)
+        page.set_detected_asr_language("remote", "zh")
+
+        self.assertIn("large-v3-turbo", page.remote_original_label.text())
+
+    def test_auto_asr_language_round_trips_through_ui(self) -> None:
+        page = LiveCaptionPage()
+        config = AppConfig()
+        config.runtime.remote_asr_language = "auto"
+
+        page.apply_config(config)
+        updated = AppConfig()
+        page.update_config(updated)
+
+        self.assertEqual(updated.runtime.remote_asr_language, "auto")
 
     def test_tts_mode_keeps_translated_panel_labels(self) -> None:
         page = LiveCaptionPage()

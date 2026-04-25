@@ -469,6 +469,26 @@ class LocalAiPageUiTests(_QtTestCase):
 
         self.assertEqual(updated.asr_channels.local.model, belle_path)
 
+    def test_experience_preset_does_not_overwrite_selected_asr_models(self) -> None:
+        belle_dir = Path("runtimes/models/belle-zh-ct2")
+        created_belle_dir = not belle_dir.exists()
+        belle_dir.mkdir(parents=True, exist_ok=True)
+        if created_belle_dir:
+            self.addCleanup(lambda: belle_dir.rmdir() if belle_dir.exists() else None)
+
+        page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
+        belle_path = r".\runtimes\models\belle-zh-ct2"
+        belle_index = page.asr_model_combo.findData(belle_path)
+
+        self.assertGreaterEqual(belle_index, 0)
+        page.asr_model_combo.setCurrentIndex(belle_index)
+        page.experience_preset_combo.setCurrentIndex(page.experience_preset_combo.findData("dialogue_stable_asr"))
+
+        updated = AppConfig()
+        page.update_config(updated)
+
+        self.assertEqual(updated.asr_channels.local.model, belle_path)
+
     def test_local_ai_page_round_trips_advanced_runtime_and_profile_controls(self) -> None:
         page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
         cfg = AppConfig()

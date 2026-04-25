@@ -541,14 +541,15 @@ class LocalAiPage(QWidget):
         self.runtime_status_label.setText(base_text or hint_text)
 
     def _apply_optimized_defaults(self) -> None:
-        self._apply_experience_preset("meeting_monitor", notify=False)
+        self._apply_experience_preset("meeting_monitor", notify=False, reset_models=True)
 
-    def _apply_experience_preset(self, preset: str, *, notify: bool) -> None:
+    def _apply_experience_preset(self, preset: str, *, notify: bool, reset_models: bool = False) -> None:
         self._suspend_notify = True
         try:
             self._select_combo_data(self.experience_preset_combo, preset)
-            self._select_asr_model(self.asr_model_combo, "large-v3-turbo")
-            self._select_asr_model(self.remote_asr_model_combo, "large-v3-turbo")
+            if reset_models:
+                self._select_asr_model(self.asr_model_combo, "large-v3-turbo")
+                self._select_asr_model(self.remote_asr_model_combo, "large-v3-turbo")
             self.asr_beam_spin.setValue(1)
             self.remote_asr_beam_spin.setValue(1)
             self.asr_condition_prev_check.setChecked(False)

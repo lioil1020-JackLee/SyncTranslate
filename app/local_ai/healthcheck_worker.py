@@ -13,6 +13,7 @@ configure_external_ai_runtime()
 from app.infra.asr.faster_whisper_adapter import FasterWhisperEngine
 from app.infra.config.schema import AsrConfig
 from app.infra.config.settings_store import load_config
+from app.infra.asr.profile_selection import iter_active_asr_profiles_for_sources
 from app.infra.translation.provider import create_translation_provider
 from app.infra.tts.engine import create_tts_engine
 from app.local_ai.healthcheck import LocalHealthReport
@@ -21,31 +22,37 @@ from app.local_ai.healthcheck import run_local_healthcheck
 
 @dataclass(slots=True)
 class _CombinedAsrHealthProbe:
-    faster_whisper_probe: object | None
+    faster_whisper_probes: list[tuple[str, object]]
 
     def health_check(self) -> tuple[bool, str]:
-        if self.faster_whisper_probe is None:
+        if not self.faster_whisper_probes:
             return False, "ASR probes not configured"
 
-        try:
-            ok, detail = self.faster_whisper_probe.health_check()
-        except Exception as exc:
-            ok = False
-            detail = str(exc)
-        state = "ok" if ok else "failed"
-        return bool(ok), f"faster-whisper: {state} - {detail}"
+        all_ok = True
+        details: list[str] = []
+        for label, probe in self.faster_whisper_probes:
+            try:
+                ok, detail = probe.health_check()
+            except Exception as exc:
+                ok = False
+                detail = str(exc)
+            all_ok = all_ok and bool(ok)
+            state = "ok" if ok else "failed"
+            details.append(f"{label}: {state} - {detail}")
+        return all_ok, "; ".join(details)
 
 
-def _pick_channel_configs(config) -> list[AsrConfig]:
+def _pick_channel_configs(config) -> list[tuple[str, str, AsrConfig]]:
     if bool(getattr(config.runtime, "use_channel_specific_asr", False)):
-        remote = getattr(config.asr_channels, "remote", None)
-        local = getattr(config.asr_channels, "local", None)
-        ordered = [remote, local]
-        return [item for item in ordered if item is not None]
-    return [config.asr]
+        profiles: list[tuple[str, str, AsrConfig]] = []
+        for source, language, profile in iter_active_asr_profiles_for_sources(config):
+            display_language = language or "auto"
+            profiles.append((f"{source}/{display_language}", language, profile))
+        return profiles
+    return [("shared", "", config.asr)]
 
 
-def _build_faster_whisper_probe(asr_cfg: AsrConfig) -> FasterWhisperEngine:
+def _build_faster_whisper_probe(asr_cfg: AsrConfig, *, language: str = "") -> FasterWhisperEngine:
     return FasterWhisperEngine(
         model=asr_cfg.model,
         device=asr_cfg.device,
@@ -58,23 +65,23 @@ def _build_faster_whisper_probe(asr_cfg: AsrConfig) -> FasterWhisperEngine:
         hotwords=asr_cfg.hotwords,
         speculative_draft_model=asr_cfg.speculative_draft_model,
         speculative_num_beams=asr_cfg.speculative_num_beams,
-        language="",
+        language=language,
     )
 
 
 def _build_combined_asr_probe(config) -> _CombinedAsrHealthProbe:
-    faster_whisper_probe = None
+    faster_whisper_probes: list[tuple[str, FasterWhisperEngine]] = []
 
-    for asr_cfg in _pick_channel_configs(config):
+    for label, language, asr_cfg in _pick_channel_configs(config):
         engine = str(getattr(asr_cfg, "engine", "") or "").strip().lower()
-        if engine == "faster_whisper" and faster_whisper_probe is None:
-            faster_whisper_probe = _build_faster_whisper_probe(asr_cfg)
+        if engine == "faster_whisper":
+            faster_whisper_probes.append((label, _build_faster_whisper_probe(asr_cfg, language=language)))
 
-    if faster_whisper_probe is None:
+    if not faster_whisper_probes:
         fallback_cfg = config.asr
-        faster_whisper_probe = _build_faster_whisper_probe(fallback_cfg)
+        faster_whisper_probes.append(("shared", _build_faster_whisper_probe(fallback_cfg)))
 
-    return _CombinedAsrHealthProbe(faster_whisper_probe=faster_whisper_probe)
+    return _CombinedAsrHealthProbe(faster_whisper_probes=faster_whisper_probes)
 
 
 def main(argv: list[str] | None = None) -> int:

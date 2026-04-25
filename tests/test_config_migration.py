@@ -132,7 +132,7 @@ class ConfigMigrationTests(unittest.TestCase):
 
     def test_normalize_external_alias_keys(self) -> None:
         raw = {
-            "asr_channels": {"chinese": {"model": "a"}, "english": {"model": "b"}},
+            "asr_profiles": {"chinese": {"model": "a"}, "non_chinese": {"model": "b"}},
             "llm_channels": {"zh_to_en": {"model": "x"}, "en_to_zh": {"model": "y"}},
             "tts_channels": {"chinese": {"voice_name": "zh"}, "english": {"voice_name": "en"}},
             "chinese_tts": {"voice_name": "zh-voice"},
@@ -225,10 +225,11 @@ class ConfigMigrationTests(unittest.TestCase):
         self.assertNotIn("asr", presented)
         self.assertNotIn("llm", presented)
 
-        self.assertIn("local", presented["asr_channels"])
-        self.assertIn("remote", presented["asr_channels"])
-        self.assertNotIn("chinese", presented["asr_channels"])
-        self.assertNotIn("english", presented["asr_channels"])
+        self.assertNotIn("asr_channels", presented)
+        self.assertIn("chinese", presented["asr_profiles"])
+        self.assertIn("non_chinese", presented["asr_profiles"])
+        self.assertEqual(presented["asr_profiles"]["chinese"], {"model": "l"})
+        self.assertEqual(presented["asr_profiles"]["non_chinese"], {"model": "r"})
 
         self.assertIn("local", presented["llm_channels"])
         self.assertIn("remote", presented["llm_channels"])
@@ -286,7 +287,7 @@ class ConfigMigrationTests(unittest.TestCase):
             payload = yaml.safe_load(path.read_text(encoding="utf-8"))
 
         language = payload.get("language", {})
-        asr_channels = payload.get("asr_channels", {})
+        asr_profiles = payload.get("asr_profiles", {})
         llm_channels = payload.get("llm_channels", {})
         tts_channels = payload.get("tts_channels", {})
         runtime = payload.get("runtime", {})
@@ -298,10 +299,9 @@ class ConfigMigrationTests(unittest.TestCase):
         self.assertNotIn("remote_translation_target", language)
         self.assertNotIn("local_translation_target", language)
 
-        self.assertIn("local", asr_channels)
-        self.assertIn("remote", asr_channels)
-        self.assertNotIn("chinese", asr_channels)
-        self.assertNotIn("english", asr_channels)
+        self.assertNotIn("asr_channels", payload)
+        self.assertIn("chinese", asr_profiles)
+        self.assertIn("non_chinese", asr_profiles)
 
         self.assertIn("local", llm_channels)
         self.assertIn("remote", llm_channels)
@@ -342,14 +342,13 @@ class ConfigMigrationTests(unittest.TestCase):
             self.assertIsNotNone(cfg)
             payload = yaml.safe_load(path.read_text(encoding="utf-8"))
 
-        asr_channels = payload.get("asr_channels", {})
+        asr_profiles = payload.get("asr_profiles", {})
         llm_channels = payload.get("llm_channels", {})
         runtime = payload.get("runtime", {})
 
-        self.assertIn("local", asr_channels)
-        self.assertIn("remote", asr_channels)
-        self.assertNotIn("chinese", asr_channels)
-        self.assertNotIn("english", asr_channels)
+        self.assertNotIn("asr_channels", payload)
+        self.assertIn("chinese", asr_profiles)
+        self.assertIn("non_chinese", asr_profiles)
 
         self.assertIn("local", llm_channels)
         self.assertIn("remote", llm_channels)
@@ -373,9 +372,9 @@ class ConfigMigrationTests(unittest.TestCase):
                 "remote_translation_target": "de",
                 "local_translation_target": "it",
             },
-            "asr_channels": {
-                "local": {"model": "local-asr"},
-                "remote": {"model": "remote-asr"},
+            "asr_profiles": {
+                "chinese": {"model": "local-asr", "hallucination_filter": False},
+                "non_chinese": {"model": "remote-asr", "hallucination_filter": True},
             },
             "llm_channels": {
                 "local": {"base_url": "http://127.0.0.1:1234", "caption_profile": "technical_meeting"},
@@ -402,6 +401,8 @@ class ConfigMigrationTests(unittest.TestCase):
         cfg = AppConfig.from_dict(_normalize_external_config_keys(compact))
 
         self.assertEqual(cfg.asr.model, "local-asr")
+        self.assertFalse(cfg.asr_channels.local.hallucination_filter)
+        self.assertTrue(cfg.asr_channels.remote.hallucination_filter)
         self.assertEqual(cfg.asr_channels.remote.model, "remote-asr")
         self.assertEqual(cfg.llm.caption_profile, "technical_meeting")
         self.assertEqual(cfg.llm_channels.remote.request_timeout_sec, 12)

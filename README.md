@@ -198,6 +198,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\runtime_setup\relocate_ai_runti
 
 - `runtime.asr_pipeline`：預設 `v2`
 - `runtime.local_asr_language` / `runtime.remote_asr_language`：決定 ASR backend
+- `asr_profiles.chinese` / `asr_profiles.non_chinese`：決定中文與非中文 ASR 實際模型與 VAD / streaming 參數
 - `runtime.asr_v2_endpointing`
 - `runtime.asr_profile_local` / `runtime.asr_profile_remote`：endpoint profile（預設 `meeting_room`）
 - `runtime.early_final_enabled`：預設 `false`
@@ -220,6 +221,16 @@ powershell -ExecutionPolicy Bypass -File .\tools\runtime_setup\relocate_ai_runti
 - 即時中文長故事 benchmark：overlay / 片尾過濾與 final correction 關閉後約 `86.3%`，主要瓶頸仍是背景音與即時切段波動
 
 使用時請優先確認 `runtime.local_asr_language` / `runtime.remote_asr_language` 與實際說話語言一致。語言鎖錯時，辨識率會明顯下降。
+
+設定鏈路目前統一為：啟動時由 `config.yaml` 載入 `AppConfig`，UI 顯示同一份設定；UI 變更會先套用到記憶體中的 `AppConfig` 並重建 runtime，按「儲存設定」才寫回 `config.yaml`。Python 內的預設值只在設定檔缺欄位或第一次產生設定檔時使用。
+
+ASR 模型不再依「遠端 / 本地」來源決定，而是依每個通道的 ASR 語言決定：
+
+- 中文語言（`zh-TW` / `zh` / `cmn` / `yue`）使用 `asr_profiles.chinese`
+- 非中文與 `auto` 使用 `asr_profiles.non_chinese`
+- `none` 停用該通道 ASR
+
+因此遠端 ASR 若選「中文」，實際會使用中文 profile（例如 `.\runtimes\models\belle-zh-ct2`），UI 標籤、健康檢查與 runtime 都會走同一條解析規則。快速情境模式只調整延遲 / 穩定度參數，不會覆蓋已選定的 ASR 模型。
 
 UI 內建三種快速模式：
 

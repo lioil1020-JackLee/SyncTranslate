@@ -14,7 +14,8 @@ from app.infra.asr.contracts import ASREventWithSource
 from app.infra.asr.endpoint_profiles import get_endpoint_profile
 from app.infra.asr.endpointing_v2 import EndpointSignal, build_endpointing_runtime
 from app.infra.asr.language_profiles import resolve_language_asr_profile
-from app.infra.asr.pipeline_v2 import AsrV2PipelineSpec, build_v2_pipeline_spec, resolve_requested_asr_language
+from app.infra.asr.pipeline_v2 import AsrV2PipelineSpec, build_v2_pipeline_spec
+from app.infra.asr.profile_selection import asr_profile_for_language, requested_asr_language_for_source
 from app.infra.asr.worker_v2 import SourceRuntimeV2, V2RuntimeEvent
 from app.infra.config.schema import AppConfig, RuntimeConfig
 
@@ -217,7 +218,7 @@ class ASRManagerV2:
         if runtime is None:
             language = self._asr_language_for_source(key)
             resolution = resolve_backend_for_language(language)
-            profile = self._profile_for_source(key)
+            profile = self._profile_for_language(language)
             language_profile = resolve_language_asr_profile(profile, language=language)
             endpoint_runtime = build_endpointing_runtime(
                 str(getattr(self._config.runtime, "asr_v2_endpointing", "neural_endpoint")),
@@ -234,7 +235,7 @@ class ASRManagerV2:
             return runtime
         language = self._asr_language_for_source(source)
         resolution = resolve_backend_for_language(language)
-        profile = self._profile_for_source(source)
+        profile = self._profile_for_language(language)
         language_profile = resolve_language_asr_profile(profile, language=language)
         build_result = build_backend_pair(
             self._config,
@@ -307,17 +308,11 @@ class ASRManagerV2:
     def _stream_of(self, source: str) -> SourceRuntimeV2:
         return self._runtime_of(source)
 
-    def _profile_for_source(self, source: str):
-        return self._config.asr_channels.remote if source == "remote" else self._config.asr_channels.local
-
     def _asr_profile_for_source(self, source: str):
-        return self._profile_for_source(source)
+        return self._profile_for_language(self._asr_language_for_source(source))
 
     def _profile_for_language(self, language: str):
-        resolution = resolve_backend_for_language(language)
-        if resolution.language_family == "non_chinese":
-            return self._config.asr_channels.remote
-        return self._config.asr_channels.local
+        return asr_profile_for_language(self._config, language)
 
     def _endpoint_profile_name_for_source(self, source: str, *, language_profile) -> str:
         configured = (
@@ -331,7 +326,7 @@ class ASRManagerV2:
         return language_profile.endpoint_profile or configured_name or "default"
 
     def _frontend_enhancement_strengths(self, language: str, *, source: str = "local") -> tuple[float, float]:
-        profile = resolve_language_asr_profile(self._profile_for_source(source), language=language)
+        profile = resolve_language_asr_profile(self._profile_for_language(language), language=language)
         runtime = self._config.runtime
         defaults = RuntimeConfig()
         configured_noise = float(
@@ -369,14 +364,14 @@ class ASRManagerV2:
         return self._queue_maxsize_for_source(source)
 
     def _asr_language_for_source(self, source: str) -> str:
-        return resolve_requested_asr_language(self._config, source)
+        return requested_asr_language_for_source(self._config, source)
 
     def _speaker_diarizer_for_source(self, source: str):
         return None
 
     def _effective_language_profile_for_source(self, source: str):
         return resolve_language_asr_profile(
-            self._profile_for_source(source),
+            self._profile_for_language(self._asr_language_for_source(source)),
             language=self._asr_language_for_source(source),
         )
 

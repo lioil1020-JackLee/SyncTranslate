@@ -12,14 +12,14 @@ language:
   meeting_target: en
   local_source: zh-TW
   local_target: en
-asr_channels:
-  local:
+asr_profiles:
+  chinese:
     engine: faster_whisper
-    model: large-v3-turbo
+    model: .\runtimes\models\belle-zh-ct2
     device: cuda
     compute_type: float16
-    beam_size: 1
-    final_beam_size: 4
+    beam_size: 2
+    final_beam_size: 5
     condition_on_previous_text: false
     final_condition_on_previous_text: false
     initial_prompt: 以下是繁體中文口語敘事逐字稿。
@@ -33,7 +33,7 @@ asr_channels:
       enabled: true
       backend: silero_vad
       min_speech_duration_ms: 140
-      min_silence_duration_ms: 280
+      min_silence_duration_ms: 320
       max_speech_duration_s: 12.0
       speech_pad_ms: 220
       rms_threshold: 0.021
@@ -42,9 +42,9 @@ asr_channels:
     streaming:
       partial_interval_ms: 240
       partial_history_seconds: 1
-      final_history_seconds: 8
-      soft_final_audio_ms: 1800
-  remote:
+      final_history_seconds: 16
+      soft_final_audio_ms: 2200
+  non_chinese:
     engine: faster_whisper
     model: large-v3-turbo
     device: cuda

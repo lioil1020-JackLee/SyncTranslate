@@ -120,6 +120,19 @@ def save_config(config: AppConfig, config_path: str | Path = "config.yaml") -> P
 
 def _normalize_external_config_keys(raw: dict[str, Any]) -> dict[str, Any]:
     data = deepcopy(raw)
+    asr_profiles = data.get("asr_profiles")
+    if isinstance(asr_profiles, dict):
+        asr_channels = data.get("asr_channels")
+        if not isinstance(asr_channels, dict):
+            asr_channels = {}
+        if "chinese" in asr_profiles and "local" not in asr_channels:
+            asr_channels["local"] = asr_profiles.get("chinese")
+        if "non_chinese" in asr_profiles and "remote" not in asr_channels:
+            asr_channels["remote"] = asr_profiles.get("non_chinese")
+        if "general" in asr_profiles and "remote" not in asr_channels:
+            asr_channels["remote"] = asr_profiles.get("general")
+        data["asr_channels"] = asr_channels
+        data.pop("asr_profiles", None)
     asr = data.get("asr")
     if isinstance(asr, dict):
         _normalize_asr_profile_legacy_fields(asr)
@@ -135,6 +148,10 @@ def _normalize_external_config_keys(raw: dict[str, Any]) -> dict[str, Any]:
     if isinstance(asr_channels, dict):
         if "chinese" in asr_channels and "local" not in asr_channels:
             asr_channels["local"] = asr_channels.get("chinese")
+        if "non_chinese" in asr_channels and "remote" not in asr_channels:
+            asr_channels["remote"] = asr_channels.get("non_chinese")
+        if "general" in asr_channels and "remote" not in asr_channels:
+            asr_channels["remote"] = asr_channels.get("general")
         if "english" in asr_channels and "remote" not in asr_channels:
             asr_channels["remote"] = asr_channels.get("english")
         for key in ("local", "remote"):
@@ -238,9 +255,15 @@ def _present_external_config_keys(raw: dict[str, Any]) -> dict[str, Any]:
         data.pop("llm", None)
     asr_channels = data.get("asr_channels")
     if isinstance(asr_channels, dict):
-        # Keep canonical vNext keys when writing config.
-        asr_channels.pop("chinese", None)
-        asr_channels.pop("english", None)
+        asr_profiles: dict[str, Any] = {}
+        local_profile = asr_channels.get("local")
+        remote_profile = asr_channels.get("remote")
+        if isinstance(local_profile, dict):
+            asr_profiles["chinese"] = deepcopy(local_profile)
+        if isinstance(remote_profile, dict):
+            asr_profiles["non_chinese"] = deepcopy(remote_profile)
+        data["asr_profiles"] = asr_profiles
+        data.pop("asr_channels", None)
     llm_channels = data.get("llm_channels")
     if isinstance(llm_channels, dict):
         llm_channels.pop("zh_to_en", None)
@@ -528,7 +551,7 @@ def migrate_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
 def is_legacy_config(raw: dict[str, Any]) -> bool:
     if "openai" in raw or "model" in raw or "session_mode" in raw:
         return True
-    has_asr = "asr" in raw or "asr_channels" in raw
+    has_asr = "asr" in raw or "asr_channels" in raw or "asr_profiles" in raw
     has_llm = "llm" in raw or "llm_channels" in raw
     if (not has_asr) or (not has_llm) or "tts" not in raw or "runtime" not in raw:
         return True

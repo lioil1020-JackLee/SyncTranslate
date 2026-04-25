@@ -258,6 +258,8 @@ def run_streaming_sim(
     from app.infra.asr.backend_resolution import resolve_backend_for_language
     from app.infra.asr.endpoint_profiles import get_endpoint_profile
     from app.infra.asr.language_profiles import resolve_language_asr_profile
+    from app.infra.asr.profile_selection import asr_profile_for_language
+    from app.infra.asr.profile_selection import asr_profile_slot_for_language
     from app.infra.asr.text_correction import AsrTextCorrector
     from app.infra.asr.worker_v2 import SourceRuntimeV2, V2RuntimeEvent
     from app.infra.config.schema import VadSettings, AsrStreamingSettings
@@ -265,8 +267,7 @@ def run_streaming_sim(
 
     config = load_config(str(config_path))
 
-    # Get profile for source
-    base_profile = config.asr_channels.remote if source == "remote" else config.asr_channels.local
+    base_profile = asr_profile_for_language(config, language)
     language_profile = resolve_language_asr_profile(base_profile, language=language)
     profile = deepcopy(language_profile.asr)
 
@@ -305,11 +306,14 @@ def run_streaming_sim(
             print(f"[sim] worker overrides={worker_overrides}", flush=True)
 
     # Override language in config for correct backend resolution
-    if source == "remote":
+    profile_slot = asr_profile_slot_for_language(language)
+    if profile_slot == "local":
+        config.asr_channels.local = profile
+    elif profile_slot == "remote":
         config.asr_channels.remote = profile
+    if source == "remote":
         config.runtime.remote_asr_language = language
     else:
-        config.asr_channels.local = profile
         config.runtime.local_asr_language = language
 
     # Build backends

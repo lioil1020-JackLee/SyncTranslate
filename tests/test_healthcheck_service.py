@@ -7,6 +7,8 @@ from unittest.mock import patch
 
 from app.application.healthcheck_service import HealthCheckService
 from app.application.settings_service import SettingsService
+from app.infra.config.schema import AppConfig
+from app.local_ai.healthcheck_worker import _pick_channel_configs
 
 
 def test_healthcheck_service_uses_main_entrypoint_for_dev_subprocess() -> None:
@@ -44,3 +46,15 @@ def test_healthcheck_service_summarizes_traceback_for_ui() -> None:
     assert HealthCheckService._summarize_subprocess_error(text) == (
         "健康檢查子程序啟動失敗：ModuleNotFoundError: No module named app.local_ai.healthcheck_worker"
     )
+
+
+def test_healthcheck_worker_checks_profiles_used_by_asr_language_routing() -> None:
+    cfg = AppConfig()
+    cfg.runtime.remote_asr_language = "zh-TW"
+    cfg.runtime.local_asr_language = "en"
+    cfg.asr_channels.local.model = "chinese-asr-model"
+    cfg.asr_channels.remote.model = "non-chinese-asr-model"
+
+    picked = _pick_channel_configs(cfg)
+
+    assert [item[2].model for item in picked] == ["chinese-asr-model", "non-chinese-asr-model"]

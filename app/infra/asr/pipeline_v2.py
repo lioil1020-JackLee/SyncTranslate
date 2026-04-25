@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from app.infra.asr.backend_resolution import resolve_backend_for_language
 from app.infra.asr.backend_v2 import BackendDescriptor
 from app.infra.asr.endpointing_v2 import EndpointingDescriptor, build_endpointing_descriptor
+from app.infra.asr.profile_selection import asr_profile_for_language
+from app.infra.asr.profile_selection import requested_asr_language_for_source as _requested_asr_language_for_source
 from app.infra.config.schema import AppConfig
 
 
@@ -20,30 +22,16 @@ class AsrV2PipelineSpec:
 
 
 def resolve_requested_asr_language(config: AppConfig, source: str) -> str:
-    runtime = config.runtime
-    explicit = (
-        str(getattr(runtime, "remote_asr_language", "") or "").strip()
-        if source == "remote"
-        else str(getattr(runtime, "local_asr_language", "") or "").strip()
-    )
-    language_mode = str(getattr(runtime, "asr_language_mode", "") or "").strip().lower()
-    if explicit:
-        if explicit.lower() == "auto":
-            return ""
-        return explicit
-    if language_mode == "auto":
-        return ""
-    if source == "remote":
-        return str(getattr(config.language, "meeting_source", "") or "").strip()
-    return str(getattr(config.language, "local_source", "") or "").strip()
+    return _requested_asr_language_for_source(config, source)
 
 
 def build_v2_pipeline_spec(config: AppConfig) -> AsrV2PipelineSpec:
     local_language = resolve_requested_asr_language(config, "local")
     resolution = resolve_backend_for_language(local_language)
+    local_profile = asr_profile_for_language(config, local_language)
     endpointing = build_endpointing_descriptor(
         str(getattr(config.runtime, "asr_v2_endpointing", "neural_endpoint")),
-        config.asr_channels.local.vad,
+        local_profile.vad,
         resolved_backend_name=resolution.backend_name,
     )
     backend_name = resolution.backend_name if not resolution.disabled else "disabled"
