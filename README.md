@@ -49,14 +49,18 @@ SyncTranslate 是一個以 Windows 桌面為主的即時雙向字幕 / 翻譯 / 
 - `app/application/`
   - `audio_router.py`
   - `transcript_service.py`
-  - `transcript_postprocessor.py`（Phase 1）
-  - `asr_event_processor.py`（Phase 4）
-  - `translation_dispatcher.py`（Phase 4）
-  - `tts_dispatcher.py`（Phase 4）
-  - `pipeline_metrics.py`（Phase 4）
+  - `transcript_postprocessor.py`
+  - `asr_event_processor.py`
+  - `translation_dispatcher.py`
+  - `tts_dispatcher.py`
+  - `pipeline_metrics.py`
+  - `_partial_display_policy.py`（partial 顯示策略）
+  - `_latency_tracker.py`（pipeline 延遲記錄）
 - `app/domain/`
-  - `glossary.py`（Phase 1）
-  - `metrics.py`（Phase 1）
+  - `glossary.py`
+  - `metrics.py`
+  - `models.py`（transcript_models + events 合併）
+  - `unicode_utils.py`（CJK/Unicode 判斷集中）
 - `app/infra/asr/`
   - `factory.py`
   - `manager_v2.py`
@@ -65,15 +69,20 @@ SyncTranslate 是一個以 Windows 桌面為主的即時雙向字幕 / 翻譯 / 
   - `backend_v2.py`
   - `endpointing_v2.py`
   - `faster_whisper_adapter.py`
-  - `streaming_policy.py`（Phase 2）
-  - `endpoint_profiles.py`（Phase 2）
-  - `audio_pipeline/`（Phase 3）
-- `app/infra/logging/`（Phase 1）
+  - `streaming_policy.py`
+  - `endpoint_profiles.py`
+  - `_hallucination_filter.py`（幻覺過濾函數集中）
+  - `_adaptive_tuner.py`（adaptive tuning mixin）
+  - `audio_pipeline/`
+- `app/infra/audio/`
+  - `_device_selector.py`（裝置搜尋 helper）
 - `app/infra/translation/`
+  - `_stream_parser.py`（streaming token 解析）
+  - `_prompt_builder.py`（prompt 格式建構）
 - `app/infra/tts/`
 - `app/ui/`
-  - `controllers/`（Phase 4）
-- `tools/asr_benchmark/`（Phase 3，開發工具）
+  - `controllers/`
+- `tools/asr_benchmark/`（開發工具）
 
 更完整內容請看：
 
