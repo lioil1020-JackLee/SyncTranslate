@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 import re
 
+from app.domain.unicode_utils import contains_cjk
+
 
 @dataclass(slots=True)
 class HotwordEntry:
@@ -139,7 +141,7 @@ class AsrLexicalBiaser:
 
     @staticmethod
     def _is_cjk_text(text: str) -> bool:
-        return any("\u4e00" <= ch <= "\u9fff" for ch in text)
+        return contains_cjk(text)
 
 
 __all__ = ["AsrLexicalBiaser", "HotwordEntry"]

@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
-from queue import Empty, Full, Queue
-from threading import Event, Thread
 from typing import Callable
 
 import numpy as np
@@ -15,11 +12,11 @@ from app.infra.asr.contracts import ASREventWithSource, AsrManagerProtocol
 from app.infra.config.schema import AppConfig, AudioRouteConfig
 from app.domain.runtime_state import StateManager
 from app.domain.constants import (
-    DISPLAY_PARTIAL_ALL,
-    DISPLAY_PARTIAL_NONE,
-    DISPLAY_PARTIAL_STABLE_ONLY,
     OUTPUT_MODE_TTS,
 )
+from app.application.translation_dispatcher import TranslationDispatcher
+from app.application._partial_display_policy import PartialDisplayPolicy
+from app.application._latency_tracker import PipelineLatencyTracker
 from app.application.transcript_service import TranscriptBuffer
 from app.application.transcript_postprocessor import TranscriptPostProcessor
 from app.infra.translation.engine import TranslatorManager
@@ -36,14 +33,6 @@ class RouterStats:
     tts: dict[str, object]
     latency: list[dict[str, object]]
     translation_overflow: dict[str, int]
-
-
-@dataclass(slots=True)
-class _PartialDisplayState:
-    utterance_id: str = ""
-    last_text: str = ""
-    repeat_count: int = 0
-    last_displayed_text: str = ""
 
 
 class AudioRouter:
@@ -82,17 +71,16 @@ class AudioRouter:
         self._capture_running: dict[str, bool] = {"local": False, "remote": False}
         self._asr_running: dict[str, bool] = {"local": False, "remote": False}
         self._async_translation = bool(async_translation)
-        self._translation_workers: dict[str, Thread] = {}
-        self._translation_stop_event = Event()
         self._runtime_config: AppConfig | None = None
-        self._translation_overflow_counters: dict[str, int] = {"local": 0, "remote": 0}
-        self._translation_queues = {
-            "local": Queue(maxsize=self._translation_queue_maxsize_for_source("local")),
-            "remote": Queue(maxsize=self._translation_queue_maxsize_for_source("remote")),
+        self._translation_dispatchers: dict[str, TranslationDispatcher] = {
+            source: TranslationDispatcher(
+                event_processor=self._safe_process_translation_event,
+                queue_maxsize=self._translation_queue_maxsize_for_source(source),
+            )
+            for source in ("local", "remote")
         }
-        self._partial_display_state: dict[str, _PartialDisplayState] = {}
-        self._latency_by_utterance: dict[tuple[str, str], dict[str, object]] = {}
-        self._recent_latency: deque[dict[str, object]] = deque(maxlen=32)
+        self._partial_display_policy = PartialDisplayPolicy(runtime_config=None)
+        self._latency_tracker = PipelineLatencyTracker(tts_manager=tts_manager)
         self._postprocessor: TranscriptPostProcessor = TranscriptPostProcessor(enabled=False)
 
     @property
@@ -133,10 +121,8 @@ class AudioRouter:
         self._chunk_ms = 100
         self._capture_running = {"local": False, "remote": False}
         self._asr_running = {"local": False, "remote": False}
-        self._partial_display_state.clear()
-        self._latency_by_utterance.clear()
-        self._recent_latency.clear()
-        self._translation_overflow_counters = {"local": 0, "remote": 0}
+        self._partial_display_policy.reset()
+        self._latency_tracker.reset()
         self._state.stop_session()
 
     def stats(self) -> RouterStats:
@@ -166,8 +152,11 @@ class AudioRouter:
             capture=capture,
             asr=self._asr_manager.stats(),
             tts=self._tts_manager.stats(),
-            latency=list(self._recent_latency),
-            translation_overflow=dict(self._translation_overflow_counters),
+            latency=self._latency_tracker.recent(),
+            translation_overflow={
+                source: d.stats().overflow_count
+                for source, d in self._translation_dispatchers.items()
+            },
         )
 
     def _on_local_audio_chunk(self, chunk: np.ndarray, sample_rate: float) -> None:
@@ -205,78 +194,7 @@ class AudioRouter:
 
     def _on_asr_event(self, event: ASREventWithSource) -> None:
         try:
-            if self._should_drop_over_latency(event):
-                return
-            self._emit_asr_event(event)
-            self._record_asr_latency(event)
-            original_channel, translated_channel, tts_channel = self._channels_of(event.source)
-            # PostProcessor: 對原始文字做 partial/final 後處理
-            detected_language = str(getattr(event, "detected_language", "") or "")
-            if event.is_final:
-                processed_text = self._postprocessor.process_final(
-                    event.source, event.text,
-                    language=detected_language,
-                    utterance_id=event.utterance_id or "",
-                )
-            else:
-                processed_text = self._postprocessor.process_partial(
-                    event.source, event.text,
-                    language=detected_language,
-                    utterance_id=event.utterance_id or "",
-                )
-            self._maybe_store_transcript(
-                source=original_channel,
-                channel=original_channel,
-                kind="original",
-                text=processed_text,
-                is_final=event.is_final,
-                is_stable_partial=not event.is_final,
-                utterance_id=event.utterance_id,
-                revision=event.revision,
-                latency_ms=event.latency_ms,
-                created_at=datetime.fromtimestamp(event.created_at),
-                speaker_label=getattr(event, "speaker_label", ""),
-            )
-            translation_checker = getattr(self._translator_manager, "translation_enabled", lambda *_args: True)
-            try:
-                translation_enabled = bool(translation_checker(event.source))
-            except TypeError:
-                translation_enabled = bool(translation_checker())
-            if not translation_enabled:
-                correct_event = getattr(self._translator_manager, "correct_asr_event", lambda value: value)
-                corrected_event = correct_event(event) if event.is_final else event
-                self._maybe_store_transcript(
-                    source=translated_channel,
-                    channel=translated_channel,
-                    kind="translated",
-                    text=corrected_event.text,
-                    is_final=corrected_event.is_final,
-                    is_stable_partial=not corrected_event.is_final,
-                    utterance_id=corrected_event.utterance_id,
-                    revision=corrected_event.revision,
-                    latency_ms=corrected_event.latency_ms,
-                    created_at=datetime.fromtimestamp(corrected_event.created_at),
-                    speaker_label=getattr(corrected_event, "speaker_label", ""),
-                )
-                should_speak = corrected_event.is_final or bool(getattr(corrected_event, "is_early_final", False))
-                if should_speak and self._tts_manager.output_mode(tts_channel) == OUTPUT_MODE_TTS:
-                    speak_text = corrected_event.text.strip()
-                    if speak_text:
-                        self._emit_tts_request(tts_channel, speak_text)
-                        self._tts_manager.enqueue(
-                            tts_channel,
-                            speak_text,
-                            utterance_id=corrected_event.utterance_id,
-                            revision=corrected_event.revision,
-                            is_final=corrected_event.is_final,
-                            is_stable_partial=not corrected_event.is_final,
-                            is_early_final=bool(getattr(corrected_event, "is_early_final", False)),
-                        )
-                return
-            if self._async_translation:
-                self._enqueue_translation_event(event)
-                return
-            self._process_translation_event(event)
+            self._handle_asr_event_payload(event)
         except Exception as exc:
             if self._on_error:
                 self._on_error(
@@ -288,6 +206,93 @@ class AudioRouter:
                         message="Failed to process ASR event",
                         detail=str(exc),
                     )
+                )
+
+    def _handle_asr_event_payload(self, event: ASREventWithSource) -> None:
+        if self._should_drop_over_latency(event):
+            return
+        self._emit_asr_event(event)
+        self._latency_tracker.record_asr(event)
+        original_channel, translated_channel, tts_channel = self._channels_of(event.source)
+        detected_language = str(getattr(event, "detected_language", "") or "")
+        if event.is_final:
+            processed_text = self._postprocessor.process_final(
+                event.source, event.text,
+                language=detected_language,
+                utterance_id=event.utterance_id or "",
+            )
+        else:
+            processed_text = self._postprocessor.process_partial(
+                event.source, event.text,
+                language=detected_language,
+                utterance_id=event.utterance_id or "",
+            )
+        self._maybe_store_transcript(
+            source=original_channel,
+            channel=original_channel,
+            kind="original",
+            text=processed_text,
+            is_final=event.is_final,
+            is_stable_partial=not event.is_final,
+            utterance_id=event.utterance_id,
+            revision=event.revision,
+            latency_ms=event.latency_ms,
+            created_at=datetime.fromtimestamp(event.created_at),
+            speaker_label=getattr(event, "speaker_label", ""),
+        )
+        translation_checker = getattr(self._translator_manager, "translation_enabled", lambda *_args: True)
+        try:
+            translation_enabled = bool(translation_checker(event.source))
+        except TypeError:
+            translation_enabled = bool(translation_checker())
+        if not translation_enabled:
+            self._handle_asr_event_no_translation(
+                event=event,
+                translated_channel=translated_channel,
+                tts_channel=tts_channel,
+            )
+            return
+        if self._async_translation:
+            self._enqueue_translation_event(event)
+            return
+        self._process_translation_event(event)
+
+    def _handle_asr_event_no_translation(
+        self,
+        *,
+        event: ASREventWithSource,
+        translated_channel: str,
+        tts_channel: str,
+    ) -> None:
+        """Handle ASR event when translation is disabled — mirror original text to translated channel."""
+        correct_event = getattr(self._translator_manager, "correct_asr_event", lambda value: value)
+        corrected_event = correct_event(event) if event.is_final else event
+        self._maybe_store_transcript(
+            source=translated_channel,
+            channel=translated_channel,
+            kind="translated",
+            text=corrected_event.text,
+            is_final=corrected_event.is_final,
+            is_stable_partial=not corrected_event.is_final,
+            utterance_id=corrected_event.utterance_id,
+            revision=corrected_event.revision,
+            latency_ms=corrected_event.latency_ms,
+            created_at=datetime.fromtimestamp(corrected_event.created_at),
+            speaker_label=getattr(corrected_event, "speaker_label", ""),
+        )
+        should_speak = corrected_event.is_final or bool(getattr(corrected_event, "is_early_final", False))
+        if should_speak and self._tts_manager.output_mode(tts_channel) == OUTPUT_MODE_TTS:
+            speak_text = corrected_event.text.strip()
+            if speak_text:
+                self._emit_tts_request(tts_channel, speak_text)
+                self._tts_manager.enqueue(
+                    tts_channel,
+                    speak_text,
+                    utterance_id=corrected_event.utterance_id,
+                    revision=corrected_event.revision,
+                    is_final=corrected_event.is_final,
+                    is_stable_partial=not corrected_event.is_final,
+                    is_early_final=bool(getattr(corrected_event, "is_early_final", False)),
                 )
 
     def _process_translation_event(self, event: ASREventWithSource) -> None:
@@ -307,7 +312,7 @@ class AudioRouter:
             )
             return
         self._emit_translation_event(translated)
-        self._record_translation_latency(corrected_event, translated)
+        self._latency_tracker.record_translation(corrected_event, translated)
         self._maybe_store_transcript(
             source=translated.translated_channel,
             channel=translated.translated_channel,
@@ -323,7 +328,7 @@ class AudioRouter:
         )
         if translated.should_speak and self._tts_manager.output_mode(translated.tts_channel) == OUTPUT_MODE_TTS:
             self._emit_tts_request(translated.tts_channel, translated.speak_text)
-            self._record_tts_enqueue_latency(
+            self._latency_tracker.record_tts_enqueue(
                 channel=translated.tts_channel,
                 source=translated.source,
                 utterance_id=translated.utterance_id,
@@ -359,7 +364,7 @@ class AudioRouter:
             self._on_diagnostic_event(message)
 
     def handle_tts_play_start(self, channel: str) -> None:
-        self._record_playback_start_latency(channel)
+        self._latency_tracker.record_playback_start(channel)
         self._state.on_tts_start(channel)
 
     def handle_tts_play_end(self, channel: str) -> None:
@@ -378,6 +383,7 @@ class AudioRouter:
 
     def refresh_runtime_config(self, config: AppConfig) -> None:
         self._runtime_config = config
+        self._partial_display_policy.update_config(config)
         self._rebuild_postprocessor(config)
         refresh_runtime = getattr(self._asr_manager, "refresh_runtime", None)
         if callable(refresh_runtime):
@@ -525,7 +531,7 @@ class AudioRouter:
         created_at: datetime,
         speaker_label: str = "",
     ) -> None:
-        should_display, is_stable_partial = self._should_display_partial(
+        should_display, is_stable_partial = self._partial_display_policy.should_display(
             channel=channel,
             utterance_id=utterance_id,
             text=text,
@@ -547,152 +553,61 @@ class AudioRouter:
             speaker_label=speaker_label,
         )
 
-    def _should_display_partial(
-        self,
-        *,
-        channel: str,
-        utterance_id: str | None,
-        text: str,
-        is_final: bool,
-    ) -> tuple[bool, bool]:
-        if is_final:
-            self._partial_display_state.pop(channel, None)
-            return True, False
-        strategy = self._display_partial_strategy()
-        if strategy == DISPLAY_PARTIAL_ALL:
-            return True, False
-        if strategy == DISPLAY_PARTIAL_NONE:
-            return False, False
-        normalized = text.strip()
-        if not normalized or not utterance_id:
-            return False, False
-        state = self._partial_display_state.get(channel)
-        if state is None or state.utterance_id != utterance_id:
-            self._partial_display_state[channel] = _PartialDisplayState(
-                utterance_id=utterance_id,
-                last_text=normalized,
-                repeat_count=1,
-            )
-            return False, False
-        if self._is_stable_partial_progression(state.last_text, normalized):
-            state.repeat_count += 1
-        else:
-            state.repeat_count = 1
-        state.last_text = normalized
-        is_stable = state.repeat_count >= self._stable_partial_min_repeats()
-        if not is_stable:
-            return False, False
-        if normalized == state.last_displayed_text:
-            return False, True
-        state.last_displayed_text = normalized
-        return True, True
-
-    def _display_partial_strategy(self) -> str:
-        runtime = getattr(self._runtime_config, "runtime", None)
-        value = str(getattr(runtime, "display_partial_strategy", DISPLAY_PARTIAL_STABLE_ONLY) or DISPLAY_PARTIAL_STABLE_ONLY).strip().lower()
-        if value in {DISPLAY_PARTIAL_ALL, DISPLAY_PARTIAL_NONE, DISPLAY_PARTIAL_STABLE_ONLY}:
-            return value
-        return DISPLAY_PARTIAL_STABLE_ONLY
-
-    def _stable_partial_min_repeats(self) -> int:
-        runtime = getattr(self._runtime_config, "runtime", None)
-        value = int(getattr(runtime, "stable_partial_min_repeats", 2)) if runtime is not None else 2
-        return max(1, value)
-
-    def _partial_stability_max_delta_chars(self) -> int:
-        runtime = getattr(self._runtime_config, "runtime", None)
-        value = int(getattr(runtime, "partial_stability_max_delta_chars", 8)) if runtime is not None else 8
-        return max(1, value)
-
-    def _is_stable_partial_progression(self, previous: str, current: str) -> bool:
-        if previous == current:
-            return True
-        delta_limit = self._partial_stability_max_delta_chars()
-        if not previous or not current:
-            return False
-
-        min_shared_prefix = min(6, len(previous), len(current))
-        shared_prefix = 0
-        for prev_char, curr_char in zip(previous, current):
-            if prev_char != curr_char:
-                break
-            shared_prefix += 1
-
-        if current.startswith(previous):
-            growth = len(current) - len(previous)
-            if growth <= delta_limit:
-                return True
-            return shared_prefix >= max(min_shared_prefix, int(len(previous) * 0.75))
-        if previous.startswith(current):
-            shrink = len(previous) - len(current)
-            if shrink <= delta_limit:
-                return True
-            return shared_prefix >= max(min_shared_prefix, int(len(current) * 0.85))
-        if shared_prefix <= 0:
-            return False
-        previous_tail = len(previous) - shared_prefix
-        current_tail = len(current) - shared_prefix
-        shorter_len = min(len(previous), len(current))
-        shared_ratio = shared_prefix / max(1, shorter_len)
-        if previous_tail <= delta_limit and current_tail <= delta_limit:
-            return True
-        return shared_ratio >= 0.72 and previous_tail <= delta_limit * 2 and current_tail <= delta_limit * 2
-
     def _start_translation_workers(self) -> None:
         if not self._async_translation:
             return
-        self._translation_stop_event.clear()
-        for source in ("local", "remote"):
-            worker = self._translation_workers.get(source)
-            if worker and worker.is_alive():
-                continue
-            thread = Thread(target=self._run_translation_worker, args=(source,), daemon=True)
-            self._translation_workers[source] = thread
-            thread.start()
+        for dispatcher in self._translation_dispatchers.values():
+            dispatcher.start()
 
     def _stop_translation_workers(self) -> None:
-        self._translation_stop_event.set()
-        for source, queue in self._translation_queues.items():
-            while not queue.empty():
-                try:
-                    queue.get_nowait()
-                except Empty:
-                    break
-            worker = self._translation_workers.get(source)
-            if worker and worker.is_alive():
-                worker.join(timeout=2.0)
-        self._translation_workers.clear()
-        self._translation_stop_event = Event()
+        for dispatcher in self._translation_dispatchers.values():
+            dispatcher.stop()
 
     def _enqueue_translation_event(self, event: ASREventWithSource) -> None:
         key = event.source if event.source in ("local", "remote") else "local"
-        queue = self._translation_queues[key]
-        dropped = self._put_drop_oldest(queue, event)
-        if dropped:
-            self._translation_overflow_counters[key] = self._translation_overflow_counters.get(key, 0) + 1
+        dispatcher = self._translation_dispatchers[key]
+        before = dispatcher.stats().overflow_count
+        dispatcher.enqueue(event)
+        after = dispatcher.stats().overflow_count
+        if after > before:
             self._emit_diagnostic_event(
                 f"translation_queue_overflow source={key} utterance_id={event.utterance_id} revision={event.revision}"
-                f" total_overflow={self._translation_overflow_counters[key]}"
+                f" total_overflow={after}"
             )
 
-    def _put_drop_oldest(self, queue: Queue, item: object) -> bool:
-        """Put item into queue, dropping the oldest entry if full. Returns True if a drop occurred."""
+    def _safe_process_translation_event(self, event: ASREventWithSource) -> None:
+        """Wraps _process_translation_event with error reporting for async use."""
         try:
-            queue.put_nowait(item)
-            return False
-        except Full:
-            pass
-        dropped = False
-        try:
-            queue.get_nowait()
-            dropped = True
-        except Empty:
-            pass
-        try:
-            queue.put_nowait(item)
-        except Full:
-            pass
-        return dropped
+            self._process_translation_event(event)
+        except Exception as exc:
+            if self._on_error:
+                self._on_error(
+                    ErrorEvent(
+                        level="error",
+                        module="audio_router",
+                        source=event.source,
+                        code="translation_worker_failed",
+                        message="Failed to process translation event",
+                        detail=str(exc),
+                    )
+                )
+
+    # ------------------------------------------------------------------
+    # Backward-compatible delegation wrappers (used by tests and
+    # internal call-sites that reference the old private method names).
+    # ------------------------------------------------------------------
+
+    def _display_partial_strategy(self) -> str:
+        return self._partial_display_policy._display_partial_strategy()
+
+    def _stable_partial_min_repeats(self) -> int:
+        return self._partial_display_policy._stable_partial_min_repeats()
+
+    def _partial_stability_max_delta_chars(self) -> int:
+        return self._partial_display_policy._partial_stability_max_delta_chars()
+
+    def _is_stable_partial_progression(self, previous: str, current: str) -> bool:
+        return self._partial_display_policy.is_stable_progression(previous, current)
 
     def _should_drop_over_latency(self, event: ASREventWithSource) -> bool:
         """Return True (and emit diagnostic) if event latency exceeds max_pipeline_latency_ms."""
@@ -705,102 +620,3 @@ class AudioRouter:
             )
             return True
         return False
-
-    def _run_translation_worker(self, source: str) -> None:
-        queue = self._translation_queues[source]
-        while not self._translation_stop_event.is_set():
-            try:
-                event = queue.get(timeout=0.2)
-            except Empty:
-                continue
-            try:
-                self._process_translation_event(event)
-            except Exception as exc:
-                if self._on_error:
-                    self._on_error(
-                        ErrorEvent(
-                            level="error",
-                            module="audio_router",
-                            source=source,
-                            code="translation_worker_failed",
-                            message="Failed to process translation event",
-                            detail=str(exc),
-                        )
-                    )
-
-    def _record_asr_latency(self, event: ASREventWithSource) -> None:
-        key = (event.source, event.utterance_id)
-        entry = self._latency_by_utterance.setdefault(
-            key,
-            {
-                "source": event.source,
-                "utterance_id": event.utterance_id,
-                "revision": event.revision,
-                "speech_start_ms": event.start_ms,
-            },
-        )
-        entry["revision"] = event.revision
-        entry["speech_start_ms"] = min(int(entry.get("speech_start_ms", event.start_ms)), int(event.start_ms))
-        if not event.is_final and "first_asr_partial_ms" not in entry:
-            entry["first_asr_partial_ms"] = max(0, int(event.end_ms) - int(event.start_ms))
-        if event.is_final:
-            entry["speech_end_to_asr_final_ms"] = max(0, int(event.latency_ms))
-            entry["asr_final_kind"] = "early_final" if event.is_early_final else "final"
-
-    def _record_translation_latency(self, event: ASREventWithSource, translated: object) -> None:
-        key = (event.source, event.utterance_id)
-        entry = self._latency_by_utterance.setdefault(key, {"source": event.source, "utterance_id": event.utterance_id})
-        now_ms = int(datetime.now().timestamp() * 1000)
-        entry["translation_ready_at_ms"] = now_ms
-        if not event.is_final and "first_display_partial_ms" not in entry:
-            entry["first_display_partial_ms"] = max(0, int(event.end_ms) - int(event.start_ms))
-        if getattr(translated, "is_final", False):
-            entry["asr_final_to_llm_final_ms"] = max(0, now_ms - int(event.created_at * 1000))
-
-    def _record_tts_enqueue_latency(
-        self,
-        *,
-        channel: str,
-        source: str,
-        utterance_id: str,
-        revision: int,
-        is_final: bool,
-        is_stable_partial: bool,
-        is_early_final: bool,
-    ) -> None:
-        key = (source, utterance_id)
-        entry = self._latency_by_utterance.setdefault(key, {"source": source, "utterance_id": utterance_id})
-        now_ms = int(datetime.now().timestamp() * 1000)
-        entry["tts_channel"] = channel
-        entry["tts_enqueue_at_ms"] = now_ms
-        entry["tts_enqueue_revision"] = revision
-        entry["tts_enqueue_kind"] = (
-            "final" if is_final else "early_final" if is_early_final else "stable_partial" if is_stable_partial else "partial"
-        )
-
-    def _record_playback_start_latency(self, channel: str) -> None:
-        current = getattr(self._tts_manager, "current_task", lambda _channel: None)(channel)
-        if not current:
-            return
-        source = "remote" if channel == "local" else "local"
-        utterance_id = str(current.get("utterance_id") or "")
-        if not utterance_id:
-            return
-        key = (source, utterance_id)
-        entry = self._latency_by_utterance.setdefault(key, {"source": source, "utterance_id": utterance_id})
-        now_ms = int(datetime.now().timestamp() * 1000)
-        entry["playback_start_at_ms"] = now_ms
-        enqueue_at = int(entry.get("tts_enqueue_at_ms", now_ms))
-        entry["tts_enqueue_to_playback_start_ms"] = max(0, now_ms - enqueue_at)
-        self._recent_latency.appendleft(
-            {
-                "source": entry.get("source", source),
-                "utterance_id": entry.get("utterance_id", utterance_id),
-                "first_asr_partial_ms": entry.get("first_asr_partial_ms"),
-                "first_display_partial_ms": entry.get("first_display_partial_ms"),
-                "speech_end_to_asr_final_ms": entry.get("speech_end_to_asr_final_ms"),
-                "asr_final_to_llm_final_ms": entry.get("asr_final_to_llm_final_ms"),
-                "tts_enqueue_to_playback_start_ms": entry.get("tts_enqueue_to_playback_start_ms"),
-                "tts_enqueue_kind": entry.get("tts_enqueue_kind", "unknown"),
-            }
-        )

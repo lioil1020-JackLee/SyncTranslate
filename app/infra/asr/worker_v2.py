@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -10,6 +9,14 @@ from typing import Callable
 
 import numpy as np
 
+from app.infra.asr._hallucination_filter import (
+    _CJK_TAIL_HALLUCINATION_PATTERNS,
+    _SHORT_TAIL_HALLUCINATION_NORMALIZED,
+    _TAIL_HALLUCINATION_PATTERNS,
+    looks_like_repetitive_loop,
+    looks_like_short_cta_tail,
+    tail_hallucination_drop_reason,
+)
 from app.infra.asr.endpointing_v2 import EndpointSignal, EndpointingRuntime
 from app.infra.asr.frontend_v2 import AsrAudioFrontendV2
 from app.infra.asr.streaming_policy import (
@@ -20,6 +27,7 @@ from app.infra.asr.streaming_policy import (
     StreamingDecision,
     StreamingPolicy,
 )
+from app.infra.asr._adaptive_tuner import _AdaptiveTunerMixin
 
 
 def _scaled_finalize_thresholds(
@@ -98,38 +106,9 @@ class SegmentSignalStats:
     speech_threshold: float = 0.0
 
 
-_SHORT_TAIL_HALLUCINATION_NORMALIZED = {
-    "you",
-    "bye",
-    "byebye",
-    "thankyou",
-    "thanks",
-    "thankyouall",
-    "thankyoueveryone",
-    "thankseveryone",
-    "thanksall",
-    "thankyouforwatching",
-    "thanksforwatching",
-    "thanksforyourwatching",
-    "goodnight",
-}
-
-_TAIL_HALLUCINATION_PATTERNS = (
-    re.compile(r"^\s*thank(s| you)( everyone| all)?[.! ]*$", re.IGNORECASE),
-    re.compile(r"^\s*thank(s| you)?\s+for\s+watching[.! ]*$", re.IGNORECASE),
-    re.compile(r"^\s*thanks\s+for\s+your\s+watching[.! ]*$", re.IGNORECASE),
-    re.compile(r"^\s*bye(-| )?bye?[.! ]*$", re.IGNORECASE),
-)
-
-_CJK_TAIL_HALLUCINATION_PATTERNS = (
-    re.compile(r"^[哈呵嘿哇嗚呃嗯啊]{2,}[!！。,.，\s]*$"),
-    re.compile(r"^(記得)?按(下|讚).*(訂閱|小鈴鐺)?.*$"),
-    re.compile(r"^.*(安妞|按鈕哦|訂閱按鈕|小鈴鐺|頻道嘍|頻道囉|記得按讚).{0,8}$"),
-    re.compile(r"^歡迎收看.*下次見[!！。,.，\s]*$"),
-)
 
 
-class SourceRuntimeV2:
+class SourceRuntimeV2(_AdaptiveTunerMixin):
     def __init__(
         self,
         *,
@@ -624,7 +603,7 @@ class SourceRuntimeV2:
         if not final_compact or not partial_compact:
             return ""
 
-        if SourceRuntimeV2._looks_like_repetitive_loop(final_clean):
+        if looks_like_repetitive_loop(final_clean):
             return "looped-final"
 
         containment_reason = SourceRuntimeV2._reason_partial_clearly_contains_final(
@@ -643,13 +622,13 @@ class SourceRuntimeV2:
         value = (partial_text or "").strip()
         if not value:
             return False
-        if SourceRuntimeV2._looks_like_repetitive_loop(value):
+        if looks_like_repetitive_loop(value):
             return False
 
         compact = "".join(value.split())
         if len(compact) < 4:
             return False
-        if SourceRuntimeV2._looks_like_short_cta_tail(value):
+        if looks_like_short_cta_tail(value):
             return False
 
         cjk_count = sum(1 for ch in compact if "\u4e00" <= ch <= "\u9fff")
@@ -662,16 +641,6 @@ class SourceRuntimeV2:
         if len(words) < 3 and len(compact) < 12:
             return False
         return True
-
-    @staticmethod
-    def _looks_like_short_cta_tail(text: str) -> bool:
-        value = (text or "").strip()
-        if not value:
-            return False
-        compact = "".join(value.split())
-        if len(compact) > 24:
-            return False
-        return any(pattern.match(value) for pattern in _CJK_TAIL_HALLUCINATION_PATTERNS)
 
     @staticmethod
     def _reason_partial_clearly_contains_final(
@@ -745,26 +714,6 @@ class SourceRuntimeV2:
             f"segment_ms={segment_audio_ms} hold_ms={hold_ms}"
         )
         return True
-
-    @staticmethod
-    def _looks_like_repetitive_loop(text: str) -> bool:
-        tokens = [token for token in text.split() if token]
-        if len(tokens) >= 8:
-            for size in range(3, min(8, len(tokens) // 2 + 1)):
-                chunk = tokens[-size:]
-                prev = tokens[-size * 2 : -size]
-                if prev == chunk:
-                    return True
-        compact = "".join(text.split())
-        if len(compact) < 12:
-            return False
-        max_span = min(18, len(compact) // 2)
-        for span in range(6, max_span + 1):
-            suffix = compact[-span:]
-            prev = compact[-span * 2 : -span]
-            if prev == suffix:
-                return True
-        return False
 
     @staticmethod
     def _token_overlap_ratio(left: str, right: str) -> float:
@@ -862,35 +811,15 @@ class SourceRuntimeV2:
         audio_ms: int,
         segment_stats: SegmentSignalStats,
     ) -> str:
-        value = (text or "").strip()
-        if not value:
-            return ""
-        normalized = "".join(ch.lower() for ch in value if ch.isalnum())
-        compact = re.sub(r"\s+", " ", value)
-        effective_audio_ms = max(0, int(audio_ms), int(segment_stats.audio_ms))
-        trailing_silence_ms = max(0, int(segment_stats.trailing_silence_ms))
-        speech_ratio = max(0.0, min(1.0, float(segment_stats.speech_ratio)))
-        mean_rms = max(0.0, float(segment_stats.mean_rms))
-        max_rms = max(0.0, float(segment_stats.max_rms))
-
-        if SourceRuntimeV2._looks_like_short_cta_tail(value):
-            return "cjk-tail-hallucination"
-
-        weak_speech = speech_ratio < 0.24
-        weak_energy = mean_rms < 0.008 and max_rms < 0.030
-        tail_dominant = trailing_silence_ms >= max(650, int(effective_audio_ms * 0.55))
-        tiny_uncertain_segment = effective_audio_ms <= 650 and speech_ratio < 0.45
-        weak_evidence = weak_speech or weak_energy or tail_dominant or tiny_uncertain_segment
-
-        if normalized in _SHORT_TAIL_HALLUCINATION_NORMALIZED and weak_evidence:
-            return "short-tail-hallucination"
-        if any(pattern.match(compact) for pattern in _TAIL_HALLUCINATION_PATTERNS) and weak_evidence:
-            return "short-tail-hallucination"
-        if any(pattern.match(compact) for pattern in _CJK_TAIL_HALLUCINATION_PATTERNS) and (
-            weak_evidence or effective_audio_ms <= 1200
-        ):
-            return "cjk-tail-hallucination"
-        return ""
+        return tail_hallucination_drop_reason(
+            text,
+            audio_ms=audio_ms,
+            audio_ms_effective=segment_stats.audio_ms,
+            trailing_silence_ms=segment_stats.trailing_silence_ms,
+            speech_ratio=segment_stats.speech_ratio,
+            mean_rms=segment_stats.mean_rms,
+            max_rms=segment_stats.max_rms,
+        )
 
     def _debug(self, message: str) -> None:
         with self._stats_lock:
@@ -949,103 +878,6 @@ class SourceRuntimeV2:
             if "frontend_stats" not in str(exc):
                 raise
             return method(audio, sample_rate)
-
-    def _adaptive_length_limit_ms(self, *, signal: EndpointSignal) -> int:
-        if signal.pause_ms >= 280.0:
-            return max(self._adaptive_length_floor_ms, 2800)
-        if signal.pause_ms >= 180.0:
-            return max(self._adaptive_length_floor_ms, 3800)
-        if signal.pause_ms >= 90.0:
-            return max(self._adaptive_length_floor_ms, 5200)
-        return self._adaptive_length_ceiling_ms
-
-    def _recompute_adaptive_tuning(self, *, now_ms: int, segment_audio_ms: int, signal: EndpointSignal) -> None:
-        if not self._adaptive_enabled:
-            return
-
-        avg_partial_latency_ms = (
-            sum(self._adaptive_partial_latencies) / len(self._adaptive_partial_latencies)
-            if self._adaptive_partial_latencies
-            else 0.0
-        )
-        avg_final_latency_ms = (
-            sum(self._adaptive_final_latencies) / len(self._adaptive_final_latencies)
-            if self._adaptive_final_latencies
-            else 0.0
-        )
-        avg_final_audio_ms = (
-            sum(self._adaptive_recent_audio_ms) / len(self._adaptive_recent_audio_ms)
-            if self._adaptive_recent_audio_ms
-            else 0.0
-        )
-
-        next_partial_interval_ms = self._base_partial_interval_ms
-        next_soft_final_audio_ms = self._base_soft_final_audio_ms
-        next_soft_endpoint_finalize_audio_ms = self._base_soft_endpoint_finalize_audio_ms
-        next_speech_end_finalize_audio_ms = self._base_speech_end_finalize_audio_ms
-
-        if avg_final_audio_ms and avg_final_audio_ms <= 1600:
-            next_partial_interval_ms = max(self._partial_interval_floor_ms, self._base_partial_interval_ms - 140)
-            next_soft_final_audio_ms = max(self._force_final_audio_ms, int(round(self._base_soft_final_audio_ms * 0.76)))
-        elif avg_final_audio_ms >= 3200:
-            next_partial_interval_ms = max(self._partial_interval_floor_ms, self._base_partial_interval_ms - 40)
-            next_soft_final_audio_ms = max(self._force_final_audio_ms, int(round(self._base_soft_final_audio_ms * 0.70)))
-        elif avg_final_audio_ms >= 2400:
-            next_soft_final_audio_ms = max(self._force_final_audio_ms, int(round(self._base_soft_final_audio_ms * 0.80)))
-
-        if avg_partial_latency_ms >= 850 or avg_final_latency_ms >= 1400:
-            next_partial_interval_ms = max(next_partial_interval_ms, self._base_partial_interval_ms + 120)
-            next_soft_final_audio_ms = max(self._force_final_audio_ms, int(round(self._base_soft_final_audio_ms * 0.72)))
-
-        if self._last_degradation_level == DEGRADATION_CONGESTED:
-            next_partial_interval_ms = max(next_partial_interval_ms, self._base_partial_interval_ms + 120)
-        elif self._last_degradation_level == DEGRADATION_DEGRADED:
-            next_partial_interval_ms = max(next_partial_interval_ms, self._base_partial_interval_ms + 200)
-            next_soft_final_audio_ms = max(self._force_final_audio_ms, int(round(self._base_soft_final_audio_ms * 0.68)))
-
-        if signal.pause_ms >= 160.0 and segment_audio_ms >= max(1800, int(self._base_soft_final_audio_ms * 0.7)):
-            next_soft_final_audio_ms = min(
-                next_soft_final_audio_ms,
-                max(self._force_final_audio_ms, int(round(self._base_soft_final_audio_ms * 0.78))),
-            )
-
-        next_partial_interval_ms = max(self._partial_interval_floor_ms, int(next_partial_interval_ms))
-        next_soft_final_audio_ms = max(self._force_final_audio_ms, int(next_soft_final_audio_ms))
-        next_soft_endpoint_finalize_audio_ms = min(
-            next_soft_final_audio_ms,
-            max(
-                self._force_final_audio_ms,
-                int(round(self._base_soft_endpoint_finalize_audio_ms * (next_soft_final_audio_ms / max(1, self._base_soft_final_audio_ms)))),
-            ),
-        )
-        next_speech_end_finalize_audio_ms = min(
-            next_soft_endpoint_finalize_audio_ms,
-            max(
-                900,
-                int(round(self._base_speech_end_finalize_audio_ms * (next_soft_final_audio_ms / max(1, self._base_soft_final_audio_ms)))),
-            ),
-        )
-
-        changed = any(
-            (
-                next_partial_interval_ms != self._partial_interval_ms,
-                next_soft_final_audio_ms != self._soft_final_audio_ms,
-                next_soft_endpoint_finalize_audio_ms != self._soft_endpoint_finalize_audio_ms,
-                next_speech_end_finalize_audio_ms != self._speech_end_finalize_audio_ms,
-            )
-        )
-        self._partial_interval_ms = next_partial_interval_ms
-        self._soft_final_audio_ms = next_soft_final_audio_ms
-        self._soft_endpoint_finalize_audio_ms = next_soft_endpoint_finalize_audio_ms
-        self._speech_end_finalize_audio_ms = next_speech_end_finalize_audio_ms
-        if changed:
-            self._debug(
-                "v2 adaptive "
-                f"partial_ms={self._partial_interval_ms} "
-                f"soft_final_ms={self._soft_final_audio_ms} "
-                f"soft_finalize_ms={self._soft_endpoint_finalize_audio_ms} "
-                f"speech_end_finalize_ms={self._speech_end_finalize_audio_ms}"
-            )
 
 
 __all__ = ["V2RuntimeEvent", "SourceRuntimeV2", "SourceRuntimeV2Stats"]

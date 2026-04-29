@@ -234,44 +234,10 @@ class LocalAiPage(QWidget):
             en_asr = config.asr_channels.remote
             self._select_combo_data(self.asr_engine_combo, zh_asr.engine)
             self._reload_asr_model_options()
-            self._select_asr_model(self.asr_model_combo, str(zh_asr.model or "large-v3-turbo"))
-            self._select_asr_model(self.remote_asr_model_combo, str(en_asr.model or "large-v3-turbo"))
             self._select_combo_data(self.asr_device_combo, zh_asr.device)
             self.asr_compute_label.setText(self._compute_type_for_device(zh_asr.device))
-            self.asr_beam_spin.setValue(zh_asr.beam_size)
-            self.remote_asr_beam_spin.setValue(en_asr.beam_size)
-            self.asr_condition_prev_check.setChecked(zh_asr.condition_on_previous_text)
-            self.remote_asr_condition_prev_check.setChecked(en_asr.condition_on_previous_text)
-            self.asr_temperature_fallback_local_edit.setText(zh_asr.temperature_fallback)
-            self.asr_temperature_fallback_remote_edit.setText(en_asr.temperature_fallback)
-            self.asr_partial_interval_spin.setValue(zh_asr.streaming.partial_interval_ms)
-            self.remote_asr_partial_interval_spin.setValue(en_asr.streaming.partial_interval_ms)
-            self.asr_partial_history_spin.setValue(zh_asr.streaming.partial_history_seconds)
-            self.remote_asr_partial_history_spin.setValue(en_asr.streaming.partial_history_seconds)
-            self.asr_final_history_spin.setValue(zh_asr.streaming.final_history_seconds)
-            self.remote_asr_final_history_spin.setValue(en_asr.streaming.final_history_seconds)
-            self.asr_vad_enabled.setChecked(zh_asr.vad.enabled)
-            self.remote_asr_vad_enabled.setChecked(en_asr.vad.enabled)
-            self.asr_min_speech_spin.setValue(zh_asr.vad.min_speech_duration_ms)
-            self.remote_asr_min_speech_spin.setValue(en_asr.vad.min_speech_duration_ms)
-            self.asr_min_silence_spin.setValue(zh_asr.vad.min_silence_duration_ms)
-            self.remote_asr_min_silence_spin.setValue(en_asr.vad.min_silence_duration_ms)
-            self.asr_speech_pad_spin.setValue(zh_asr.vad.speech_pad_ms)
-            self.remote_asr_speech_pad_spin.setValue(en_asr.vad.speech_pad_ms)
-            self.asr_max_speech_spin.setValue(int(zh_asr.vad.max_speech_duration_s))
-            self.remote_asr_max_speech_spin.setValue(int(en_asr.vad.max_speech_duration_s))
-            self.asr_rms_threshold_spin.setValue(zh_asr.vad.rms_threshold)
-            self.remote_asr_rms_threshold_spin.setValue(en_asr.vad.rms_threshold)
-            self.asr_no_speech_threshold_spin.setValue(zh_asr.no_speech_threshold)
-            self.remote_asr_no_speech_threshold_spin.setValue(en_asr.no_speech_threshold)
-            self.asr_neural_threshold_spin.setValue(zh_asr.vad.neural_threshold)
-            self.remote_asr_neural_threshold_spin.setValue(en_asr.vad.neural_threshold)
-            self.asr_soft_final_spin.setValue(zh_asr.streaming.soft_final_audio_ms)
-            self.remote_asr_soft_final_spin.setValue(en_asr.streaming.soft_final_audio_ms)
-            self.asr_startup_suppress_spin.setValue(zh_asr.vad.startup_suppress_ms)
-            self.remote_asr_startup_suppress_spin.setValue(en_asr.vad.startup_suppress_ms)
-            self.asr_hallucination_filter_check.setChecked(zh_asr.hallucination_filter)
-            self.remote_asr_hallucination_filter_check.setChecked(en_asr.hallucination_filter)
+            self._apply_asr_channel_widgets(zh_asr, prefix="", temp_channel="local")
+            self._apply_asr_channel_widgets(en_asr, prefix="remote_", temp_channel="remote")
             self.asr_queue_local_spin.setValue(
                 int(getattr(config.runtime, "asr_queue_maxsize_local", config.runtime.asr_queue_maxsize))
             )
@@ -382,54 +348,9 @@ class LocalAiPage(QWidget):
         en_asr = config.asr_channels.remote
         shared_device = str(self.asr_device_combo.currentData() or "cuda")
         shared_compute = self._compute_type_for_device(shared_device)
-        zh_asr.engine = "faster_whisper"
-        zh_asr.model = self._selected_asr_model(self.asr_model_combo)
-        zh_asr.device = shared_device
-        zh_asr.compute_type = shared_compute
-        zh_asr.beam_size = self.asr_beam_spin.value()
-        zh_asr.final_beam_size = max(4, zh_asr.beam_size + 1)
-        zh_asr.condition_on_previous_text = self.asr_condition_prev_check.isChecked()
-        zh_asr.final_condition_on_previous_text = False
-        zh_asr.temperature_fallback = self.asr_temperature_fallback_local_edit.text().strip() or "0.0,0.2,0.4"
-        zh_asr.streaming.partial_interval_ms = self.asr_partial_interval_spin.value()
-        zh_asr.streaming.partial_history_seconds = self.asr_partial_history_spin.value()
-        zh_asr.streaming.final_history_seconds = self.asr_final_history_spin.value()
-        zh_asr.vad.enabled = self.asr_vad_enabled.isChecked()
-        zh_asr.vad.min_speech_duration_ms = self.asr_min_speech_spin.value()
-        zh_asr.vad.min_silence_duration_ms = self.asr_min_silence_spin.value()
-        zh_asr.vad.speech_pad_ms = self.asr_speech_pad_spin.value()
-        zh_asr.vad.max_speech_duration_s = float(self.asr_max_speech_spin.value())
-        zh_asr.vad.rms_threshold = float(self.asr_rms_threshold_spin.value())
-        zh_asr.no_speech_threshold = float(self.asr_no_speech_threshold_spin.value())
-        zh_asr.vad.neural_threshold = float(self.asr_neural_threshold_spin.value())
-        zh_asr.streaming.soft_final_audio_ms = self.asr_soft_final_spin.value()
-        zh_asr.vad.startup_suppress_ms = self.asr_startup_suppress_spin.value()
-        zh_asr.hallucination_filter = self.asr_hallucination_filter_check.isChecked()
+        self._update_asr_channel_from_widgets(zh_asr, prefix="", temp_channel="local", shared_device=shared_device, shared_compute=shared_compute, final_beam_min=4)
         config.runtime.asr_queue_maxsize_local = self.asr_queue_local_spin.value()
-
-        en_asr.engine = "faster_whisper"
-        en_asr.model = self._selected_asr_model(self.remote_asr_model_combo)
-        en_asr.device = shared_device
-        en_asr.compute_type = shared_compute
-        en_asr.beam_size = self.remote_asr_beam_spin.value()
-        en_asr.final_beam_size = max(5, en_asr.beam_size + 1)
-        en_asr.condition_on_previous_text = self.remote_asr_condition_prev_check.isChecked()
-        en_asr.final_condition_on_previous_text = False
-        en_asr.temperature_fallback = self.asr_temperature_fallback_remote_edit.text().strip() or "0.0,0.2,0.4"
-        en_asr.streaming.partial_interval_ms = self.remote_asr_partial_interval_spin.value()
-        en_asr.streaming.partial_history_seconds = self.remote_asr_partial_history_spin.value()
-        en_asr.streaming.final_history_seconds = self.remote_asr_final_history_spin.value()
-        en_asr.vad.enabled = self.remote_asr_vad_enabled.isChecked()
-        en_asr.vad.min_speech_duration_ms = self.remote_asr_min_speech_spin.value()
-        en_asr.vad.min_silence_duration_ms = self.remote_asr_min_silence_spin.value()
-        en_asr.vad.speech_pad_ms = self.remote_asr_speech_pad_spin.value()
-        en_asr.vad.max_speech_duration_s = float(self.remote_asr_max_speech_spin.value())
-        en_asr.vad.rms_threshold = float(self.remote_asr_rms_threshold_spin.value())
-        en_asr.no_speech_threshold = float(self.remote_asr_no_speech_threshold_spin.value())
-        en_asr.vad.neural_threshold = float(self.remote_asr_neural_threshold_spin.value())
-        en_asr.streaming.soft_final_audio_ms = self.remote_asr_soft_final_spin.value()
-        en_asr.vad.startup_suppress_ms = self.remote_asr_startup_suppress_spin.value()
-        en_asr.hallucination_filter = self.remote_asr_hallucination_filter_check.isChecked()
+        self._update_asr_channel_from_widgets(en_asr, prefix="remote_", temp_channel="remote", shared_device=shared_device, shared_compute=shared_compute, final_beam_min=5)
         config.runtime.asr_queue_maxsize_remote = self.asr_queue_remote_spin.value()
         config.asr = zh_asr
         config.runtime.use_channel_specific_asr = True
@@ -1878,6 +1799,66 @@ class LocalAiPage(QWidget):
         widget.setMaximumHeight(control_height)
         widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
+    def _apply_asr_channel_widgets(self, asr: object, prefix: str, temp_channel: str) -> None:
+        """Apply *asr* config values to the channel's widgets.
+
+        prefix="" for local channel (widgets named ``asr_*``),
+        prefix="remote_" for remote channel (widgets named ``remote_asr_*``).
+        """
+        self._select_asr_model(getattr(self, f"{prefix}asr_model_combo"), str(getattr(asr, "model", None) or "large-v3-turbo"))
+        getattr(self, f"{prefix}asr_beam_spin").setValue(asr.beam_size)
+        getattr(self, f"{prefix}asr_condition_prev_check").setChecked(asr.condition_on_previous_text)
+        getattr(self, f"asr_temperature_fallback_{temp_channel}_edit").setText(asr.temperature_fallback)
+        getattr(self, f"{prefix}asr_partial_interval_spin").setValue(asr.streaming.partial_interval_ms)
+        getattr(self, f"{prefix}asr_partial_history_spin").setValue(asr.streaming.partial_history_seconds)
+        getattr(self, f"{prefix}asr_final_history_spin").setValue(asr.streaming.final_history_seconds)
+        getattr(self, f"{prefix}asr_vad_enabled").setChecked(asr.vad.enabled)
+        getattr(self, f"{prefix}asr_min_speech_spin").setValue(asr.vad.min_speech_duration_ms)
+        getattr(self, f"{prefix}asr_min_silence_spin").setValue(asr.vad.min_silence_duration_ms)
+        getattr(self, f"{prefix}asr_speech_pad_spin").setValue(asr.vad.speech_pad_ms)
+        getattr(self, f"{prefix}asr_max_speech_spin").setValue(int(asr.vad.max_speech_duration_s))
+        getattr(self, f"{prefix}asr_rms_threshold_spin").setValue(asr.vad.rms_threshold)
+        getattr(self, f"{prefix}asr_no_speech_threshold_spin").setValue(asr.no_speech_threshold)
+        getattr(self, f"{prefix}asr_neural_threshold_spin").setValue(asr.vad.neural_threshold)
+        getattr(self, f"{prefix}asr_soft_final_spin").setValue(asr.streaming.soft_final_audio_ms)
+        getattr(self, f"{prefix}asr_startup_suppress_spin").setValue(asr.vad.startup_suppress_ms)
+        getattr(self, f"{prefix}asr_hallucination_filter_check").setChecked(asr.hallucination_filter)
+
+    def _update_asr_channel_from_widgets(
+        self,
+        asr: object,
+        prefix: str,
+        temp_channel: str,
+        *,
+        shared_device: str,
+        shared_compute: str,
+        final_beam_min: int = 4,
+    ) -> None:
+        """Read widget values into *asr* channel config."""
+        asr.engine = "faster_whisper"
+        asr.model = self._selected_asr_model(getattr(self, f"{prefix}asr_model_combo"))
+        asr.device = shared_device
+        asr.compute_type = shared_compute
+        asr.beam_size = getattr(self, f"{prefix}asr_beam_spin").value()
+        asr.final_beam_size = max(final_beam_min, asr.beam_size + 1)
+        asr.condition_on_previous_text = getattr(self, f"{prefix}asr_condition_prev_check").isChecked()
+        asr.final_condition_on_previous_text = False
+        asr.temperature_fallback = getattr(self, f"asr_temperature_fallback_{temp_channel}_edit").text().strip() or "0.0,0.2,0.4"
+        asr.streaming.partial_interval_ms = getattr(self, f"{prefix}asr_partial_interval_spin").value()
+        asr.streaming.partial_history_seconds = getattr(self, f"{prefix}asr_partial_history_spin").value()
+        asr.streaming.final_history_seconds = getattr(self, f"{prefix}asr_final_history_spin").value()
+        asr.vad.enabled = getattr(self, f"{prefix}asr_vad_enabled").isChecked()
+        asr.vad.min_speech_duration_ms = getattr(self, f"{prefix}asr_min_speech_spin").value()
+        asr.vad.min_silence_duration_ms = getattr(self, f"{prefix}asr_min_silence_spin").value()
+        asr.vad.speech_pad_ms = getattr(self, f"{prefix}asr_speech_pad_spin").value()
+        asr.vad.max_speech_duration_s = float(getattr(self, f"{prefix}asr_max_speech_spin").value())
+        asr.vad.rms_threshold = float(getattr(self, f"{prefix}asr_rms_threshold_spin").value())
+        asr.no_speech_threshold = float(getattr(self, f"{prefix}asr_no_speech_threshold_spin").value())
+        asr.vad.neural_threshold = float(getattr(self, f"{prefix}asr_neural_threshold_spin").value())
+        asr.streaming.soft_final_audio_ms = getattr(self, f"{prefix}asr_soft_final_spin").value()
+        asr.vad.startup_suppress_ms = getattr(self, f"{prefix}asr_startup_suppress_spin").value()
+        asr.hallucination_filter = getattr(self, f"{prefix}asr_hallucination_filter_check").isChecked()
+
     @staticmethod
     def _normalize_form_label_widths(*forms: QFormLayout) -> None:
         max_width = 0
@@ -1893,35 +1874,6 @@ class LocalAiPage(QWidget):
             label.setMinimumWidth(max_width)
             label.setMinimumHeight(_CONTROL_HEIGHT)
             label.setMaximumHeight(_CONTROL_HEIGHT)
-
-    def _apply_group_heights(
-        self,
-        *,
-        asr_form: QFormLayout,
-        llm_form: QFormLayout,
-        runtime_form: QFormLayout,
-        base_tts_form: QFormLayout,
-        local_tts_override_form: QFormLayout,
-        remote_tts_override_form: QFormLayout,
-    ) -> None:
-        llm_height = self._estimate_group_height(llm_form)
-        runtime_height = self._estimate_group_height(runtime_form)
-        asr_height = max(self._estimate_group_height(asr_form), llm_height + runtime_height + _GROUP_ROW_SPACING)
-        base_tts_height = self._estimate_group_height(base_tts_form)
-        tts_override_height = max(
-            self._estimate_group_height(local_tts_override_form),
-            self._estimate_group_height(remote_tts_override_form),
-        )
-
-        self.asr_group.setMinimumHeight(asr_height)
-        self.llm_group.setMinimumHeight(llm_height)
-        self.runtime_group.setMinimumHeight(runtime_height)
-        self.base_tts.group.setMinimumHeight(base_tts_height)
-        self.local_tts_override.group.setMinimumHeight(tts_override_height)
-        self.remote_tts_override.group.setMinimumHeight(tts_override_height)
-        self.setMinimumHeight(
-            asr_height + base_tts_height + tts_override_height + (_GROUP_ROW_SPACING * 3) + _PAGE_MIN_PADDING
-        )
 
     @staticmethod
     def _estimate_group_height(form: QFormLayout) -> int:

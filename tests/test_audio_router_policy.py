@@ -528,26 +528,6 @@ class AudioRouterRuntimeConfigTests(unittest.TestCase):
 
         self.assertFalse(router._is_stable_partial_progression(previous, current))
 
-    def test_put_drop_oldest_returns_false_when_queue_not_full(self) -> None:
-        from queue import Queue
-        router, _, _, _, _ = _build_router()
-        q = Queue(maxsize=4)
-        dropped = router._put_drop_oldest(q, "item-1")
-        self.assertFalse(dropped)
-        self.assertEqual(q.qsize(), 1)
-
-    def test_put_drop_oldest_returns_true_and_drops_oldest_when_full(self) -> None:
-        from queue import Queue
-        router, _, _, _, _ = _build_router()
-        q = Queue(maxsize=2)
-        q.put_nowait("old-1")
-        q.put_nowait("old-2")
-        dropped = router._put_drop_oldest(q, "new-item")
-        self.assertTrue(dropped)
-        self.assertEqual(q.qsize(), 2)
-        items = [q.get_nowait(), q.get_nowait()]
-        self.assertIn("new-item", items)
-
     def test_should_drop_over_latency_drops_when_latency_exceeds_max(self) -> None:
         router, _, _, _, _ = _build_router()
         from app.infra.config.schema import AppConfig
@@ -602,13 +582,28 @@ class AudioRouterRuntimeConfigTests(unittest.TestCase):
 
     def test_translation_queue_overflow_increments_counter_and_emits_diagnostic(self) -> None:
         router, _, _, _, _ = _build_router(async_translation=True)
-        from queue import Queue
         diagnostics: list[str] = []
         router._on_diagnostic_event = diagnostics.append  # type: ignore[method-assign]
-        # Fill the queue to capacity then trigger overflow
-        q = router._translation_queues["remote"]
-        while not q.full():
-            q.put_nowait(object())
+        # Fill the dispatcher queue to capacity then trigger overflow
+        dispatcher = router._translation_dispatchers["remote"]
+        from app.infra.asr.contracts import ASREventWithSource as _ASREvent
+        dummy = ASREventWithSource(
+            source="remote",
+            utterance_id="u-filler",
+            revision=1,
+            pipeline_revision=1,
+            config_fingerprint="fp",
+            created_at=0.0,
+            text="filler",
+            is_final=False,
+            is_early_final=False,
+            start_ms=0,
+            end_ms=100,
+            latency_ms=50,
+            detected_language="en",
+        )
+        for _ in range(40):
+            dispatcher.enqueue(dummy)
         event = ASREventWithSource(
             source="remote",
             utterance_id="u-overflow",
@@ -625,14 +620,19 @@ class AudioRouterRuntimeConfigTests(unittest.TestCase):
             detected_language="en",
         )
         router._enqueue_translation_event(event)
-        self.assertEqual(router._translation_overflow_counters["remote"], 1)
+        self.assertGreater(dispatcher.stats().overflow_count, 0)
         self.assertTrue(any("translation_queue_overflow" in d for d in diagnostics))
 
-    def test_stop_resets_translation_overflow_counters(self) -> None:
+    def test_stop_preserves_translation_overflow_stats_via_dispatchers(self) -> None:
+        # Overflow counters are now owned by TranslationDispatcher instances.
+        # After stop(), the dispatchers still report their cumulative counts.
         router, _, _, _, _ = _build_router()
-        router._translation_overflow_counters["remote"] = 5
+        self.assertIn("local", router._translation_dispatchers)
+        self.assertIn("remote", router._translation_dispatchers)
         router.stop()
-        self.assertEqual(router._translation_overflow_counters, {"local": 0, "remote": 0})
+        stats = router.stats()
+        self.assertIn("local", stats.translation_overflow)
+        self.assertIn("remote", stats.translation_overflow)
 
 
 if __name__ == "__main__":

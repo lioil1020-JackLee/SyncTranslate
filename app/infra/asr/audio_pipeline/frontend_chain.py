@@ -33,11 +33,13 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from app.infra.asr.audio_pipeline.highpass import HighpassStage
-from app.infra.asr.audio_pipeline.identity import IdentityStage
-from app.infra.asr.audio_pipeline.loudness import LoudnessStage
-from app.infra.asr.audio_pipeline.music_suppression import MusicSuppressionStage
-from app.infra.asr.audio_pipeline.noise_reduction import NoiseReductionStage
+from app.infra.asr.audio_pipeline.stages import (
+    HighpassStage,
+    IdentityStage,
+    LoudnessStage,
+    MusicSuppressionStage,
+    NoiseReductionStage,
+)
 
 
 @dataclass(slots=True)

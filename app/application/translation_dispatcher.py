@@ -30,11 +30,19 @@ class TranslationDispatcher:
     Parameters
     ----------
     translator_manager:
-        The translation engine to call for each event.
+        The translation engine to call for each event.  Ignored when
+        *event_processor* is provided.
     on_translated:
-        Callback invoked with the translation result after each successful translation.
+        Callback invoked with the translation result after each successful
+        translation.  Ignored when *event_processor* is provided.
     on_skipped:
-        Optional callback invoked when translation was skipped.
+        Optional callback invoked when translation was skipped.  Ignored when
+        *event_processor* is provided.
+    event_processor:
+        When provided, the dispatcher calls ``event_processor(event)`` for each
+        dequeued event instead of using the built-in translation logic.  Use
+        this to delegate full event processing to the caller (e.g.
+        ``AudioRouter._process_translation_event``).
     queue_maxsize:
         Maximum number of pending translation events.
     """
@@ -42,14 +50,16 @@ class TranslationDispatcher:
     def __init__(
         self,
         *,
-        translator_manager: TranslatorManager,
-        on_translated: Callable[[object], None],
+        translator_manager: TranslatorManager | None = None,
+        on_translated: Callable[[object], None] | None = None,
         on_skipped: Callable[[str, str], None] | None = None,
+        event_processor: Callable[[ASREventWithSource], None] | None = None,
         queue_maxsize: int = 32,
     ) -> None:
         self._translator = translator_manager
         self._on_translated = on_translated
         self._on_skipped = on_skipped
+        self._event_processor = event_processor
         self._queue: Queue[ASREventWithSource | None] = Queue(maxsize=max(4, queue_maxsize))
         self._stop_event = Event()
         self._worker: Thread | None = None
@@ -132,6 +142,12 @@ class TranslationDispatcher:
             self._process(event)
 
     def _process(self, event: ASREventWithSource) -> None:
+        if self._event_processor is not None:
+            try:
+                self._event_processor(event)
+            except Exception:  # noqa: BLE001
+                pass  # errors should be handled by the caller's event_processor
+            return
         try:
             correct_event = getattr(self._translator, "correct_asr_event", lambda v: v)
             corrected = correct_event(event)

@@ -110,8 +110,7 @@ def _normalize_for_compare(text: str) -> str:
     return re.sub(r"\s+", "", (text or "").strip().lower())
 
 
-def _contains_cjk(text: str) -> bool:
-    return any("\u4e00" <= ch <= "\u9fff" for ch in (text or ""))
+from app.domain.unicode_utils import contains_cjk as _contains_cjk, is_cjk_char as _is_cjk_char
 
 
 def _looks_like_safe_cjk_surface_fix(raw_text: str, candidate_text: str) -> bool:
@@ -134,10 +133,6 @@ def _looks_like_safe_cjk_surface_fix(raw_text: str, candidate_text: str) -> bool
 
 def _strip_spacing_and_punctuation(text: str) -> str:
     return "".join(ch for ch in (text or "").strip() if _is_cjk_char(ch))
-
-
-def _is_cjk_char(ch: str) -> bool:
-    return "\u4e00" <= ch <= "\u9fff"
 
 
 def _is_all_cjk(text: str) -> bool:

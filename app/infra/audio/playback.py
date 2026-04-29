@@ -22,6 +22,11 @@ from app.infra.audio.device_registry import (
     parse_device_selector,
     preferred_hostapi_index_for_platform,
 )
+from app.infra.audio._device_selector import (
+    find_output_devices,
+    find_soundcard_speaker,
+    should_avoid_soundcard_backend,
+)
 
 
 class AudioPlayback:
@@ -453,47 +458,17 @@ class AudioPlayback:
         return False
 
     def _can_play_via_soundcard(self, output_device_name: str) -> bool:
-        if self._should_avoid_soundcard_backend(output_device_name):
+        if should_avoid_soundcard_backend(output_device_name):
             return False
-        return self._find_soundcard_speaker(output_device_name) is not None
+        return find_soundcard_speaker(output_device_name) is not None
 
     @staticmethod
     def _should_avoid_soundcard_backend(output_device_name: str) -> bool:
-        normalized = normalize_device_text(canonical_device_name(output_device_name))
-        return any(token in normalized for token in ("voicemeeter", "vb audio", "virtual"))
+        return should_avoid_soundcard_backend(output_device_name)
 
     @staticmethod
     def _find_soundcard_speaker(output_device_name: str):
-        if sc is None:
-            return None
-
-        target_name = canonical_device_name(output_device_name)
-        normalized_target = normalize_device_text(target_name)
-        target_tokens = device_tokens(target_name)
-        ranked: list[tuple[int, int, str, int, object]] = []
-        for speaker_index, speaker in enumerate(sc.all_speakers()):
-            name = str(getattr(speaker, "name", "") or "")
-            normalized_name = normalize_device_text(name)
-            name_tokens = device_tokens(name)
-            score = 0
-            if name == target_name:
-                score = 500
-            elif normalized_name == normalized_target:
-                score = 450
-            elif normalized_target and normalized_target in normalized_name:
-                score = 350
-            elif target_tokens and target_tokens.issubset(name_tokens):
-                score = 300 + len(target_tokens)
-            elif target_tokens:
-                overlap = len(target_tokens & name_tokens)
-                if overlap >= max(2, len(target_tokens) - 1):
-                    score = 200 + overlap
-            if score > 0:
-                extra_token_penalty = max(0, len(name_tokens) - len(target_tokens))
-                ranked.append((-score, extra_token_penalty, normalized_name, speaker_index, speaker))
-
-        ranked.sort()
-        return ranked[0][4] if ranked else None
+        return find_soundcard_speaker(output_device_name)
 
     @staticmethod
     def _prepare_soundcard_audio(*, audio: np.ndarray, channels: int) -> np.ndarray:
@@ -511,70 +486,7 @@ class AudioPlayback:
 
     @staticmethod
     def _find_output_devices(device_name: str) -> list[tuple[int, dict[str, object]]]:
-        hostapi_name, requested_name = parse_device_selector(device_name)
-        devices = list_indexed_devices()
-        preferred_hostapi = preferred_hostapi_index_for_platform()
-        normalized_target = normalize_device_text(requested_name)
-        target_tokens = device_tokens(requested_name)
-        target_looks_virtual = any(token in normalized_target for token in ("voicemeeter", "vb audio", "virtual", "cable"))
-        ranked: list[tuple[int, int, int, int, dict[str, object]]] = []
-
-        for idx, item in devices:
-            if int(item["max_output_channels"]) <= 0:
-                continue
-            name = str(item["name"])
-            normalized_name = normalize_device_text(name)
-            name_tokens = device_tokens(name)
-
-            score = 0
-            if name == requested_name:
-                score = 500
-            elif normalized_name == normalized_target:
-                score = 450
-            elif normalized_target and normalized_target in normalized_name:
-                score = 350
-            elif target_tokens and target_tokens.issubset(name_tokens):
-                score = 300 + len(target_tokens)
-            elif target_tokens:
-                overlap = len(target_tokens & name_tokens)
-                if overlap >= max(2, len(target_tokens) - 1):
-                    score = 200 + overlap
-
-            if score <= 0:
-                continue
-
-            hostapi = int(item.get("hostapi", -1))
-            if hostapi_name:
-                resolved_hostapi_name = str(sd.query_hostapis()[hostapi].get("name", ""))
-                hostapi_matches = resolved_hostapi_name == hostapi_name
-                # For virtual devices, tolerate stale DirectSound selection and prefer WASAPI/KS.
-                if not hostapi_matches:
-                    if target_looks_virtual:
-                        lowered = resolved_hostapi_name.strip().lower()
-                        if lowered not in ("windows wasapi", "windows wdm-ks"):
-                            continue
-                    else:
-                        continue
-
-                if target_looks_virtual:
-                    lowered = resolved_hostapi_name.strip().lower()
-                    if lowered == "windows wasapi":
-                        hostapi_rank = -2
-                    elif lowered == "windows wdm-ks":
-                        hostapi_rank = -1
-                    elif hostapi_matches:
-                        hostapi_rank = 0
-                    else:
-                        hostapi_rank = 1
-                else:
-                    hostapi_rank = 0 if hostapi_matches else 1
-            else:
-                hostapi_rank = 0 if hostapi == preferred_hostapi else 1
-            extra_token_penalty = max(0, len(name_tokens) - len(target_tokens))
-            ranked.append((hostapi_rank, -score, extra_token_penalty, idx, item))
-
-        ranked.sort()
-        return [(idx, item) for _, _, _, idx, item in ranked]
+        return find_output_devices(device_name)
 
     @staticmethod
     def _write_stream_blocking_with_timeout(

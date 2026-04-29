@@ -1,22 +1,4 @@
-from __future__ import annotations
-
-from dataclasses import dataclass
-from datetime import datetime
-
-
-@dataclass(slots=True)
-class TranscriptItem:
-    source: str
-    channel: str
-    kind: str
-    utterance_id: str | None
-    revision: int
-    text: str
-    is_final: bool
-    is_stable_partial: bool
-    latency_ms: int | None
-    created_at: datetime
-    speaker_label: str = ""
-
+﻿"""Shim -- TranscriptItem has moved to app.domain.models."""
+from app.domain.models import TranscriptItem as TranscriptItem  # noqa: F401
 
 __all__ = ["TranscriptItem"]

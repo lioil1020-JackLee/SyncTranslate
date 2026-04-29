@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import html
 import json
@@ -54,9 +54,9 @@ class LmStudioClient:
         target_label = _language_label(target_lang)
         style_hint = _profile_hint(profile)
         _trad_chinese_note = (
-            "IMPORTANT: The target language is Traditional Chinese (繁體中文). "
+            "IMPORTANT: The target language is Traditional Chinese (蝜?銝剜?). "
             "You MUST use Traditional Chinese characters only. "
-            "Never use Simplified Chinese characters (簡體字) under any circumstances.\n"
+            "Never use Simplified Chinese characters (蝪⊿?摮? under any circumstances.\n"
         ) if "traditional chinese" in target_label.lower() else ""
         system_prompt = (
             "You are a real-time interpretation engine.\n"
@@ -347,217 +347,26 @@ class LmStudioClient:
         return value[: limit - 3] + "..."
 
 
-def _contains_cjk(text: str) -> bool:
-    return any("\u4e00" <= ch <= "\u9fff" for ch in text)
+# Re-export helpers that live in dedicated sub-modules (kept here for backward compat).
+from app.infra.translation._stream_parser import (  # noqa: E402, F401
+    _contains_cjk,
+    _looks_like_glossary,
+    _extract_rhs_candidate,
+    _zh_line_score,
+    _strip_thinking_sections,
+    _extract_translation_from_json,
+    _extract_json_field,
+    _sanitize_surface_text,
+    _clean_correction_output,
+    _looks_like_structured_reply,
+    _looks_like_markup_fragment,
+    _looks_like_overexpanded_translation,
+    _language_label,
+)
+from app.infra.translation._prompt_builder import (  # noqa: E402, F401
+    _translation_response_format,
+    _correction_response_format,
+    _profile_hint,
+    _parse_stop_tokens,
+)
 
-
-def _looks_like_glossary(text: str) -> bool:
-    lowered = text.lower()
-    glossary_tokens = ("->", " or ", " / ", " implies ", " translated as ", "pinyin", "qítā", "gōngzuò", " here ", " depending on ")
-    return any(token in lowered for token in glossary_tokens)
-
-
-def _extract_rhs_candidate(text: str) -> str:
-    value = text.strip()
-    for sep in ("->", "=>", "：", ":"):
-        if sep in value:
-            left, right = value.split(sep, 1)
-            left_ascii = sum(ch.isascii() and ch.isalpha() for ch in left)
-            right_cjk = sum("\u4e00" <= ch <= "\u9fff" for ch in right)
-            if right_cjk and left_ascii:
-                return right.strip()
-    return value
-
-
-def _zh_line_score(text: str) -> tuple[int, int, int]:
-    cjk = sum("\u4e00" <= ch <= "\u9fff" for ch in text)
-    ascii_letters = sum(ch.isascii() and ch.isalpha() for ch in text)
-    punctuation = sum(ch in ".,:;/-_()[]{}*" for ch in text)
-    return (cjk, -ascii_letters, -punctuation)
-
-
-def _strip_thinking_sections(text: str) -> str:
-    value = text.strip()
-    if "<think>" in value and "</think>" in value:
-        while "<think>" in value and "</think>" in value:
-            start = value.find("<think>")
-            end = value.find("</think>", start)
-            if end < 0:
-                break
-            value = (value[:start] + value[end + len("</think>"):]).strip()
-    return value
-
-
-def _extract_translation_from_json(text: str) -> str:
-    return _extract_json_field(text, "translation")
-
-
-def _extract_json_field(text: str, field_name: str) -> str:
-    value = text.strip()
-    if not value:
-        return ""
-    candidates = [value]
-    start = value.find("{")
-    end = value.rfind("}")
-    if start >= 0 and end > start:
-        candidates.insert(0, value[start : end + 1])
-    for candidate in candidates:
-        try:
-            payload = json.loads(candidate)
-        except Exception:
-            continue
-        if isinstance(payload, dict):
-            candidate = payload.get(field_name)
-            if isinstance(candidate, str):
-                return candidate.strip()
-    return ""
-
-
-def _sanitize_surface_text(text: str) -> str:
-    value = html.unescape((text or "").strip())
-    if not value:
-        return ""
-    # Remove fenced blocks that frequently appear in non-compliant model replies.
-    value = re.sub(r"```[\s\S]*?```", " ", value)
-    value = re.sub(r"</?[^>\n]{1,120}>", " ", value)
-    value = value.replace("\\n", "\n")
-    value = re.sub(r"\s+", " ", value)
-    value = re.sub(r"^(translation|output|result|target|source|翻譯|译文)\s*[:：]\s*", "", value, flags=re.IGNORECASE)
-    return value.strip(" \t\n\r\"'`[]{}")
-
-
-def _clean_correction_output(text: str) -> str:
-    value = _sanitize_surface_text(text)
-    if not value:
-        return ""
-    value = re.sub(r"^(?:json|correction)\s*[:：-]?\s*", "", value, flags=re.IGNORECASE)
-    value = re.sub(r"\s*(?:```(?:json)?|json)\s*$", "", value, flags=re.IGNORECASE)
-    value = value.strip(" \t\n\r\"'`[]{}")
-    if _looks_like_structured_reply(value):
-        return ""
-    return value
-
-
-def _looks_like_structured_reply(text: str) -> bool:
-    value = (text or "").strip()
-    if not value:
-        return False
-    lowered = value.lower()
-    suspicious_tokens = (
-        "```",
-        '{"',
-        '"}',
-        '"correction"',
-        '"translation"',
-        "<think",
-        "</think",
-        "assistant:",
-        "user:",
-    )
-    if any(token in lowered for token in suspicious_tokens):
-        return True
-    if re.search(r"(?:^|\s)json(?:\s|$)", lowered):
-        return True
-    if "{" in value or "}" in value:
-        return True
-    return False
-
-
-def _looks_like_markup_fragment(text: str) -> bool:
-    value = (text or "").strip()
-    if not value:
-        return True
-    if re.search(r"</?[^>\n]{1,120}>", value):
-        return True
-    angle_pairs = value.count("<") + value.count(">")
-    slash_pairs = value.count("/")
-    return angle_pairs >= 2 and slash_pairs >= 1
-
-
-def _looks_like_overexpanded_translation(text: str) -> bool:
-    value = (text or "").strip()
-    if not value:
-        return False
-    banned_phrases = (
-        "我會成為你的朋友",
-        "我也愛你",
-        "我能感受到你的存在",
-        "非常感謝你",
-    )
-    return any(token in value for token in banned_phrases)
-
-
-def _language_label(code: str) -> str:
-    normalized = (code or "").strip().lower()
-    mapping = {
-        "zh": "Traditional Chinese",
-        "zh-tw": "Traditional Chinese",
-        "en": "English",
-        "en-us": "English",
-        "ja": "Japanese",
-        "ja-jp": "Japanese",
-        "ko": "Korean",
-        "ko-kr": "Korean",
-        "th": "Thai",
-        "th-th": "Thai",
-    }
-    return mapping.get(normalized, code or "target language")
-
-
-def _translation_response_format() -> dict[str, object]:
-    return {
-        "type": "json_schema",
-        "json_schema": {
-            "name": "translation_payload",
-            "schema": {
-                "type": "object",
-                "properties": {
-                    "translation": {"type": "string"},
-                },
-                "required": ["translation"],
-                "additionalProperties": False,
-            },
-        },
-    }
-
-
-def _correction_response_format() -> dict[str, object]:
-    return {
-        "type": "json_schema",
-        "json_schema": {
-            "name": "asr_correction_payload",
-            "schema": {
-                "type": "object",
-                "properties": {
-                    "correction": {"type": "string"},
-                },
-                "required": ["correction"],
-                "additionalProperties": False,
-            },
-        },
-    }
-
-
-def _profile_hint(profile: TranslationProfileConfig | None) -> str:
-    if profile is None:
-        return "literal and concise"
-    rules: list[str] = []
-    if profile.prompt_style:
-        rules.append(f"style={profile.prompt_style}")
-    rules.append("preserve terms" if profile.preserve_terms else "allow term simplification")
-    rules.append("natural tone" if profile.naturalize_tone else "neutral tone")
-    rules.append(
-        "allow light subject completion" if profile.allow_subject_completion else "avoid adding implied subjects"
-    )
-    return ", ".join(rules)
-
-
-def _parse_stop_tokens(raw: str) -> list[str]:
-    text = (raw or "").strip()
-    if not text:
-        return []
-    rows = [row.strip() for row in text.replace("\r", "\n").split("\n")]
-    tokens = [row for row in rows if row]
-    if len(tokens) == 1 and "," in tokens[0]:
-        tokens = [item.strip() for item in tokens[0].split(",") if item.strip()]
-    return tokens[:8]
