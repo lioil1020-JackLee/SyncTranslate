@@ -158,23 +158,23 @@ runtime:
   asr_v2_backend: faster_whisper_v2
   asr_v2_endpointing: neural_endpoint
   sample_rate: 48000
-  chunk_ms: 60
-  adaptive_asr_enabled: false
+  chunk_ms: 40
+  adaptive_asr_enabled: true
   adaptive_llm_enabled: true
-  asr_pre_roll_ms: 420
+  asr_pre_roll_ms: 300
   latency_mode: balanced
   display_partial_strategy: stable_only
-  stable_partial_min_repeats: 3
+  stable_partial_min_repeats: 2
   partial_stability_max_delta_chars: 6
-  asr_partial_min_audio_ms: 360
-  asr_partial_interval_floor_ms: 280
-  llm_partial_interval_floor_ms: 280
+  asr_partial_min_audio_ms: 280
+  asr_partial_interval_floor_ms: 240
+  llm_partial_interval_floor_ms: 240
   early_final_enabled: false
   tts_accept_stable_partial: false
   tts_partial_min_chars: 12
   tts_use_speech_profile: false
-  asr_queue_maxsize_local: 96
-  asr_queue_maxsize_remote: 96
+  asr_queue_maxsize_local: 192
+  asr_queue_maxsize_remote: 192
   llm_queue_maxsize_local: 16
   llm_queue_maxsize_remote: 16
   tts_queue_maxsize_local: 12
@@ -183,24 +183,24 @@ runtime:
   translation_prefix_min_delta_chars: 6
   tts_cancel_pending_on_new_final: true
   tts_cancel_policy: older_only
-  tts_max_wait_ms: 2200
-  tts_max_chars: 160
-  tts_drop_backlog_threshold: 3
-  llm_streaming_tokens: 16
-  max_pipeline_latency_ms: 4200
+  tts_max_wait_ms: 1800
+  tts_max_chars: 128
+  tts_drop_backlog_threshold: 2
+  llm_streaming_tokens: 14
+  max_pipeline_latency_ms: 3200
   asr_frontend_enabled: true
-  asr_frontend_target_rms: 0.08
-  asr_frontend_max_gain: 6.0
+  asr_frontend_target_rms: 0.06
+  asr_frontend_max_gain: 3.5
   asr_frontend_highpass_alpha: 0.96
   asr_enhancement_enabled: true
-  asr_enhancement_noise_reduce_strength: 0.18
+  asr_enhancement_noise_reduce_strength: 0.28
   asr_enhancement_noise_adapt_rate: 0.18
-  asr_enhancement_music_suppress_strength: 0.05
+  asr_enhancement_music_suppress_strength: 0.12
   asr_hotwords_enabled: false
   asr_hotword_lexicon: ''
   asr_result_validator_enabled: true
-  asr_result_max_chars_per_second: 18.0
-  asr_result_min_speech_ratio_for_long_text: 0.1
+  asr_result_max_chars_per_second: 16.0
+  asr_result_min_speech_ratio_for_long_text: 0.14
   asr_final_correction_enabled: false
   asr_final_correction_context_items: 3
   asr_final_correction_max_chars: 120
@@ -230,67 +230,67 @@ runtime:
   runtime_log_format: jsonl
   asr_profile_local: meeting_room
   asr_profile_remote: meeting_room
-  degradation_policy_enabled: false
+  degradation_policy_enabled: true
 asr_profiles:
   chinese:
     engine: faster_whisper
-    model: large-v3
+    model: large-v3-turbo
     device: cuda
     compute_type: float16
-    beam_size: 3
-    final_beam_size: 6
-    condition_on_previous_text: true
+    beam_size: 2
+    final_beam_size: 5
+    condition_on_previous_text: false
     final_condition_on_previous_text: true
     initial_prompt: 以下是繁體中文口語敘事逐字稿。
     hotwords: ''
     speculative_draft_model: ''
     speculative_num_beams: 1
     temperature_fallback: '0.0'
-    no_speech_threshold: 0.5
+    no_speech_threshold: 0.4
     hallucination_filter: true
     vad:
       enabled: true
       backend: silero_vad
-      min_speech_duration_ms: 180
-      min_silence_duration_ms: 520
+      min_speech_duration_ms: 160
+      min_silence_duration_ms: 360
       max_speech_duration_s: 12.0
-      speech_pad_ms: 320
+      speech_pad_ms: 260
       rms_threshold: 0.021
       neural_threshold: 0.4
       startup_suppress_ms: 200
     streaming:
-      partial_interval_ms: 520
+      partial_interval_ms: 320
       partial_history_seconds: 2
-      final_history_seconds: 16
-      soft_final_audio_ms: 3200
+      final_history_seconds: 12
+      soft_final_audio_ms: 2400
   non_chinese:
     engine: faster_whisper
-    model: large-v3
+    model: large-v3-turbo
     device: cuda
     compute_type: float16
-    beam_size: 3
-    final_beam_size: 6
-    condition_on_previous_text: true
+    beam_size: 2
+    final_beam_size: 5
+    condition_on_previous_text: false
     final_condition_on_previous_text: true
     initial_prompt: ''
     hotwords: ''
     speculative_draft_model: ''
     speculative_num_beams: 1
     temperature_fallback: '0.0'
-    no_speech_threshold: 0.45
+    no_speech_threshold: 0.36
     hallucination_filter: true
     vad:
       enabled: true
       backend: silero_vad
-      min_speech_duration_ms: 180
-      min_silence_duration_ms: 480
+      min_speech_duration_ms: 160
+      min_silence_duration_ms: 320
       max_speech_duration_s: 12.0
-      speech_pad_ms: 280
+      speech_pad_ms: 240
       rms_threshold: 0.019
-      neural_threshold: 0.38
+      neural_threshold: 0.36
       startup_suppress_ms: 0
     streaming:
-      partial_interval_ms: 480
+      partial_interval_ms: 300
       partial_history_seconds: 2
-      final_history_seconds: 14
-      soft_final_audio_ms: 3000
+      final_history_seconds: 10
+      soft_final_audio_ms: 2200
