@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -405,14 +404,14 @@ class LocalAiPageUiTests(_QtTestCase):
         self.assertFalse(hasattr(page, "translation_style_combo"))
         self.assertFalse(hasattr(page, "tts_style_combo"))
         self.assertEqual(page.experience_preset_combo.currentData(), "meeting_monitor")
-        self.assertEqual(page.experience_preset_combo.currentText(), "超穩定會議字幕")
+        self.assertEqual(page.experience_preset_combo.currentText(), "會議模式（穩定切段）")
         return
         self.assertIn("已內建高準確 + 低延遲", page.channel_strategy_label.text())
 
     def test_local_ai_page_uses_built_in_optimized_defaults(self) -> None:
         page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
 
-        self.assertEqual(page.asr_model_combo.currentData(), "large-v3-turbo")
+        self.assertEqual(page.asr_model_combo.currentData(), r".\runtimes\models\belle-zh-ct2")
         self.assertEqual(page.remote_asr_model_combo.currentData(), "large-v3-turbo")
         self.assertEqual(page.llm_model_label.text(), "hy-mt1.5-7b")
         self.assertEqual(page.remote_llm_model_label.text(), "hy-mt1.5-7b")
@@ -448,46 +447,16 @@ class LocalAiPageUiTests(_QtTestCase):
         self.assertEqual(updated.asr_channels.remote.final_beam_size, 5)
         self.assertEqual(updated.runtime.asr_profile_local, "meeting_room")
         self.assertEqual(updated.runtime.asr_profile_remote, "meeting_room")
-        self.assertIn("超穩定會議字幕", page._current_asr_runtime_hint_text())
+        self.assertIn("會議模式（穩定切段）", page._current_asr_runtime_hint_text())
 
-    def test_local_ai_page_can_select_belle_local_model(self) -> None:
-        belle_dir = Path("runtimes/models/belle-zh-ct2")
-        created_belle_dir = not belle_dir.exists()
-        belle_dir.mkdir(parents=True, exist_ok=True)
-        if created_belle_dir:
-            self.addCleanup(lambda: belle_dir.rmdir() if belle_dir.exists() else None)
-
+    def test_local_ai_page_uses_fixed_asr_model_routing(self) -> None:
         page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
-        belle_path = r".\runtimes\models\belle-zh-ct2"
-        belle_index = page.asr_model_combo.findData(belle_path)
-
-        self.assertGreaterEqual(belle_index, 0)
-        page.asr_model_combo.setCurrentIndex(belle_index)
 
         updated = AppConfig()
         page.update_config(updated)
 
-        self.assertEqual(updated.asr_channels.local.model, belle_path)
-
-    def test_experience_preset_does_not_overwrite_selected_asr_models(self) -> None:
-        belle_dir = Path("runtimes/models/belle-zh-ct2")
-        created_belle_dir = not belle_dir.exists()
-        belle_dir.mkdir(parents=True, exist_ok=True)
-        if created_belle_dir:
-            self.addCleanup(lambda: belle_dir.rmdir() if belle_dir.exists() else None)
-
-        page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
-        belle_path = r".\runtimes\models\belle-zh-ct2"
-        belle_index = page.asr_model_combo.findData(belle_path)
-
-        self.assertGreaterEqual(belle_index, 0)
-        page.asr_model_combo.setCurrentIndex(belle_index)
-        page.experience_preset_combo.setCurrentIndex(page.experience_preset_combo.findData("dialogue_stable_asr"))
-
-        updated = AppConfig()
-        page.update_config(updated)
-
-        self.assertEqual(updated.asr_channels.local.model, belle_path)
+        self.assertEqual(updated.asr_channels.local.model, r".\runtimes\models\belle-zh-ct2")
+        self.assertEqual(updated.asr_channels.remote.model, "large-v3-turbo")
 
     def test_local_ai_page_round_trips_advanced_runtime_and_profile_controls(self) -> None:
         page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
@@ -550,7 +519,7 @@ class LocalAiPageUiTests(_QtTestCase):
 
         self.assertEqual(page.llm_caption_profile_combo.currentData(), "dialogue_fast")
         self.assertEqual(page.experience_preset_combo.currentData(), "dialogue")
-        self.assertEqual(page.experience_preset_combo.currentText(), "低延遲雙向對話")
+        self.assertEqual(page.experience_preset_combo.currentText(), "對話模式（低延遲）")
 
         updated = AppConfig()
         page.update_config(updated)
@@ -559,7 +528,7 @@ class LocalAiPageUiTests(_QtTestCase):
         self.assertEqual(updated.runtime.asr_profile_local, "turn_taking")
         self.assertEqual(updated.runtime.asr_profile_remote, "turn_taking")
 
-    def test_local_ai_page_distinguishes_stable_asr_dialogue_from_turn_taking(self) -> None:
+    def test_local_ai_page_maps_dialogue_llm_profile_to_dialogue_preset(self) -> None:
         page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
         cfg = AppConfig()
         cfg.llm.caption_profile = "dialogue_fast"
@@ -569,7 +538,7 @@ class LocalAiPageUiTests(_QtTestCase):
 
         page.apply_config(cfg)
 
-        self.assertEqual(page.experience_preset_combo.currentData(), "dialogue_stable_asr")
+        self.assertEqual(page.experience_preset_combo.currentData(), "dialogue")
 
         updated = AppConfig()
         page.update_config(updated)
@@ -589,24 +558,13 @@ class LocalAiPageUiTests(_QtTestCase):
         self.assertTrue(updated.runtime.asr_result_validator_enabled)
         self.assertTrue(updated.runtime.enable_postprocessor)
 
-    def test_belle_model_gets_more_conservative_runtime_tuning(self) -> None:
-        belle_dir = Path("runtimes/models/belle-zh-ct2")
-        created_belle_dir = not belle_dir.exists()
-        belle_dir.mkdir(parents=True, exist_ok=True)
-        if created_belle_dir:
-            self.addCleanup(lambda: belle_dir.rmdir() if belle_dir.exists() else None)
-
+    def test_fixed_belle_model_gets_more_conservative_runtime_tuning(self) -> None:
         page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
-        belle_path = r".\runtimes\models\belle-zh-ct2"
-        belle_index = page.asr_model_combo.findData(belle_path)
-
-        self.assertGreaterEqual(belle_index, 0)
-        page.asr_model_combo.setCurrentIndex(belle_index)
 
         updated = AppConfig()
         page.update_config(updated)
 
-        self.assertEqual(updated.asr_channels.local.model, belle_path)
+        self.assertEqual(updated.asr_channels.local.model, r".\runtimes\models\belle-zh-ct2")
         self.assertGreaterEqual(updated.asr_channels.local.beam_size, 2)
         self.assertGreaterEqual(updated.asr_channels.local.final_beam_size, 5)
         self.assertGreaterEqual(updated.asr_channels.local.streaming.final_history_seconds, 16)
@@ -626,7 +584,7 @@ class LocalAiPageUiTests(_QtTestCase):
         self.assertEqual(page.llm_caption_profile_combo.currentData(), "dialogue_fast")
         self.assertEqual(page.runtime_latency_mode_combo.currentData(), "low_latency")
         self.assertTrue(page.runtime_early_final_check.isChecked())
-        self.assertIn("低延遲雙向對話", page._current_asr_runtime_hint_text())
+        self.assertIn("對話模式（低延遲）", page._current_asr_runtime_hint_text())
 
     def test_llm_model_is_fixed_for_both_directions(self) -> None:
         page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)

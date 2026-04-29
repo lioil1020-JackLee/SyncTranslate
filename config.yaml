@@ -228,19 +228,19 @@ runtime:
   enable_partial_stabilization: true
   enable_structured_logging: true
   runtime_log_format: jsonl
-  asr_profile_local: meeting_room
-  asr_profile_remote: meeting_room
+  asr_profile_local: turn_taking
+  asr_profile_remote: turn_taking
   degradation_policy_enabled: true
 asr_profiles:
   chinese:
     engine: faster_whisper
-    model: large-v3-turbo
+    model: .\runtimes\models\belle-zh-ct2
     device: cuda
     compute_type: float16
     beam_size: 2
     final_beam_size: 5
     condition_on_previous_text: false
-    final_condition_on_previous_text: true
+    final_condition_on_previous_text: false
     initial_prompt: 以下是繁體中文口語敘事逐字稿。
     hotwords: ''
     speculative_draft_model: ''
@@ -261,7 +261,7 @@ asr_profiles:
     streaming:
       partial_interval_ms: 320
       partial_history_seconds: 2
-      final_history_seconds: 12
+      final_history_seconds: 16
       soft_final_audio_ms: 2400
   non_chinese:
     engine: faster_whisper
@@ -271,7 +271,7 @@ asr_profiles:
     beam_size: 2
     final_beam_size: 5
     condition_on_previous_text: false
-    final_condition_on_previous_text: true
+    final_condition_on_previous_text: false
     initial_prompt: ''
     hotwords: ''
     speculative_draft_model: ''
@@ -283,7 +283,7 @@ asr_profiles:
       enabled: true
       backend: silero_vad
       min_speech_duration_ms: 160
-      min_silence_duration_ms: 320
+      min_silence_duration_ms: 280
       max_speech_duration_s: 12.0
       speech_pad_ms: 240
       rms_threshold: 0.019
@@ -293,4 +293,4 @@ asr_profiles:
       partial_interval_ms: 300
       partial_history_seconds: 2
       final_history_seconds: 10
-      soft_final_audio_ms: 2200
+      soft_final_audio_ms: 1800

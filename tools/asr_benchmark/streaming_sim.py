@@ -91,6 +91,46 @@ def _wer(hyp: str, ref: str) -> float:
     return _edit_distance(hyp.split(), ref.split()) / max(1, len(ref.split()))
 
 
+def _normalize_cjk_chars(text: str) -> str:
+    return "".join(re.sub(r"[^\u4e00-\u9fff\s]", " ", text).split())
+
+
+def _trim_cjk_to_reference_window(text: str, ref: str) -> str:
+    if not text or not ref:
+        return text
+
+    def _find_start_anchor() -> int | None:
+        head = ref[: min(len(ref), 160)]
+        for width in (12, 10, 8, 6, 4):
+            for offset in range(0, max(1, len(head) - width + 1), 2):
+                anchor = head[offset: offset + width]
+                pos = text.find(anchor)
+                if pos >= 0:
+                    return pos
+        return None
+
+    def _find_end_anchor() -> int | None:
+        tail_start = max(0, len(ref) - 160)
+        tail = ref[tail_start:]
+        for width in (12, 10, 8, 6, 4):
+            for offset in range(max(0, len(tail) - width), -1, -2):
+                anchor = tail[offset: offset + width]
+                pos = text.rfind(anchor)
+                if pos >= 0:
+                    return pos + width
+        return None
+
+    start = _find_start_anchor()
+    end = _find_end_anchor()
+    if start is None and end is None:
+        return text
+    if start is None:
+        start = 0
+    if end is None or end <= start:
+        end = len(text)
+    return text[start:end]
+
+
 def _normalize(text: str, *, lang: str, ref: str = "") -> str:
     v = str(text or "")
     if _is_cjk(lang):
@@ -99,22 +139,17 @@ def _normalize(text: str, *, lang: str, ref: str = "") -> str:
                 v = _S2T.convert(v)
             except Exception:
                 pass
-        v = re.sub(r"[^\u4e00-\u9fff\s]", " ", v)
-        v = "".join(v.split())
+        normalized = _normalize_cjk_chars(v)
         if ref:
-            ref_clean = re.sub(r"[^\u4e00-\u9fff\s]", " ", ref)
+            ref_clean = ref
             if _S2T:
                 try:
                     ref_clean = _S2T.convert(ref_clean)
                 except Exception:
                     pass
-            ref_clean = "".join(ref_clean.split())
-            # filter only sentences that appear in reference
-            parts = re.split(r"[。！？!?\.]", v)
-            kept = [p for p in parts if len(p) >= 4 and p[:4] in ref_clean]
-            if kept:
-                v = "".join(kept)
-        return v
+            ref_clean = _normalize_cjk_chars(ref_clean)
+            normalized = _trim_cjk_to_reference_window(normalized, ref_clean)
+        return normalized
     v = re.sub(r"[^\w\s]", " ", v.lower())
     return " ".join(v.split())
 
@@ -268,6 +303,8 @@ def run_streaming_sim(
     config = load_config(str(config_path))
 
     base_profile = asr_profile_for_language(config, language)
+    if asr_overrides and "model" in asr_overrides and hasattr(base_profile, "model"):
+        setattr(base_profile, "model", asr_overrides["model"])
     language_profile = resolve_language_asr_profile(base_profile, language=language)
     profile = deepcopy(language_profile.asr)
 
@@ -723,6 +760,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-speech-threshold", type=float, default=None)
     p.add_argument("--hotwords", default=None)
     p.add_argument("--initial-prompt", default=None)
+    p.add_argument("--model", default=None, help="Override ASR model path (e.g. .\\runtimes\\models\\belle-zh-ct2)")
     p.add_argument("--lead-in-ms", type=int, default=1000)
     p.add_argument("--bias-lexicon", default=None)
     p.add_argument(
@@ -809,6 +847,8 @@ def main() -> None:
         asr_ov["hotwords"] = args.hotwords
     if args.initial_prompt is not None:
         asr_ov["initial_prompt"] = args.initial_prompt
+    if args.model is not None:
+        asr_ov["model"] = args.model
     if args.adaptive_enabled is not None:
         runtime_ov["adaptive_asr_enabled"] = args.adaptive_enabled == "true"
     if args.bias_enabled is not None:

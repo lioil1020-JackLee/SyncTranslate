@@ -83,9 +83,8 @@ _LLM_PROFILE_OPTIONS: list[tuple[str, str]] = [
 ]
 
 _EXPERIENCE_PRESET_OPTIONS: list[tuple[str, str]] = [
-    ("超穩定會議字幕", "meeting_monitor"),
-    ("低延遲對話（穩定 ASR）", "dialogue_stable_asr"),
-    ("低延遲雙向對話", "dialogue"),
+    ("會議模式（穩定切段）", "meeting_monitor"),
+    ("對話模式（低延遲）", "dialogue"),
 ]
 
 _TTS_STYLE_OPTIONS: list[tuple[str, str]] = [
@@ -114,8 +113,10 @@ _GROUP_ROW_SPACING = 8
 # reduce page padding to allow slightly more content
 _PAGE_MIN_PADDING = 6
 _FIXED_LLM_MODEL = DEFAULT_FIXED_LLM_MODEL
+_FIXED_ZH_ASR_MODEL = r".\runtimes\models\belle-zh-ct2"
+_FIXED_NON_ZH_ASR_MODEL = "large-v3-turbo"
 _LOCAL_ASR_MODEL_CANDIDATES: list[tuple[str, str]] = [
-    ("belle-zh-ct2（本機舊模型）", r".\runtimes\models\belle-zh-ct2"),
+    ("belle-zh-ct2", r".\runtimes\models\belle-zh-ct2"),
 ]
 
 
@@ -469,8 +470,7 @@ class LocalAiPage(QWidget):
         try:
             self._select_combo_data(self.experience_preset_combo, preset)
             if reset_models:
-                self._select_asr_model(self.asr_model_combo, "large-v3-turbo")
-                self._select_asr_model(self.remote_asr_model_combo, "large-v3-turbo")
+                self._apply_fixed_asr_model_routing()
             self.asr_beam_spin.setValue(1)
             self.remote_asr_beam_spin.setValue(1)
             self.asr_condition_prev_check.setChecked(False)
@@ -492,7 +492,7 @@ class LocalAiPage(QWidget):
             self.local_echo_guard_delay_spin.setValue(300)
             self.remote_echo_guard_delay_spin.setValue(300)
 
-            dialogue_like = preset in {"dialogue", "dialogue_stable_asr"}
+            dialogue_like = preset == "dialogue"
             low_latency_asr = preset == "dialogue"
 
             if low_latency_asr:
@@ -500,8 +500,8 @@ class LocalAiPage(QWidget):
                 self.remote_asr_partial_interval_spin.setValue(220)
                 self.asr_partial_history_spin.setValue(1)
                 self.remote_asr_partial_history_spin.setValue(1)
-                self.asr_final_history_spin.setValue(8)
-                self.remote_asr_final_history_spin.setValue(8)
+                self.asr_final_history_spin.setValue(10)
+                self.remote_asr_final_history_spin.setValue(10)
                 self.asr_min_speech_spin.setValue(140)
                 self.remote_asr_min_speech_spin.setValue(140)
                 self.asr_min_silence_spin.setValue(280)
@@ -518,8 +518,8 @@ class LocalAiPage(QWidget):
                 self.remote_asr_no_speech_threshold_spin.setValue(0.28)
                 self.asr_neural_threshold_spin.setValue(0.40)
                 self.remote_asr_neural_threshold_spin.setValue(0.34)
-                self.asr_soft_final_spin.setValue(1800)
-                self.remote_asr_soft_final_spin.setValue(1600)
+                self.asr_soft_final_spin.setValue(2000)
+                self.remote_asr_soft_final_spin.setValue(1800)
                 self.asr_startup_suppress_spin.setValue(200)
                 self.remote_asr_startup_suppress_spin.setValue(0)
                 self.asr_hallucination_filter_check.setChecked(True)
@@ -537,8 +537,8 @@ class LocalAiPage(QWidget):
                 self.remote_asr_final_history_spin.setValue(14)
                 self.asr_min_speech_spin.setValue(220)
                 self.remote_asr_min_speech_spin.setValue(200)
-                self.asr_min_silence_spin.setValue(640)
-                self.remote_asr_min_silence_spin.setValue(560)
+                self.asr_min_silence_spin.setValue(600)
+                self.remote_asr_min_silence_spin.setValue(520)
                 self.asr_speech_pad_spin.setValue(360)
                 self.remote_asr_speech_pad_spin.setValue(320)
                 self.asr_max_speech_spin.setValue(16)
@@ -551,8 +551,8 @@ class LocalAiPage(QWidget):
                 self.remote_asr_no_speech_threshold_spin.setValue(0.32)
                 self.asr_neural_threshold_spin.setValue(0.45)
                 self.remote_asr_neural_threshold_spin.setValue(0.35)
-                self.asr_soft_final_spin.setValue(4200)
-                self.remote_asr_soft_final_spin.setValue(3600)
+                self.asr_soft_final_spin.setValue(4000)
+                self.remote_asr_soft_final_spin.setValue(3400)
                 self.asr_startup_suppress_spin.setValue(400)
                 self.remote_asr_startup_suppress_spin.setValue(0)
                 self.asr_hallucination_filter_check.setChecked(True)
@@ -665,20 +665,16 @@ class LocalAiPage(QWidget):
         if local_asr == "turn_taking" or remote_asr == "turn_taking":
             return "dialogue"
         if dialogue_llm:
-            return "dialogue_stable_asr"
+            return "dialogue"
         return "meeting_monitor"
 
     def _update_preset_labels(self, preset: str) -> None:
         if preset == "dialogue":
-            self.channel_strategy_label.setText("最低延遲優先：ASR 使用 turn_taking，短句會更快切段與送翻譯。")
-            self.optimized_profile_label.setText("適合短句問答與強互動；中文準確率可能低於穩定 ASR 模式。")
+            self.channel_strategy_label.setText("低延遲優先：ASR 使用 turn_taking，短句更快切段與送翻譯。")
+            self.optimized_profile_label.setText("模型自動路由：中文固定 belle、非中文固定 turbo；不需手動選模型。")
             return
-        if preset == "dialogue_stable_asr":
-            self.channel_strategy_label.setText("混合模式：ASR 使用 meeting_room 保辨識穩定，LLM / TTS 使用低延遲對話設定。")
-            self.optimized_profile_label.setText("建議中文雙向對話使用；回覆較跟手，但不犧牲中文切段穩定度。")
-            return
-        self.channel_strategy_label.setText("穩定度優先：保留較長上下文、較慢切 final，盡量避免字幕抖動與碎句。")
-        self.optimized_profile_label.setText("適合會議監聽、長句發言、影片字幕與長時間收聽。")
+        self.channel_strategy_label.setText("穩定度優先：保留較長上下文、較慢切 final，降低字幕抖動與碎句。")
+        self.optimized_profile_label.setText("模型自動路由：中文固定 belle、非中文固定 turbo；適合會議與長句內容。")
 
     def _build_experience_group(self) -> tuple[QGroupBox, QFormLayout]:
         self.experience_preset_combo = QComboBox()
@@ -690,10 +686,10 @@ class LocalAiPage(QWidget):
         self.show_advanced_check = QCheckBox("顯示進階設定")
         self.show_advanced_check.setChecked(False)
         self.channel_strategy_label = QLabel("穩定度優先：保留較長上下文、較慢切 final，盡量避免字幕抖動與碎句。")
-        self.optimized_profile_label = QLabel("適合會議監聽、長句發言、影片字幕與長時間收聽。")
+        self.optimized_profile_label = QLabel("模型自動路由：中文固定 belle、非中文固定 turbo；適合會議與長句內容。")
         self.optimized_profile_label.setWordWrap(True)
         self.asr_routing_summary_label = QLabel(
-            "ASR 路由規則：中文 -> faster-whisper（中文參數），非中文 -> faster-whisper（非中文參數）。"
+            "ASR 路由規則：中文 -> belle-zh-ct2，非中文 -> faster-whisper (large-v3-turbo)。"
         )
         self.asr_routing_summary_label.setWordWrap(True)
         self.asr_routing_summary_label.setStyleSheet("color: #b7bdc6;")
@@ -773,9 +769,18 @@ class LocalAiPage(QWidget):
 
         self.asr_model_combo = QComboBox()
         self.remote_asr_model_combo = QComboBox()
-        self.asr_model_combo.setToolTip("中文通道使用的 ASR 模型，可切換官方 faster-whisper 或本機舊模型。")
-        self.remote_asr_model_combo.setToolTip("非中文通道使用的 ASR 模型，可切換官方 faster-whisper 或本機舊模型。")
+        self.asr_model_combo.setToolTip("中文通道模型固定為 belle-zh-ct2。")
+        self.remote_asr_model_combo.setToolTip("非中文通道模型固定為 large-v3-turbo。")
+        self.asr_model_combo.setEnabled(False)
+        self.remote_asr_model_combo.setEnabled(False)
         self._reload_asr_model_options()
+
+        self.asr_model_label = QLabel()
+        self.remote_asr_model_label = QLabel()
+        self.asr_model_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.remote_asr_model_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._set_dual_field_style(self.asr_model_label, self.remote_asr_model_label)
+        self._apply_fixed_asr_model_routing()
 
 
         self.asr_device_combo = QComboBox()
@@ -927,7 +932,7 @@ class LocalAiPage(QWidget):
         form = QFormLayout()
         self._configure_form_layout(form)
         form.addRow("", self._build_dual_header_row("中文", "非中文"))
-        form.addRow("模型", self._build_dual_field_row(self.asr_model_combo, self.remote_asr_model_combo))
+        form.addRow("模型(自動)", self._build_dual_field_row(self.asr_model_label, self.remote_asr_model_label))
         form.addRow("裝置/精度(共用)", asr_device_row)
         form.addRow("溫度 fallback", self._build_dual_field_row(self.asr_temperature_fallback_local_edit, self.asr_temperature_fallback_remote_edit))
         form.addRow("ASR 佇列", self._build_dual_field_row(self.asr_queue_local_spin, self.asr_queue_remote_spin))
@@ -1398,13 +1403,9 @@ class LocalAiPage(QWidget):
         self.quick_save_btn.clicked.connect(lambda *_: self._on_save_config() if self._on_save_config else None)
         self.llm_backend_combo.currentIndexChanged.connect(self._on_backend_changed)
         self.asr_device_combo.currentIndexChanged.connect(self._on_asr_device_changed)
-        self.asr_model_combo.currentIndexChanged.connect(lambda *_: self._refresh_asr_runtime_hints())
-        self.remote_asr_model_combo.currentIndexChanged.connect(lambda *_: self._refresh_asr_runtime_hints())
 
         for widget in (
             self.asr_engine_combo,
-            self.asr_model_combo,
-            self.remote_asr_model_combo,
             self.asr_device_combo,
             self.asr_beam_spin,
             self.remote_asr_beam_spin,
@@ -1658,15 +1659,13 @@ class LocalAiPage(QWidget):
     def _current_asr_runtime_hint_text(self) -> str:
         preset = str(self.experience_preset_combo.currentData() or "meeting_monitor")
         if preset == "dialogue":
-            mode_text = "目前模式：低延遲雙向對話。ASR 使用 turn_taking，會更快送出 partial / final。"
-        elif preset == "dialogue_stable_asr":
-            mode_text = "目前模式：低延遲對話（穩定 ASR）。ASR 使用 meeting_room，LLM / TTS 使用低延遲設定。"
+            mode_text = "目前模式：對話模式（低延遲）。ASR 使用 turn_taking，會更快送出 partial / final。"
         else:
-            mode_text = "目前模式：超穩定會議字幕。會更保守切段，優先降低 partial / final 抖動。"
+            mode_text = "目前模式：會議模式（穩定切段）。會更保守切段，優先降低 partial / final 抖動。"
         requested_device = str(self.asr_device_combo.currentData() or "cuda")
         compute_type = self._compute_type_for_device(requested_device)
-        local_model = self._selected_asr_model(self.asr_model_combo)
-        remote_model = self._selected_asr_model(self.remote_asr_model_combo)
+        local_model = _FIXED_ZH_ASR_MODEL
+        remote_model = _FIXED_NON_ZH_ASR_MODEL
         if requested_device == "cuda":
             return (
                 f"{mode_text} "
@@ -1805,7 +1804,7 @@ class LocalAiPage(QWidget):
         prefix="" for local channel (widgets named ``asr_*``),
         prefix="remote_" for remote channel (widgets named ``remote_asr_*``).
         """
-        self._select_asr_model(getattr(self, f"{prefix}asr_model_combo"), str(getattr(asr, "model", None) or "large-v3-turbo"))
+        self._apply_fixed_asr_model_routing()
         getattr(self, f"{prefix}asr_beam_spin").setValue(asr.beam_size)
         getattr(self, f"{prefix}asr_condition_prev_check").setChecked(asr.condition_on_previous_text)
         getattr(self, f"asr_temperature_fallback_{temp_channel}_edit").setText(asr.temperature_fallback)
@@ -1836,7 +1835,7 @@ class LocalAiPage(QWidget):
     ) -> None:
         """Read widget values into *asr* channel config."""
         asr.engine = "faster_whisper"
-        asr.model = self._selected_asr_model(getattr(self, f"{prefix}asr_model_combo"))
+        asr.model = _FIXED_ZH_ASR_MODEL if prefix == "" else _FIXED_NON_ZH_ASR_MODEL
         asr.device = shared_device
         asr.compute_type = shared_compute
         asr.beam_size = getattr(self, f"{prefix}asr_beam_spin").value()
@@ -1962,6 +1961,12 @@ class LocalAiPage(QWidget):
             combo.blockSignals(False)
             self._configure_combo_popup(combo)
             self._select_asr_model(combo, current_value)
+
+    def _apply_fixed_asr_model_routing(self) -> None:
+        self._select_asr_model(self.asr_model_combo, _FIXED_ZH_ASR_MODEL)
+        self._select_asr_model(self.remote_asr_model_combo, _FIXED_NON_ZH_ASR_MODEL)
+        self.asr_model_label.setText(self._format_asr_model_label(_FIXED_ZH_ASR_MODEL))
+        self.remote_asr_model_label.setText(self._format_asr_model_label(_FIXED_NON_ZH_ASR_MODEL))
 
     def _select_asr_model(self, combo: QComboBox, value: str) -> None:
         normalized = str(value or "large-v3-turbo").strip() or "large-v3-turbo"
