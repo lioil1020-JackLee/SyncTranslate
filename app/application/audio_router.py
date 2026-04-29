@@ -9,7 +9,7 @@ import numpy as np
 from app.domain.events import ErrorEvent
 from app.infra.audio.routing import AudioInputManager
 from app.infra.asr.contracts import ASREventWithSource, AsrManagerProtocol
-from app.infra.config.schema import AppConfig, AudioRouteConfig
+from app.infra.config.schema import AppConfig, AudioRouteConfig, RuntimeConfig
 from app.domain.runtime_state import StateManager
 from app.domain.constants import (
     OUTPUT_MODE_TTS,
@@ -86,6 +86,11 @@ class AudioRouter:
     @property
     def running(self) -> bool:
         return self._state.snapshot().running
+
+    @property
+    def _effective_runtime(self) -> RuntimeConfig | None:
+        cfg = self._runtime_config
+        return cfg.runtime if cfg is not None else None
 
     def start(self, mode: str, routes: AudioRouteConfig, sample_rate: int, chunk_ms: int = 100) -> None:
         self.stop()
@@ -467,7 +472,7 @@ class AudioRouter:
     def _asr_needed_for_source(self, source: str) -> bool:
         if not self._mode_allows_source(source):
             return False
-        runtime = getattr(self._runtime_config, "runtime", None)
+        runtime = self._effective_runtime
         if runtime is None:
             return True
         attr = "remote_asr_language" if source == "remote" else "local_asr_language"
@@ -509,7 +514,7 @@ class AudioRouter:
         return self._on_local_audio_chunk
 
     def _translation_queue_maxsize_for_source(self, source: str) -> int:
-        runtime = getattr(self._runtime_config, "runtime", None)
+        runtime = self._effective_runtime
         if source == "remote":
             value = int(getattr(runtime, "llm_queue_maxsize_remote", 32)) if runtime is not None else 32
         else:
@@ -611,7 +616,7 @@ class AudioRouter:
 
     def _should_drop_over_latency(self, event: ASREventWithSource) -> bool:
         """Return True (and emit diagnostic) if event latency exceeds max_pipeline_latency_ms."""
-        runtime_config = getattr(self._runtime_config, "runtime", None)
+        runtime_config = self._effective_runtime
         max_latency_ms = max(500, int(getattr(runtime_config, "max_pipeline_latency_ms", 3000)))
         if int(event.latency_ms) > max_latency_ms:
             self._emit_diagnostic_event(
