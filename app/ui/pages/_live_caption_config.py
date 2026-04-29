@@ -13,7 +13,7 @@ _CHANNEL_DEFAULTS: dict[str, dict[str, str]] = {
     "remote": {
         "asr_default": "zh-TW",
         "target_default": "zh-TW",
-        "source_default": "zh-TW",
+        "source_default": "en",
         "original_label": "遠端原文",
         "translated_label": "遠端翻譯",
         "output_label": "遠端輸出",
@@ -21,7 +21,7 @@ _CHANNEL_DEFAULTS: dict[str, dict[str, str]] = {
     "local": {
         "asr_default": "en",
         "target_default": "en",
-        "source_default": "en",
+        "source_default": "zh-TW",
         "original_label": "本地原文",
         "translated_label": "本地翻譯",
         "output_label": "本地輸出",

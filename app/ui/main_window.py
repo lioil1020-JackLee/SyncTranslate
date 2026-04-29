@@ -1067,9 +1067,17 @@ class MainWindow(QMainWindow):
         state["suppressed_count"] = 0
 
     def _build_runtime_stats_text(self) -> str:
+        remote_target = str(
+            getattr(self.config.runtime, "remote_translation_target", "")
+            or self.config.language.meeting_target
+        )
+        local_target = str(
+            getattr(self.config.runtime, "local_translation_target", "")
+            or self.config.language.local_target
+        )
         lines = [
-            f"remote_translation_target: {self.config.language.meeting_target}",
-            f"local_translation_target: {self.config.language.local_target}",
+            f"remote_translation_target: {remote_target}",
+            f"local_translation_target: {local_target}",
             f"remote_translation_enabled: {translation_enabled_for_source(self.config.runtime, 'remote')}",
             f"local_translation_enabled: {translation_enabled_for_source(self.config.runtime, 'local')}",
             "asr_language_mode: auto",

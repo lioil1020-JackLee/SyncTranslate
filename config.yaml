@@ -38,7 +38,7 @@ llm_channels:
         naturalize_tone: false
         allow_subject_completion: false
       dialogue_fast:
-        name: live_caption_fast
+        name: dialogue_fast
         prompt_style: literal
         context_items: 4
         partial_trigger_tokens: 18
@@ -100,7 +100,7 @@ llm_channels:
         naturalize_tone: false
         allow_subject_completion: false
       dialogue_fast:
-        name: live_caption_fast
+        name: dialogue_fast
         prompt_style: literal
         context_items: 4
         partial_trigger_tokens: 18
@@ -187,7 +187,7 @@ runtime:
   tts_max_chars: 96
   tts_drop_backlog_threshold: 2
   llm_streaming_tokens: 12
-  max_pipeline_latency_ms: 6000
+  max_pipeline_latency_ms: 2200
   asr_frontend_enabled: true
   asr_frontend_target_rms: 0.05
   asr_frontend_max_gain: 3.0
@@ -228,17 +228,17 @@ runtime:
   enable_partial_stabilization: true
   enable_structured_logging: true
   runtime_log_format: jsonl
-  asr_profile_local: meeting_room
-  asr_profile_remote: meeting_room
+  asr_profile_local: turn_taking
+  asr_profile_remote: turn_taking
   degradation_policy_enabled: true
 asr_profiles:
   chinese:
     engine: faster_whisper
-    model: .\runtimes\models\belle-zh-ct2
+    model: large-v3-turbo
     device: cuda
     compute_type: float16
-    beam_size: 2
-    final_beam_size: 5
+    beam_size: 1
+    final_beam_size: 4
     condition_on_previous_text: false
     final_condition_on_previous_text: false
     initial_prompt: 以下是繁體中文口語敘事逐字稿。
@@ -252,7 +252,7 @@ asr_profiles:
       enabled: true
       backend: silero_vad
       min_speech_duration_ms: 140
-      min_silence_duration_ms: 520
+      min_silence_duration_ms: 280
       max_speech_duration_s: 12.0
       speech_pad_ms: 220
       rms_threshold: 0.021
@@ -261,8 +261,8 @@ asr_profiles:
     streaming:
       partial_interval_ms: 240
       partial_history_seconds: 1
-      final_history_seconds: 16
-      soft_final_audio_ms: 3600
+      final_history_seconds: 8
+      soft_final_audio_ms: 1800
   non_chinese:
     engine: faster_whisper
     model: large-v3-turbo

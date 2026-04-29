@@ -30,15 +30,11 @@ class ConfigApplyService:
 
     def sync_ui_to_config(self, config: AppConfig) -> None:
         config.audio = self._audio_routing_page.selected_audio_routes()
-        config.runtime.passthrough_gain = 1.0
-        config.runtime.tts_gain = 1.0
         self._live_caption_page.update_config(config)
         self._local_ai_page.update_config(config)
         self.apply_audio_route_levels(config)
 
     def sync_live_caption_to_config(self, config: AppConfig) -> None:
-        config.runtime.passthrough_gain = 1.0
-        config.runtime.tts_gain = 1.0
         self._live_caption_page.update_config(config)
         self.apply_audio_route_levels(config)
 

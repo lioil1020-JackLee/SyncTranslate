@@ -63,11 +63,6 @@ _TRANSLATION_TARGET_CHOICES: list[tuple[str, str]] = [
     ("th", "泰文"),
 ]
 
-_OUTPUT_MODE_CHOICES: list[tuple[str, str]] = [
-    ("passthrough", "直通"),
-    ("tts", "翻譯"),
-]
-
 _CHANNELS: tuple[str, str] = ("remote", "local")
 
 _TTS_VOICE_OPTIONS: dict[str, list[tuple[str, str]]] = {
@@ -115,6 +110,7 @@ class LiveCaptionPage(_LiveCaptionConfigMixin, QWidget):
             "chinese": "large-v3-turbo",
             "non_chinese": "large-v3-turbo",
         }
+        self._last_emitted_output_mode: str = ""
 
         self.remote_asr_combo = QComboBox()
         self.local_asr_combo = QComboBox()
@@ -134,13 +130,9 @@ class LiveCaptionPage(_LiveCaptionConfigMixin, QWidget):
         self._configure_combo_popup(self.remote_lang_combo)
         self._configure_combo_popup(self.local_lang_combo)
 
+        # Backward-compatible hidden widgets kept for existing tests and callers.
         self.remote_output_mode_combo = QComboBox()
         self.local_output_mode_combo = QComboBox()
-        for code, label in _OUTPUT_MODE_CHOICES:
-            self.remote_output_mode_combo.addItem(label, code)
-            self.local_output_mode_combo.addItem(label, code)
-        self._configure_combo_popup(self.remote_output_mode_combo)
-        self._configure_combo_popup(self.local_output_mode_combo)
         self.remote_output_mode_combo.hide()
         self.local_output_mode_combo.hide()
 
@@ -215,8 +207,6 @@ class LiveCaptionPage(_LiveCaptionConfigMixin, QWidget):
         for combo in (
             self.remote_asr_combo,
             self.local_asr_combo,
-            self.remote_output_mode_combo,
-            self.local_output_mode_combo,
             self.remote_lang_combo,
             self.local_lang_combo,
             self.remote_tts_voice_combo,
@@ -225,16 +215,11 @@ class LiveCaptionPage(_LiveCaptionConfigMixin, QWidget):
             combo.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             if combo in (self.remote_tts_voice_combo, self.local_tts_voice_combo):
                 combo.setFixedWidth(120)
-            elif combo in (self.remote_output_mode_combo, self.local_output_mode_combo):
-                combo.setFixedWidth(78)
             elif combo in (self.remote_lang_combo, self.local_lang_combo):
                 combo.setFixedWidth(70)
             else:
                 combo.setFixedWidth(90)
-            if combo in (self.remote_output_mode_combo, self.local_output_mode_combo):
-                combo.currentIndexChanged.connect(self._handle_output_mode_changed)
-            else:
-                combo.currentIndexChanged.connect(self._notify_settings_changed)
+            combo.currentIndexChanged.connect(self._notify_settings_changed)
         self._refresh_asr_backend_hints()
         self.remote_lang_combo.currentIndexChanged.connect(self._on_translation_target_changed)
         self.local_lang_combo.currentIndexChanged.connect(self._on_translation_target_changed)
@@ -348,10 +333,6 @@ class LiveCaptionPage(_LiveCaptionConfigMixin, QWidget):
             for channel in _CHANNELS:
                 voice_value = self._config_tts_voice(config, channel)
                 self._select_combo_data(self._channel_combo(channel, "voice"), voice_value)
-                self._select_combo_data(
-                    self._channel_combo(channel, "mode"),
-                    "tts" if self._config_tts_enabled(config, channel) else "passthrough",
-                )
                 self._ensure_translation_defaults(channel)
         finally:
             self._suspend_notify = False
@@ -441,7 +422,6 @@ class LiveCaptionPage(_LiveCaptionConfigMixin, QWidget):
         self._direction_controls_enabled = bool(enabled)
         for channel in _CHANNELS:
             self._channel_combo(channel, "asr").setEnabled(self._direction_controls_enabled)
-            self._channel_combo(channel, "mode").setEnabled(self._direction_controls_enabled)
         self._update_source_language_controls()
 
     def set_panel_statuses(
@@ -479,6 +459,11 @@ class LiveCaptionPage(_LiveCaptionConfigMixin, QWidget):
         self._update_source_language_controls()
         self._refresh_panel_labels()
         self._refresh_asr_backend_hints()
+        if self._on_output_mode_changed:
+            mode = self.selected_tts_output_mode()
+            if mode != self._last_emitted_output_mode:
+                self._last_emitted_output_mode = mode
+                self._on_output_mode_changed(mode)
         if self._on_settings_changed:
             self._on_settings_changed()
 
@@ -559,16 +544,6 @@ class LiveCaptionPage(_LiveCaptionConfigMixin, QWidget):
             combo.setCurrentIndex(idx if idx >= 0 else 0)
         finally:
             combo.blockSignals(False)
-
-    def _handle_output_mode_changed(self, *_args) -> None:
-        self._ensure_translation_defaults("remote")
-        self._ensure_translation_defaults("local")
-        self._update_source_language_controls()
-        self._refresh_panel_labels()
-        if self._on_output_mode_changed:
-            self._on_output_mode_changed(self.selected_tts_output_mode())
-        if self._on_settings_changed and not self._suspend_notify:
-            self._on_settings_changed()
 
     def clear(self) -> None:
         for channel in _CHANNELS:
@@ -717,7 +692,6 @@ class LiveCaptionPage(_LiveCaptionConfigMixin, QWidget):
             asr_enabled = enabled and self._selected_asr_language(channel) != "none"
             translation_enabled = asr_enabled and self._selected_translation_target(channel) != "none"
             self._channel_combo(channel, "asr").setEnabled(enabled)
-            self._channel_combo(channel, "mode").setEnabled(False)
             self._channel_combo(channel, "target").setEnabled(asr_enabled)
             self._channel_combo(channel, "voice").setEnabled(translation_enabled)
             self._channel_combo(channel, "asr").setToolTip("ASR辨識語言，可選 auto 或指定語言")
@@ -762,14 +736,12 @@ class LiveCaptionPage(_LiveCaptionConfigMixin, QWidget):
         if channel == "remote":
             mapping = {
                 "asr": self.remote_asr_combo,
-                "mode": self.remote_output_mode_combo,
                 "target": self.remote_lang_combo,
                 "voice": self.remote_tts_voice_combo,
             }
         else:
             mapping = {
                 "asr": self.local_asr_combo,
-                "mode": self.local_output_mode_combo,
                 "target": self.local_lang_combo,
                 "voice": self.local_tts_voice_combo,
             }
