@@ -422,9 +422,9 @@ class LocalAiPageUiTests(_QtTestCase):
         self.assertEqual(page.remote_asr_partial_interval_spin.value(), 480)
         self.assertAlmostEqual(page.asr_rms_threshold_spin.value(), 0.022, places=3)
         self.assertAlmostEqual(page.remote_asr_rms_threshold_spin.value(), 0.020, places=3)
-        self.assertEqual(page.asr_min_silence_spin.value(), 640)
+        self.assertEqual(page.asr_min_silence_spin.value(), 600)
         self.assertEqual(page.asr_speech_pad_spin.value(), 360)
-        self.assertEqual(page.remote_asr_min_silence_spin.value(), 560)
+        self.assertEqual(page.remote_asr_min_silence_spin.value(), 520)
         self.assertEqual(page.remote_asr_speech_pad_spin.value(), 320)
         self.assertEqual(page.runtime_sample_rate_spin.currentData(), 48000)
         self.assertEqual(page.runtime_chunk_spin.value(), 40)
@@ -443,7 +443,7 @@ class LocalAiPageUiTests(_QtTestCase):
         self.assertEqual(updated.tts.style_preset, "broadcast_clear")
         self.assertEqual(updated.llm.caption_profile, "live_caption_fast")
         self.assertEqual(updated.llm.speech_profile, "speech_output_natural")
-        self.assertEqual(updated.asr_channels.local.final_beam_size, 4)
+        self.assertEqual(updated.asr_channels.local.final_beam_size, 5)
         self.assertEqual(updated.asr_channels.remote.final_beam_size, 5)
         self.assertEqual(updated.runtime.asr_profile_local, "meeting_room")
         self.assertEqual(updated.runtime.asr_profile_remote, "meeting_room")
@@ -545,8 +545,8 @@ class LocalAiPageUiTests(_QtTestCase):
 
         self.assertEqual(updated.llm.caption_profile, "dialogue_fast")
         self.assertEqual(updated.llm.speech_profile, "dialogue_fast")
-        self.assertEqual(updated.runtime.asr_profile_local, "meeting_room")
-        self.assertEqual(updated.runtime.asr_profile_remote, "meeting_room")
+        self.assertEqual(updated.runtime.asr_profile_local, "turn_taking")
+        self.assertEqual(updated.runtime.asr_profile_remote, "turn_taking")
 
     def test_local_ai_page_keeps_final_correction_disabled_in_exported_runtime(self) -> None:
         page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
