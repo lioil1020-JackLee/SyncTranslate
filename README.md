@@ -51,7 +51,6 @@ SyncTranslate 是一個以 Windows 桌面為主的即時雙向字幕 / 翻譯 / 
   - `audio_router.py`
   - `transcript_service.py`
   - `transcript_postprocessor.py`
-  - `asr_event_processor.py`
   - `translation_dispatcher.py`
   - `tts_dispatcher.py`
   - `pipeline_metrics.py`
@@ -221,14 +220,21 @@ powershell -ExecutionPolicy Bypass -File .\tools\runtime_setup\relocate_ai_runti
 - `runtime.enable_structured_logging`：jsonl 結構化日誌
 - `runtime.asr_queue_maxsize_local` / `runtime.asr_queue_maxsize_remote`
 
-### ASR 辨識率調校狀態（2026-04-25）
+### ASR 辨識率調校狀態（2026-04-30 v2.0.0）
 
-目前離線辨識已達穩定水準，主要不再調整離線 decoder；後續優化重點放在即時串流。
+四組中文 ASR 離線 benchmark（袘觀）：
 
-- 離線英文 benchmark：normalized WER 約 `0.8%`
-- 離線中文 benchmark：normalized CER 約 `6.8%`
-- 即時英文 benchmark：尾端幻聽過濾後 normalized accuracy 約 `99.3%`
-- 即時中文長故事 benchmark：overlay / 片尾過濾與 final correction 關閉後約 `86.3%`，主要瓶頸仍是背景音與即時切段波動
+| 組合 | 辨識率 |
+|---|---|
+| turbo + 對話模式 | **88.67%** |
+| turbo + 會議模式 | 86.97% |
+| belle + 對話模式 | 85.60% |
+| belle + 會議模式 | 85.10% |
+
+即時串流參考：
+
+- 即時英文：尾端幻聽過濾後 normalized accuracy 約 `99.3%`
+- 即時中文長故事：約 `86.3%`（背景音與即時切段波動為主要瓶頸）
 
 使用時請優先確認 `runtime.local_asr_language` / `runtime.remote_asr_language` 與實際說話語言一致。語言鎖錯時，辨識率會明顯下降。
 
@@ -251,9 +257,9 @@ UI 內建兩種快速模式：
 
 ASR 路由規則：
 
-- `zh` / `zh-TW` / `zh-CN` / `cmn` / `yue` -> `faster_whisper_v2`
-- 其他語言 -> `faster_whisper_v2`
-- `auto` -> `faster_whisper_v2`
+- `zh` / `zh-TW` / `zh-CN` / `cmn` / `yue` -> `belle-zh-ct2`（faster-whisper CTranslate2）
+- 其他語言 -> `large-v3-turbo`（faster-whisper）
+- `auto` -> `large-v3-turbo`（faster-whisper）
 - `none` -> disabled
 
 ## Diagnostics 觀測
