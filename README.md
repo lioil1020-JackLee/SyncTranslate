@@ -4,9 +4,10 @@ SyncTranslate 是一個以 Windows 桌面為主的即時雙向字幕 / 翻譯 / 
 
 目前專案的主線已切換到 `ASR v2`。新的 ASR 架構重點是：
 
-- 中文 ASR 自動使用 `faster-whisper + silero-vad`
-- 非中文與 `auto` 自動使用 `faster-whisper`
+- 中文 ASR 固定使用 `belle-zh-ct2`（faster-whisper CTranslate2）+ silero-vad
+- 非中文與 `auto` 固定使用 `large-v3-turbo`（faster-whisper）
 - `none` 會直接停用該通道 ASR
+- ASR 模型由系統根據通道語言自動路由，**不需手動選擇**
 - 模型採懶載入與共享 registry，避免啟動時重複初始化
 - diagnostics / session report 會輸出每通道實際使用的 backend、effective device、初始化狀態
 - 依 ASR 語言套用 `language_profiles.py` 的辨識參數，中文、英文、日文、韓文、泰文會使用不同 VAD / endpoint / prompt / no-speech 設定
@@ -20,9 +21,9 @@ SyncTranslate 是一個以 Windows 桌面為主的即時雙向字幕 / 翻譯 / 
   - `remote` 與 `local` 可同時存在
   - 可對應 VoiceMeeter / 實體裝置 / 虛擬裝置
 - 即時 ASR
-  - 中文走 faster-whisper
-  - 非中文走 faster-whisper
-  - 每通道可獨立指定 ASR 語言
+  - 中文通道固定使用 `belle-zh-ct2`（faster-whisper CTranslate2）
+  - 非中文 / `auto` 通道固定使用 `large-v3-turbo`（faster-whisper）
+  - 每通道可獨立指定 ASR 語言，模型自動路由，不需手動選擇
 - 即時翻譯
   - 目前以 LM Studio 為主要本地 LLM backend
 - TTS / passthrough 輸出
@@ -241,14 +242,12 @@ ASR 模型不再依「遠端 / 本地」來源決定，而是依每個通道的 
 
 因此遠端 ASR 若選「中文」，實際會使用中文 profile（例如 `.\runtimes\models\belle-zh-ct2`），UI 標籤、健康檢查與 runtime 都會走同一條解析規則。快速情境模式只調整延遲 / 穩定度參數，不會覆蓋已選定的 ASR 模型。
 
-UI 內建三種快速模式：
+UI 內建兩種快速模式：
 
-- `超穩定會議字幕`
-  - ASR 使用 `meeting_room`，LLM / TTS 也偏穩定；適合長句字幕、會議監聽、降低 partial / final 抖動
-- `低延遲對話（穩定 ASR）`
-  - ASR 使用 `meeting_room`，LLM / TTS 使用低延遲對話設定；建議中文雙向對話優先使用
-- `低延遲雙向對話`
-  - ASR 使用 `turn_taking`，偏向短句往返、提早切段、降低對話等待感；中文準確率可能低於穩定 ASR 模式
+- **會議模式（穩定切段）** `meeting_monitor`
+  - ASR 使用 `meeting_room` profile，VAD min_silence=600ms，soft_final=4000ms；適合長句字幕、會議監聽、影片字幕
+- **對話模式（低延遲）** `dialogue`
+  - ASR 使用 `turn_taking` profile，VAD min_silence=280ms，soft_final=2000ms；適合雙向短句對話，切段更快
 
 ASR 路由規則：
 
