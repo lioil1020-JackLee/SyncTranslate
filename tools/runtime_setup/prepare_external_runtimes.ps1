@@ -240,9 +240,15 @@ Write-Host "  runtimes/shared/Lib/site-packages/llama_cpp"
 $verifyLlamaCpp = @'
 from llama_cpp import Llama
 import llama_cpp
+from llama_cpp.llama_cpp import llama_supports_gpu_offload
 print("llama_cpp ready: " + str(getattr(llama_cpp, "__version__", "unknown")))
+print("llama_cpp gpu: " + str(llama_supports_gpu_offload()))
+if not llama_supports_gpu_offload():
+    raise SystemExit("llama-cpp-python does not support GPU offload")
 '@
-& $sharedPy -c $verifyLlamaCpp
+$verifyLlamaCppPath = Join-Path $env:TEMP "synctranslate_verify_llama_cpp.py"
+Set-Content -LiteralPath $verifyLlamaCppPath -Value $verifyLlamaCpp -Encoding ASCII
+& $sharedPy $verifyLlamaCppPath
 if ($LASTEXITCODE -ne 0) {
     throw "llama-cpp-python verification failed in runtimes/shared"
 }
