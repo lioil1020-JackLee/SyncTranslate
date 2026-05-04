@@ -9,6 +9,27 @@ from threading import Lock, RLock
 from typing import Any
 
 from app.infra.config.schema import DEFAULT_FIXED_LLM_MODEL, TranslationProfileConfig
+from app.infra.translation._stream_parser import (
+    _contains_cjk,
+    _looks_like_glossary,
+    _extract_rhs_candidate,
+    _zh_line_score,
+    _strip_thinking_sections,
+    _extract_translation_from_json,
+    _extract_json_field,
+    _sanitize_surface_text,
+    _clean_correction_output,
+    _looks_like_structured_reply,
+    _looks_like_markup_fragment,
+    _looks_like_overexpanded_translation,
+    _language_label,
+)
+from app.infra.translation._prompt_builder import (
+    _translation_response_format,
+    _correction_response_format,
+    _profile_hint,
+    _parse_stop_tokens,
+)
 
 
 @dataclass(slots=True)
@@ -415,27 +436,3 @@ class InProcessLlamaClient:
         if len(value) <= limit:
             return value
         return value[: limit - 3] + "..."
-
-
-# Re-export helpers that live in dedicated sub-modules.
-from app.infra.translation._stream_parser import (  # noqa: E402, F401
-    _contains_cjk,
-    _looks_like_glossary,
-    _extract_rhs_candidate,
-    _zh_line_score,
-    _strip_thinking_sections,
-    _extract_translation_from_json,
-    _extract_json_field,
-    _sanitize_surface_text,
-    _clean_correction_output,
-    _looks_like_structured_reply,
-    _looks_like_markup_fragment,
-    _looks_like_overexpanded_translation,
-    _language_label,
-)
-from app.infra.translation._prompt_builder import (  # noqa: E402, F401
-    _translation_response_format,
-    _correction_response_format,
-    _profile_hint,
-    _parse_stop_tokens,
-)

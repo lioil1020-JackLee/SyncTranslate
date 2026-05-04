@@ -413,3 +413,45 @@ class TestHealthcheckController:
         ctrl.run()
         ctrl.tick()
         assert statuses[-1].ok is False
+
+
+# ---------------------------------------------------------------------------
+# ASRManagerV2 — Event fast-path (P2-4)
+# ---------------------------------------------------------------------------
+
+class TestASRManagerV2FastPath:
+    """Verify that set_enabled / submit use the Event fast path correctly."""
+
+    def _make_manager(self):
+        from unittest.mock import MagicMock
+        from app.infra.asr.manager_v2 import ASRManagerV2
+        from app.infra.config.schema import AppConfig
+
+        cfg = AppConfig()
+        mgr = ASRManagerV2(cfg)
+        return mgr
+
+    def test_initially_both_channels_enabled(self):
+        mgr = self._make_manager()
+        assert mgr._enabled_events["local"].is_set()
+        assert mgr._enabled_events["remote"].is_set()
+
+    def test_set_enabled_false_clears_event(self):
+        mgr = self._make_manager()
+        mgr.set_enabled("local", False)
+        assert not mgr._enabled_events["local"].is_set()
+        assert not mgr.is_enabled("local")
+
+    def test_set_enabled_true_sets_event(self):
+        mgr = self._make_manager()
+        mgr.set_enabled("local", False)
+        mgr.set_enabled("local", True)
+        assert mgr._enabled_events["local"].is_set()
+        assert mgr.is_enabled("local")
+
+    def test_remote_event_independent_of_local(self):
+        mgr = self._make_manager()
+        mgr.set_enabled("local", False)
+        assert not mgr._enabled_events["local"].is_set()
+        assert mgr._enabled_events["remote"].is_set()
+

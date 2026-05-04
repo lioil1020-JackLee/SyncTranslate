@@ -9,6 +9,7 @@ import yaml
 from app.infra.config.settings_store import (
     _normalize_external_config_keys,
     _present_external_config_keys,
+    _validate_config_structure,
     load_config,
     save_config,
     is_legacy_config,
@@ -496,6 +497,41 @@ class ConfigMigrationTests(unittest.TestCase):
         self.assertTrue(loaded.runtime.local_echo_guard_enabled)
         self.assertEqual(loaded.runtime.local_echo_guard_resume_delay_ms, 420)
         self.assertEqual(loaded.runtime.remote_echo_guard_resume_delay_ms, 520)
+
+
+class SchemaValidationTests(unittest.TestCase):
+    """Tests for _validate_config_structure (P2-1)."""
+
+    def test_non_dict_top_level_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            _validate_config_structure("not-a-dict")  # type: ignore[arg-type]
+
+    def test_non_dict_section_removed_with_warning(self) -> None:
+        raw = {"runtime": "bad-value", "language": {"meeting_target": "en"}}
+        cleaned = _validate_config_structure(raw)
+        self.assertNotIn("runtime", cleaned)
+        self.assertIn("language", cleaned)
+
+    def test_valid_dict_sections_kept_unchanged(self) -> None:
+        raw = {"runtime": {"tts_output_mode": "subtitle_only"}, "display": {"theme": "dark"}}
+        cleaned = _validate_config_structure(raw)
+        self.assertEqual(cleaned["runtime"]["tts_output_mode"], "subtitle_only")
+        self.assertEqual(cleaned["display"]["theme"], "dark")
+
+    def test_empty_dict_passes(self) -> None:
+        cleaned = _validate_config_structure({})
+        self.assertEqual(cleaned, {})
+
+    def test_load_config_handles_malformed_section(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".yaml", delete=False, mode="w", encoding="utf-8") as fp:
+            yaml.safe_dump({"runtime": "malformed"}, fp)
+            tmp_path = Path(fp.name)
+        try:
+            cfg = load_config(tmp_path)
+            # Should not raise; runtime falls back to defaults
+            self.assertIsInstance(cfg, AppConfig)
+        finally:
+            tmp_path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

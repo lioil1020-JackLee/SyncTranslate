@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from threading import Lock
+from threading import Event, Lock
 from typing import Callable
 from uuid import uuid4
 
@@ -44,6 +44,11 @@ class ASRManagerV2:
         self._user_callbacks: dict[str, Callable[[ASREventWithSource], None] | None] = {"local": None, "remote": None}
         self._callbacks: dict[str, Callable[[ASREventWithSource], None] | None] = {"local": None, "remote": None}
         self._enabled = {"local": True, "remote": True}
+        self._enabled_events: dict[str, Event] = {
+            "local": Event(), "remote": Event()
+        }
+        self._enabled_events["local"].set()
+        self._enabled_events["remote"].set()
         self._runtimes: dict[str, SourceRuntimeV2] = {}
         self._source_resolution: dict[str, dict[str, object]] = {}
         self._lock = Lock()
@@ -144,7 +149,9 @@ class ASRManagerV2:
 
     def submit(self, source: str, chunk: np.ndarray, sample_rate: float) -> None:
         key = source if source in {"local", "remote"} else "local"
-        if not self.is_enabled(key):
+        # Fast path: Event.is_set() is lock-free and avoids lock acquisition
+        # on every audio chunk (25-100 ms interval).
+        if not self._enabled_events[key].is_set():
             return
         runtime = self._stream_of(key)
         runtime.submit_chunk(self._collapse_stereo_for_asr(chunk), sample_rate)
@@ -153,6 +160,10 @@ class ASRManagerV2:
         key = source if source in {"local", "remote"} else "local"
         with self._lock:
             self._enabled[key] = bool(enabled)
+        if enabled:
+            self._enabled_events[key].set()
+        else:
+            self._enabled_events[key].clear()
 
     def is_enabled(self, source: str) -> bool:
         key = source if source in {"local", "remote"} else "local"

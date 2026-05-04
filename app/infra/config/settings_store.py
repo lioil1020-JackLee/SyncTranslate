@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import logging
 from pathlib import Path
 import sys
 from typing import Any
@@ -76,6 +77,31 @@ def _ensure_config_file(config_path: str | Path = "config.yaml") -> Path:
     return target
 
 
+_log = logging.getLogger(__name__)
+
+_DICT_SECTIONS = ("runtime", "translation", "audio", "tts", "display")
+
+
+def _validate_config_structure(raw: dict[str, Any]) -> dict[str, Any]:
+    """Basic structural validation of raw YAML config.
+
+    Returns a cleaned copy with malformed sections removed.
+    Raises ValueError only if the top-level value is not a mapping.
+    """
+    if not isinstance(raw, dict):
+        raise ValueError(f"Config must be a YAML mapping, got {type(raw).__name__}")
+    cleaned = dict(raw)
+    for section in _DICT_SECTIONS:
+        if section in cleaned and not isinstance(cleaned[section], dict):
+            _log.warning(
+                "Config section %r must be a mapping; ignoring malformed value (got %s). Using defaults.",
+                section,
+                type(cleaned[section]).__name__,
+            )
+            del cleaned[section]
+    return cleaned
+
+
 def load_config(config_path: str | Path = "config.yaml", fallback_path: str | Path = "config.example.yaml") -> AppConfig:
     path = _resolve_existing_path(config_path)
     if not path.exists():
@@ -87,6 +113,7 @@ def load_config(config_path: str | Path = "config.yaml", fallback_path: str | Pa
 
     with path.open("r", encoding="utf-8") as fp:
         raw: dict[str, Any] = yaml.safe_load(fp) or {}
+    raw = _validate_config_structure(raw)
     raw = _normalize_external_config_keys(raw)
 
     migrated = migrate_legacy_config(raw)

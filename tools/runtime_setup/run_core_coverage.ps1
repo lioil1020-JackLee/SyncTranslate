@@ -40,14 +40,13 @@ Run-Coverage -Module "app.application.session_service" -Tests @("tests/test_sess
 Run-Coverage -Module "app.application.translation_dispatcher" -Tests @("tests/test_audio_router_refactor_smoke.py") -DataFile ".coverage.translation_dispatcher"
 
 # worker_v2
-# NOTE: In some Windows environments numpy/native extension state can still conflict under coverage.
-# Keep this run separate so a failure does not hide previous successful module reports.
-try {
-    Run-Coverage -Module "app.infra.asr.worker_v2" -Tests @("tests/test_asr_v2_endpointing.py", "tests/test_asr_streaming_and_profiles.py") -DataFile ".coverage.worker_v2"
-}
-catch {
-    Write-Warning "worker_v2 coverage failed in current environment: $($_.Exception.Message)"
-    Write-Warning "Try running this script in a fresh shell with no preloaded Python processes."
+# worker_v2 — use coverage run (not pytest-cov) to avoid numpy C-extension double-load
+Write-Host "`n[coverage] module=app.infra.asr.worker_v2 (via coverage run)"
+$env:COVERAGE_FILE = ".coverage.worker_v2"
+& $python -m coverage run --data-file=".coverage.worker_v2" -m pytest tests/test_asr_v2_endpointing.py tests/test_asr_streaming_and_profiles.py -q
+& $python -m coverage report --data-file=".coverage.worker_v2" --include="app/infra/asr/worker_v2.py"
+if ($LASTEXITCODE -ne 0) {
+    Write-Warning "worker_v2 coverage failed (exit=$LASTEXITCODE)"
 }
 
 Write-Host "`n[coverage] done"
