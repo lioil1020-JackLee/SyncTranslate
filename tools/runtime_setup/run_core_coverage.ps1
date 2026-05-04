@@ -37,7 +37,7 @@ function Run-Coverage {
 Run-Coverage -Module "app.application.session_service" -Tests @("tests/test_session_service.py") -DataFile ".coverage.session_service"
 
 # translation_dispatcher
-Run-Coverage -Module "app.application.translation_dispatcher" -Tests @("tests/test_translation_manager_profiles.py", "tests/test_pipeline_integration.py") -DataFile ".coverage.translation_dispatcher"
+Run-Coverage -Module "app.application.translation_dispatcher" -Tests @("tests/test_audio_router_refactor_smoke.py") -DataFile ".coverage.translation_dispatcher"
 
 # worker_v2
 # NOTE: In some Windows environments numpy/native extension state can still conflict under coverage.
