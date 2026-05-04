@@ -42,6 +42,18 @@ function Assert-PythonModule {
     }
 }
 
+function Assert-LlamaRuntime {
+    param(
+        [string]$PythonExe,
+        [string]$Label
+    )
+    Assert-RuntimeFile -Path $PythonExe -Label "$Label Python"
+    & $PythonExe ".\tools\runtime_setup\verify_llama_runtime.py" --require-gpu | Out-Host
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Label cannot load CUDA llama-cpp-python using $PythonExe"
+    }
+}
+
 if (-not $SkipValidation) {
     Assert-RuntimeFile -Path (Join-Path $DevRuntimesPath "shared") -Label "Shared runtime"
     Assert-RuntimeFile -Path (Join-Path $DevRuntimesPath "faster_whisper") -Label "faster-whisper runtime"
@@ -49,7 +61,7 @@ if (-not $SkipValidation) {
     Assert-RuntimeFile -Path (Join-Path $DevRuntimesPath "shared\Lib\site-packages\llama_cpp\lib\llama.dll") -Label "llama.cpp DLL"
     Assert-RuntimeFile -Path (Join-Path $DevRuntimesPath "models\belle-zh-ct2\config.json") -Label "Belle ASR model"
     Assert-RuntimeFile -Path (Join-Path $DevRuntimesPath "models\llm\hy-mt1.5-7b.gguf") -Label "HY-MT1.5 GGUF model"
-    Assert-PythonModule -PythonExe (Join-Path $DevRuntimesPath "shared\Scripts\python.exe") -ModuleName "llama_cpp" -Label "Shared runtime"
+    Assert-LlamaRuntime -PythonExe (Join-Path $DevRuntimesPath "shared\Scripts\python.exe") -Label "Shared runtime"
 }
 
 $runtimesDestRoot = Join-Path $DistRoot "runtimes"
@@ -85,7 +97,7 @@ if (-not $SkipValidation) {
     Assert-RuntimeFile -Path (Join-Path $runtimesDestRoot "models\llm\hy-mt1.5-7b.gguf") -Label "Packaged HY-MT1.5 GGUF model"
     Assert-RuntimeFile -Path (Join-Path $runtimesDestRoot "shared\Lib\site-packages\llama_cpp\__init__.py") -Label "Packaged llama-cpp-python package"
     Assert-RuntimeFile -Path (Join-Path $runtimesDestRoot "shared\Lib\site-packages\llama_cpp\lib\llama.dll") -Label "Packaged llama.cpp DLL"
-    Assert-PythonModule -PythonExe (Join-Path $runtimesDestRoot "shared\Scripts\python.exe") -ModuleName "llama_cpp" -Label "Packaged shared runtime"
+    Assert-LlamaRuntime -PythonExe (Join-Path $runtimesDestRoot "shared\Scripts\python.exe") -Label "Packaged shared runtime"
 }
 
 # Clean up any legacy _internal/runtimes/ directory if it exists

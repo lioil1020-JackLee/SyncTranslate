@@ -52,6 +52,7 @@ for runtime_script in (
     "relocate_ai_runtime_artifacts.ps1",
     "download_llm_model.py",
     "download_belle_model.py",
+    "verify_llama_runtime.py",
     "package_onedir.ps1",
 ):
     script_path = os.path.join(here, "tools", "runtime_setup", runtime_script)

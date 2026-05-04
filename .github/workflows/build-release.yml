@@ -56,7 +56,7 @@ jobs:
           if (!(Test-Path "runtimes/models/llm/hy-mt1.5-7b.gguf")) {
             throw "HY-MT1.5 GGUF model is missing"
           }
-          & $sharedPy -c "import llama_cpp; from llama_cpp.llama_cpp import llama_supports_gpu_offload; print('llama_cpp=' + str(getattr(llama_cpp, '__version__', 'unknown'))); print('llama_gpu=' + str(llama_supports_gpu_offload())); assert llama_supports_gpu_offload()"
+          & $sharedPy .\tools\runtime_setup\verify_llama_runtime.py --require-gpu
           $llmModel = Get-Item "runtimes/models/llm/hy-mt1.5-7b.gguf"
           if ($llmModel.Length -lt 100MB) {
             throw "HY-MT1.5 GGUF model is unexpectedly small: $($llmModel.Length)"
@@ -85,7 +85,7 @@ jobs:
             throw "Packaged HY-MT1.5 GGUF model is missing"
           }
           $packagedSharedPy = ".\dist\SyncTranslate-onedir\runtimes\shared\Scripts\python.exe"
-          & $packagedSharedPy -c "from llama_cpp import Llama; import llama_cpp; from llama_cpp.llama_cpp import llama_supports_gpu_offload; print('packaged llama_cpp=' + str(getattr(llama_cpp, '__version__', 'unknown'))); print('packaged llama_gpu=' + str(llama_supports_gpu_offload())); assert llama_supports_gpu_offload()"
+          & $packagedSharedPy .\tools\runtime_setup\verify_llama_runtime.py --require-gpu
           uv run python -c "import sys; from pathlib import Path; sys.frozen=True; sys.executable=str(Path('dist/SyncTranslate-onedir/SyncTranslate.exe').resolve()); from app.bootstrap.external_runtime import configure_external_ai_runtime; info=configure_external_ai_runtime(); print('mounted=' + str(info['site_packages'])); from app.infra.translation.inprocess_adapter import _find_llama_cpp, _resolve_model_path; print('Llama=' + str(_find_llama_cpp())); p=_resolve_model_path(r'.\runtimes\models\llm\hy-mt1.5-7b.gguf'); print('model=' + str(p)); assert p.exists()"
           $probe = Start-Process -FilePath ".\dist\SyncTranslate-onedir\SyncTranslate.exe" -ArgumentList @("--llm-runtime-check", "--config", ".\dist\SyncTranslate-onedir\config.yaml") -Wait -PassThru -NoNewWindow
           if ($probe.ExitCode -ne 0) {
