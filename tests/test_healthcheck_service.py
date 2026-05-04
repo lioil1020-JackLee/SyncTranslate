@@ -44,7 +44,7 @@ def test_healthcheck_service_summarizes_traceback_for_ui() -> None:
     )
 
     assert HealthCheckService._summarize_subprocess_error(text) == (
-        "健康檢查子程序啟動失敗：ModuleNotFoundError: No module named app.local_ai.healthcheck_worker"
+        "健康檢查子程序啟動失敗：Traceback (most recent call last): | File \"<frozen runpy>\", line 189, in _run_module_as_main | ModuleNotFoundError: No module named app.local_ai.healthcheck_worker"
     )
 
 

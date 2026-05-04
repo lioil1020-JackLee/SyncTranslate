@@ -4,6 +4,7 @@ Extracted from AudioRouter to make translation queue logic independently testabl
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from queue import Empty, Full, Queue
 from threading import Event, Thread
@@ -11,6 +12,8 @@ from typing import Callable
 
 from app.infra.asr.contracts import ASREventWithSource
 from app.infra.translation.engine import TranslatorManager
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -132,6 +135,12 @@ class TranslationDispatcher:
     # ------------------------------------------------------------------
 
     def _run(self) -> None:
+        try:
+            self._run_inner()
+        except Exception:
+            _log.exception("TranslationDispatcher thread crashed unexpectedly; translation is no longer processing")
+
+    def _run_inner(self) -> None:
         while not self._stop_event.is_set():
             try:
                 event = self._queue.get(timeout=0.3)
@@ -146,7 +155,12 @@ class TranslationDispatcher:
             try:
                 self._event_processor(event)
             except Exception:  # noqa: BLE001
-                pass  # errors should be handled by the caller's event_processor
+                _log.warning(
+                    "event_processor raised an exception for event source=%r text=%r",
+                    getattr(event, "source", "?"),
+                    str(getattr(event, "text", ""))[:80],
+                    exc_info=True,
+                )
             return
         try:
             correct_event = getattr(self._translator, "correct_asr_event", lambda v: v)
@@ -165,7 +179,12 @@ class TranslationDispatcher:
                 return
             self._on_translated(translated)
         except Exception:  # noqa: BLE001
-            pass  # translation errors must not crash the worker
+            _log.warning(
+                "Built-in translation failed for event source=%r text=%r",
+                getattr(event, "source", "?"),
+                str(getattr(event, "text", ""))[:80],
+                exc_info=True,
+            )
 
 
 __all__ = ["TranslationDispatcher", "TranslationDispatcherStats"]

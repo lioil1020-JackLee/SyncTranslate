@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from threading import Thread
 from typing import Any, Callable
 
+from app.domain.constants import ASR_DEFAULT_CHUNK_MS
+
 
 @dataclass
 class SessionActionResult:
@@ -67,7 +69,7 @@ class SessionActionController:
     def action_in_progress(self) -> bool:
         return self._action_running
 
-    def request_start(self, *, route: Any, sample_rate: int, chunk_ms: int = 100) -> None:
+    def request_start(self, *, route: Any, sample_rate: int, chunk_ms: int = ASR_DEFAULT_CHUNK_MS) -> None:
         """Request a session start in the background."""
         if self._action_running:
             return

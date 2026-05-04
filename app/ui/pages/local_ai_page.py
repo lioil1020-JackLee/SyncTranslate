@@ -33,6 +33,12 @@ from app.infra.config.schema import (
     TtsConfig,
     merge_tts_configs,
 )
+from app.domain.constants import (
+    TTS_DEFAULT_DROP_BACKLOG_THRESHOLD,
+    TTS_DEFAULT_MAX_CHARS,
+    TTS_DEFAULT_MAX_WAIT_MS,
+    TTS_DEFAULT_PARTIAL_MIN_CHARS,
+)
 
 _OFFICIAL_FASTER_WHISPER_MODELS = [
     # 官方建議模型（由大到小）
@@ -319,20 +325,26 @@ class LocalAiPage(QWidget):
                 bool(getattr(config.runtime, "tts_accept_stable_partial", False))
             )
             self.runtime_tts_partial_min_chars_spin.setValue(
-                int(getattr(config.runtime, "tts_partial_min_chars", 12))
+                int(getattr(config.runtime, "tts_partial_min_chars", TTS_DEFAULT_PARTIAL_MIN_CHARS))
             )
             self.runtime_tts_use_speech_profile_check.setChecked(
                 bool(getattr(config.runtime, "tts_use_speech_profile", False))
             )
             self.runtime_tts_cancel_pending_check.setChecked(config.runtime.tts_cancel_pending_on_new_final)
             self._select_combo_data(self.runtime_tts_cancel_policy_combo, str(getattr(config.runtime, "tts_cancel_policy", "all_pending")))
-            self.runtime_tts_max_wait_spin.setValue(int(getattr(config.runtime, "tts_max_wait_ms", 4000)))
-            self.runtime_tts_max_chars_spin.setValue(int(getattr(config.runtime, "tts_max_chars", 200)))
+            self.runtime_tts_max_wait_spin.setValue(
+                int(getattr(config.runtime, "tts_max_wait_ms", TTS_DEFAULT_MAX_WAIT_MS))
+            )
+            self.runtime_tts_max_chars_spin.setValue(
+                int(getattr(config.runtime, "tts_max_chars", TTS_DEFAULT_MAX_CHARS))
+            )
             self.runtime_llm_streaming_tokens_spin.setValue(int(getattr(config.runtime, "llm_streaming_tokens", 16)))
             self.runtime_max_pipeline_latency_spin.setValue(int(getattr(config.runtime, "max_pipeline_latency_ms", 3000)))
             self.runtime_translation_cache_spin.setValue(config.runtime.translation_exact_cache_size)
             self.runtime_prefix_delta_spin.setValue(config.runtime.translation_prefix_min_delta_chars)
-            self.runtime_tts_drop_threshold_spin.setValue(int(getattr(config.runtime, "tts_drop_backlog_threshold", 6)))
+            self.runtime_tts_drop_threshold_spin.setValue(
+                int(getattr(config.runtime, "tts_drop_backlog_threshold", TTS_DEFAULT_DROP_BACKLOG_THRESHOLD))
+            )
             self.local_echo_guard_check.setChecked(bool(getattr(config.runtime, "local_echo_guard_enabled", False)))
             self.local_echo_guard_delay_spin.setValue(int(getattr(config.runtime, "local_echo_guard_resume_delay_ms", 300)))
             self.remote_echo_guard_delay_spin.setValue(int(getattr(config.runtime, "remote_echo_guard_resume_delay_ms", 300)))

@@ -179,6 +179,18 @@ def parse_app_config(raw: dict[str, Any]) -> AppConfig:  # noqa: PLR0912,PLR0915
     runtime.use_channel_specific_asr = True
     runtime.use_channel_specific_llm = True
 
+    # P1-4: 數值範圍驗證 — 夾緊而非拒絕，保持容錯
+    runtime.passthrough_gain = max(0.0, min(4.0, float(runtime.passthrough_gain)))
+    runtime.tts_gain = max(0.0, min(4.0, float(runtime.tts_gain)))
+    runtime.chunk_ms = max(20, min(500, int(runtime.chunk_ms)))
+    runtime.asr_queue_maxsize_local = max(8, int(runtime.asr_queue_maxsize_local))
+    runtime.asr_queue_maxsize_remote = max(8, int(runtime.asr_queue_maxsize_remote))
+    runtime.tts_queue_maxsize_local = max(4, int(runtime.tts_queue_maxsize_local))
+    runtime.tts_queue_maxsize_remote = max(4, int(runtime.tts_queue_maxsize_remote))
+    valid_display_partial = {"all", "none", "stable_only"}
+    if runtime.display_partial_strategy not in valid_display_partial:
+        runtime.display_partial_strategy = "stable_only"
+
     return AppConfig(
         audio=audio,
         direction=direction,

@@ -55,9 +55,9 @@ class StateManager:
             self._asr_enabled[key] = bool(enabled)
 
     def can_accept_asr(self, source: str) -> bool:
-        self.tick()
-        key = source if source in ("local", "remote") else "local"
         with self._lock:
+            self._tick_locked(time.time())
+            key = source if source in ("local", "remote") else "local"
             return self._running and self._asr_enabled.get(key, False)
 
     def on_tts_start(self, channel: str) -> None:
@@ -79,16 +79,20 @@ class StateManager:
     def tick(self) -> None:
         now = time.time()
         with self._lock:
-            if self._local_echo_guard_enabled and not self._tts_busy["local"]:
-                if now >= self._echo_guard_resume_until["local"]:
-                    self._asr_enabled["local"] = True
-            # remote echo guard supports only delay sync (no enable flag in runtime currently)
-            if not self._tts_busy["remote"] and now >= self._echo_guard_resume_until["remote"]:
-                self._asr_enabled["remote"] = True
+            self._tick_locked(now)
+
+    def _tick_locked(self, now: float) -> None:
+        """Apply echo guard timeouts. Must be called with self._lock held."""
+        if self._local_echo_guard_enabled and not self._tts_busy["local"]:
+            if now >= self._echo_guard_resume_until["local"]:
+                self._asr_enabled["local"] = True
+        # remote echo guard supports only delay sync (no enable flag in runtime currently)
+        if not self._tts_busy["remote"] and now >= self._echo_guard_resume_until["remote"]:
+            self._asr_enabled["remote"] = True
 
     def snapshot(self) -> StateSnapshot:
-        self.tick()
         with self._lock:
+            self._tick_locked(time.time())
             return StateSnapshot(
                 running=self._running,
                 local_asr_enabled=self._asr_enabled["local"],

@@ -12,6 +12,7 @@ from app.infra.asr.contracts import ASREventWithSource, AsrManagerProtocol
 from app.infra.config.schema import AppConfig, AudioRouteConfig, RuntimeConfig
 from app.domain.runtime_state import StateManager
 from app.domain.constants import (
+    ASR_DEFAULT_CHUNK_MS,
     OUTPUT_MODE_TTS,
 )
 from app.application.translation_dispatcher import TranslationDispatcher
@@ -67,7 +68,7 @@ class AudioRouter:
         self._mode: str = ""
         self._routes: AudioRouteConfig | None = None
         self._sample_rate: int = 0
-        self._chunk_ms: int = 100
+        self._chunk_ms: int = ASR_DEFAULT_CHUNK_MS
         self._capture_running: dict[str, bool] = {"local": False, "remote": False}
         self._asr_running: dict[str, bool] = {"local": False, "remote": False}
         self._async_translation = bool(async_translation)
@@ -92,7 +93,7 @@ class AudioRouter:
         cfg = self._runtime_config
         return cfg.runtime if cfg is not None else None
 
-    def start(self, mode: str, routes: AudioRouteConfig, sample_rate: int, chunk_ms: int = 100) -> None:
+    def start(self, mode: str, routes: AudioRouteConfig, sample_rate: int, chunk_ms: int = ASR_DEFAULT_CHUNK_MS) -> None:
         self.stop()
         self._state.start_session()
         self._tts_manager.start()
@@ -123,7 +124,7 @@ class AudioRouter:
         self._mode = ""
         self._routes = None
         self._sample_rate = 0
-        self._chunk_ms = 100
+        self._chunk_ms = ASR_DEFAULT_CHUNK_MS
         self._capture_running = {"local": False, "remote": False}
         self._asr_running = {"local": False, "remote": False}
         self._partial_display_policy.reset()
@@ -390,6 +391,9 @@ class AudioRouter:
         self._runtime_config = config
         self._partial_display_policy.update_config(config)
         self._rebuild_postprocessor(config)
+        update_translator_config = getattr(self._translator_manager, "update_config", None)
+        if callable(update_translator_config):
+            update_translator_config(config)
         refresh_runtime = getattr(self._asr_manager, "refresh_runtime", None)
         if callable(refresh_runtime):
             refresh_runtime()

@@ -66,7 +66,7 @@ class SessionControllerTests(unittest.TestCase):
         self.assertIn("stats_before_stop", stop_result.payload)
         self.assertIn("session_meta", stop_result.payload)
 
-    def test_start_failure_sets_failed_state_and_invokes_stop_cleanup(self) -> None:
+    def test_start_failure_sets_idle_state_and_invokes_stop_cleanup(self) -> None:
         router = _FakeAudioRouter()
         router.fail_start = True
         controller = SessionController(router)  # type: ignore[arg-type]
@@ -74,7 +74,7 @@ class SessionControllerTests(unittest.TestCase):
 
         result = controller.start(routes, sample_rate=16000)
         self.assertFalse(result.ok)
-        self.assertEqual(controller.current_state(), SessionState.FAILED)
+        self.assertEqual(controller.current_state(), SessionState.IDLE)
         self.assertEqual(router.stop_calls, 1)
         self.assertIn("start failed", controller.last_failure())
 

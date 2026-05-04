@@ -18,6 +18,7 @@ from app.infra.asr.pipeline_v2 import AsrV2PipelineSpec, build_v2_pipeline_spec
 from app.infra.asr.profile_selection import asr_profile_for_language, requested_asr_language_for_source
 from app.infra.asr.worker_v2 import SourceRuntimeV2, V2RuntimeEvent
 from app.infra.config.schema import AppConfig, RuntimeConfig
+from app.domain.constants import ASR_DEFAULT_FRONTEND_HIGHPASS_ALPHA
 
 
 class ASRManagerV2:
@@ -293,7 +294,9 @@ class ASRManagerV2:
             frontend_enabled=bool(getattr(self._config.runtime, "asr_frontend_enabled", True)),
             frontend_target_rms=float(getattr(self._config.runtime, "asr_frontend_target_rms", 0.05)),
             frontend_max_gain=float(getattr(self._config.runtime, "asr_frontend_max_gain", 3.0)),
-            frontend_highpass_alpha=float(getattr(self._config.runtime, "asr_frontend_highpass_alpha", 0.96)),
+            frontend_highpass_alpha=float(
+                getattr(self._config.runtime, "asr_frontend_highpass_alpha", ASR_DEFAULT_FRONTEND_HIGHPASS_ALPHA)
+            ),
             enhancement_enabled=bool(getattr(self._config.runtime, "asr_enhancement_enabled", True)),
             enhancement_noise_reduce_strength=noise_reduce_strength,
             enhancement_noise_adapt_rate=float(

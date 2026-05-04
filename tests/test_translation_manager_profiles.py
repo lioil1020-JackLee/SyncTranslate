@@ -64,6 +64,25 @@ class _EmptyProvider(_FakeProvider):
 
 
 class TranslatorManagerProfileTests(unittest.TestCase):
+    @patch("app.infra.translation.engine.create_translation_provider")
+    def test_update_config_clears_language_cache(self, mock_factory) -> None:
+        providers = [_FakeProvider(), _FakeProvider()]
+        mock_factory.side_effect = providers
+
+        cfg = AppConfig()
+        manager = TranslatorManager(cfg)
+        manager._resolve_languages("local", "")
+        self.assertGreater(len(manager._lang_cache), 0)
+
+        new_cfg = AppConfig()
+        new_cfg.language.local_target = "ja"
+        manager.update_config(new_cfg)
+
+        self.assertEqual(len(manager._lang_cache), 0)
+        source_lang, target_lang = manager._resolve_languages("local", "")
+        self.assertEqual(source_lang, new_cfg.language.local_source)
+        self.assertEqual(target_lang, "ja")
+
     @patch("app.infra.translation.engine.AsrTextCorrector.correct")
     @patch("app.infra.translation.engine.create_translation_provider")
     def test_correct_asr_event_rewrites_final_text_for_downstream_use(self, mock_factory, mock_correct) -> None:

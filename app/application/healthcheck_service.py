@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 from queue import Empty, Queue
@@ -13,6 +14,9 @@ from dataclasses import dataclass
 from app.application.settings_service import SettingsService
 from app.local_ai.healthcheck import LocalHealthReport
 from app.infra.config.schema import AppConfig
+from app.infra.subprocess_utils import hidden_subprocess_kwargs, safe_subprocess_env
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -91,6 +95,8 @@ class HealthCheckService:
                 detail = self._summarize_subprocess_error(
                     stderr or stdout or f"健康檢查子程序結束，代碼 {completed.returncode}"
                 )
+                if stderr:
+                    _log.warning("HealthCheck subprocess failed (rc=%d):\n%s", completed.returncode, stderr)
                 raise RuntimeError(detail)
             payload = (completed.stdout or "").strip()
             if not payload:
@@ -112,16 +118,8 @@ class HealthCheckService:
 
     @staticmethod
     def _hidden_subprocess_kwargs() -> dict[str, object]:
-        if sys.platform != "win32":
-            return {}
-        kwargs: dict[str, object] = {
-            "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        }
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        startupinfo.wShowWindow = 0
-        kwargs["startupinfo"] = startupinfo
-        return kwargs
+        """Backward-compatible shim for tests/patches that target old helper."""
+        return hidden_subprocess_kwargs()
 
     @staticmethod
     def _summarize_subprocess_error(text: str) -> str:
@@ -129,14 +127,16 @@ class HealthCheckService:
         if not lines:
             return "健康檢查子程序失敗"
         if lines[0].startswith("Traceback"):
-            return f"健康檢查子程序啟動失敗：{lines[-1]}"
-        return lines[0] if len(lines) == 1 else f"{lines[0]} | {lines[-1]}"
+            tail = " | ".join(lines[-3:]) if len(lines) >= 3 else lines[-1]
+            return f"健康檢查子程序啟動失敗：{tail}"
+        if len(lines) == 1:
+            return lines[0]
+        tail_lines = lines[-2:] if len(lines) > 2 else lines[1:]
+        return f"{lines[0]} | " + " | ".join(tail_lines)
 
     def _run_subprocess(self, *, snapshot_path: str) -> subprocess.CompletedProcess[str]:
-        hidden_kwargs = self._hidden_subprocess_kwargs()
-        env = os.environ.copy()
-        env.setdefault("PYTHONUTF8", "1")
-        env.setdefault("PYTHONIOENCODING", "utf-8")
+        hidden_kwargs = hidden_subprocess_kwargs()
+        env = safe_subprocess_env()
         if getattr(sys, "frozen", False):
             return subprocess.run(
                 [

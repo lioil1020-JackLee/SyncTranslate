@@ -124,6 +124,9 @@ class TranslatorManager:
                 max_chars=correction_max_chars,
             ),
         }
+        # P1-7: 語言解析結果快取，避免每個 ASR 事件重複讀取相同 config 欄位
+        # key: (source, detected_language) -> (source_lang, target_lang)
+        self._lang_cache: dict[tuple[str, str], tuple[str, str]] = {}
 
     def last_skip_reason(self, source: str) -> str:
         key = source if source in {"local", "remote"} else "local"
@@ -139,6 +142,11 @@ class TranslatorManager:
             translation_enabled_for_source(self._config.runtime, key)
             for key in ("local", "remote")
         )
+
+    def update_config(self, config: AppConfig) -> None:
+        """Update runtime config and clear caches derived from config values."""
+        self._config = config
+        self._lang_cache.clear()
 
     def process(self, event: ASREventWithSource) -> TranslationEvent | None:
         source = event.source if event.source in ("local", "remote") else "local"
@@ -289,6 +297,10 @@ class TranslatorManager:
         return caption_text
 
     def _resolve_languages(self, source: str, detected_language: str) -> tuple[str, str]:
+        cache_key = (source, detected_language)
+        cached = self._lang_cache.get(cache_key)
+        if cached is not None:
+            return cached
         if source == "remote":
             default_source = self._config.language.meeting_source
             target = self._config.language.meeting_target
@@ -300,10 +312,21 @@ class TranslatorManager:
 
         detected = (detected_language or "").strip()
         if configured_asr_source and configured_asr_source != "auto":
-            return configured_asr_source, target
-        if detected:
-            return detected, target
-        return default_source, target
+            result = configured_asr_source, target
+            used_detected = False
+        elif detected:
+            result = detected, target
+            used_detected = True
+        else:
+            result = default_source, target
+            used_detected = False
+        if used_detected:
+            # 偵測到語言的結果不快取，因為下次可能偵測到不同語言代碼
+            return result
+        # configured 或 default 結果皆穩定，可安全快取
+        if len(self._lang_cache) < 64:
+            self._lang_cache[cache_key] = result
+        return result
 
     @staticmethod
     def _effective_llm_config(base: LlmConfig, channel: LlmConfig) -> LlmConfig:

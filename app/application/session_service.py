@@ -8,6 +8,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from app.application.audio_router import AudioRouter
+from app.domain.constants import ASR_DEFAULT_CHUNK_MS
 from app.infra.config.schema import AppConfig, AudioRouteConfig
 
 if TYPE_CHECKING:
@@ -53,7 +54,7 @@ class SessionController:
         self,
         routes: AudioRouteConfig,
         sample_rate: int,
-        chunk_ms: int = 100,
+        chunk_ms: int = ASR_DEFAULT_CHUNK_MS,
         *,
         mode: str = "bidirectional",
     ) -> SessionResult:
@@ -73,7 +74,7 @@ class SessionController:
             except Exception:
                 pass
             with self._lock:
-                self._state = SessionState.FAILED
+                self._state = SessionState.IDLE
                 self._last_failure = str(exc)
             return SessionResult(ok=False, message=str(exc))
         with self._lock:
@@ -126,6 +127,15 @@ class SessionController:
                 },
             },
         )
+
+    def reset_failed(self) -> SessionResult:
+        """將 FAILED 狀態重設為 IDLE，允許重試啟動。"""
+        with self._lock:
+            if self._state != SessionState.FAILED:
+                return SessionResult(ok=False, message=f"Session is not in FAILED state (current: {self._state.value})")
+            self._state = SessionState.IDLE
+            self._last_failure = ""
+        return SessionResult(ok=True, message="Session reset to IDLE")
 
 
 SessionService = SessionController

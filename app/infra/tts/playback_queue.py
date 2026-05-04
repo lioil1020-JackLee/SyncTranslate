@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 import time
 from collections import deque
 from threading import Condition, Event, Thread
@@ -8,6 +9,12 @@ from typing import Any, Callable
 
 import numpy as np
 
+from app.domain.constants import (
+    TTS_DEFAULT_DROP_BACKLOG_THRESHOLD,
+    TTS_DEFAULT_MAX_CHARS,
+    TTS_DEFAULT_MAX_WAIT_MS,
+    TTS_DEFAULT_PARTIAL_MIN_CHARS,
+)
 from app.domain.models import ErrorEvent
 from app.infra.audio.playback import AudioPlayback
 from app.infra.tts.edge_tts_adapter import EdgeTtsProvider
@@ -21,6 +28,8 @@ _EDGE_TTS_STYLE_RATES = {
     "conversational": "+6%",
     "fast_response": "+14%",
 }
+
+_log = logging.getLogger(__name__)
 
 
 def edge_tts_rate_for_style(style_preset: str) -> str:
@@ -97,11 +106,14 @@ class TTSManager:
                 int(getattr(self._config.runtime, "tts_queue_maxsize_remote", self._config.runtime.tts_queue_maxsize)),
             ),
         }
-        self._drop_threshold = max(2, int(self._config.runtime.tts_drop_backlog_threshold))
+        self._drop_threshold = max(
+            2,
+            int(getattr(self._config.runtime, "tts_drop_backlog_threshold", TTS_DEFAULT_DROP_BACKLOG_THRESHOLD)),
+        )
         self._cancel_pending_on_new_final = bool(self._config.runtime.tts_cancel_pending_on_new_final)
         self._cancel_policy = str(getattr(self._config.runtime, "tts_cancel_policy", "all_pending") or "all_pending")
-        self._max_wait_ms = max(500, int(getattr(self._config.runtime, "tts_max_wait_ms", 4000)))
-        self._max_chars = max(20, int(getattr(self._config.runtime, "tts_max_chars", 200)))
+        self._max_wait_ms = max(500, int(getattr(self._config.runtime, "tts_max_wait_ms", TTS_DEFAULT_MAX_WAIT_MS)))
+        self._max_chars = max(20, int(getattr(self._config.runtime, "tts_max_chars", TTS_DEFAULT_MAX_CHARS)))
         self._pending: deque[_TtsTask] = deque()
         self._queue_changed = Condition()
         self._ready_audio: dict[str, deque[_SynthesizedTask]] = {
@@ -164,25 +176,7 @@ class TTSManager:
     def stop(self, wait_timeout: float = 5.0) -> bool:
         self._stop_event.set()
         self._passthrough_stop.set()
-        stopped = True
-        for channel in ("local", "remote"):
-            synth_worker = self._synth_workers.get(channel)
-            if synth_worker and synth_worker.is_alive():
-                synth_worker.join(timeout=max(0.1, float(wait_timeout)))
-            play_worker = self._play_workers.get(channel)
-            if play_worker and play_worker.is_alive():
-                play_worker.join(timeout=max(0.1, float(wait_timeout)))
-            if (synth_worker and synth_worker.is_alive()) or (play_worker and play_worker.is_alive()):
-                stopped = False
-            self._synth_workers[channel] = None
-            self._play_workers[channel] = None
-        for channel in ("local", "remote"):
-            passthrough_worker = self._passthrough_workers.get(channel)
-            if passthrough_worker and passthrough_worker.is_alive():
-                passthrough_worker.join(timeout=max(0.1, float(wait_timeout)))
-            self._passthrough_workers[channel] = None
-        for playback in self._playbacks.values():
-            playback.stop()
+        # P1-1: 先清空佇列並通知所有等待中的線程，讓它們能儘快退出阻塞 wait
         with self._queue_changed:
             self._pending.clear()
             self._ready_audio["local"].clear()
@@ -190,6 +184,28 @@ class TTSManager:
             self._passthrough_pending["local"].clear()
             self._passthrough_pending["remote"].clear()
             self._queue_changed.notify_all()
+        # 停止硬體播放
+        for playback in self._playbacks.values():
+            playback.stop()
+        # P1-1: 收集所有存活線程，以 deadline 平行 join，而非序列等待
+        deadline = time.monotonic() + max(0.1, float(wait_timeout))
+        all_workers: list[Thread] = []
+        for channel in ("local", "remote"):
+            for workers_dict in (self._synth_workers, self._play_workers, self._passthrough_workers):
+                w = workers_dict.get(channel)
+                if w and w.is_alive():
+                    all_workers.append(w)
+        for w in all_workers:
+            remaining = deadline - time.monotonic()
+            w.join(timeout=max(0.0, remaining))
+        stopped = all(not w.is_alive() for w in all_workers)
+        if not stopped:
+            alive_workers = [w.name for w in all_workers if w.is_alive()]
+            _log.warning("TTS workers did not stop in time: %s", ", ".join(alive_workers) or "<unknown>")
+        for channel in ("local", "remote"):
+            self._synth_workers[channel] = None
+            self._play_workers[channel] = None
+            self._passthrough_workers[channel] = None
         self._engine_cache.clear()
         self._current_task_by_channel = {"local": None, "remote": None}
         return stopped
@@ -214,7 +230,10 @@ class TTSManager:
         cleaned = text.strip()
         if not cleaned:
             return
-        partial_min_chars = max(1, int(getattr(self._config.runtime, "tts_partial_min_chars", 12)))
+        partial_min_chars = max(
+            1,
+            int(getattr(self._config.runtime, "tts_partial_min_chars", TTS_DEFAULT_PARTIAL_MIN_CHARS)),
+        )
         if not is_final and len(cleaned) < partial_min_chars:
             return
         chunks = self._split_text(cleaned, self._max_chars)

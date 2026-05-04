@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import logging
 from collections import deque
 from dataclasses import dataclass
 from queue import Empty, Full, Queue
@@ -62,6 +63,10 @@ def _scaled_finalize_thresholds(
     )
     speech_end_finalize_audio_ms = min(speech_end_finalize_audio_ms, soft_endpoint_finalize_audio_ms)
     return soft_endpoint_finalize_audio_ms, speech_end_finalize_audio_ms
+_log = logging.getLogger(__name__)
+
+# 單一語音段落最大 chunk 數（60 秒 @ 16kHz 100ms/chunk）
+_SEGMENT_MAX_CHUNKS = 600
 
 
 @dataclass(slots=True)
@@ -278,6 +283,13 @@ class SourceRuntimeV2(_AdaptiveTunerMixin):
             self._drop_partial_until_final = True
             self._partial_cooldown_until_ms = max(self._partial_cooldown_until_ms, now_ms + 8000)
             self._debug("v2 queue overflow: dropped oldest chunk")
+            # P1-6: 每累積 10 次才 warning 一次，避免日誌爆炸
+            if self._dropped_chunks % 10 == 1:
+                _log.warning(
+                    "ASR queue overflow (%s): dropped %d chunks total; source may be processing too slowly",
+                    self._source,
+                    self._dropped_chunks,
+                )
 
     def stats(self) -> SourceRuntimeV2Stats:
         with self._stats_lock:
@@ -299,6 +311,29 @@ class SourceRuntimeV2(_AdaptiveTunerMixin):
             )
 
     def _run(self) -> None:
+        try:
+            self._run_inner()
+        except Exception:
+            _log.exception(
+                "ASRWorkerV2 (%s) thread crashed unexpectedly; ASR is no longer processing",
+                self._source,
+            )
+            if self._on_event:
+                try:
+                    self._on_event(
+                        V2RuntimeEvent(
+                            text="[ASR 線程已崩潰，請重啟]",
+                            is_final=True,
+                            is_early_final=False,
+                            start_ms=0,
+                            end_ms=0,
+                            latency_ms=0,
+                        )
+                    )
+                except Exception:
+                    pass
+
+    def _run_inner(self) -> None:
         while not self._stop_event.is_set():
             try:
                 chunk, sample_rate = self._queue.get(timeout=0.2)
@@ -349,6 +384,10 @@ class SourceRuntimeV2(_AdaptiveTunerMixin):
         if self._in_segment:
             self._segment_chunks.append(chunk)
             self._segment_sample_rate = sample_rate_int
+            # P0-3: 防止單一段落無限累積記憶體
+            if len(self._segment_chunks) > _SEGMENT_MAX_CHUNKS:
+                self._segment_chunks = self._segment_chunks[-_SEGMENT_MAX_CHUNKS:]
+                self._debug("segment_chunks truncated: exceeded _SEGMENT_MAX_CHUNKS limit")
             self._record_segment_signal(signal=signal, chunk_ms=chunk_ms)
             segment_audio_ms = self._segment_audio_ms()
             backlog = self._queue.qsize()
@@ -393,7 +432,6 @@ class SourceRuntimeV2(_AdaptiveTunerMixin):
                 )
                 if decision.reset_endpointing_after_final:
                     # Treat a soft endpoint final as an utterance boundary so the
-                    # next speech burst can immediately start a new segment.
                     self._endpointing.reset()
                 self._reset_segment()
                 # If speech was still active when we hit a ceiling/force-final

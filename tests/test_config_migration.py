@@ -18,6 +18,33 @@ from app.infra.config.schema import AppConfig
 
 
 class ConfigMigrationTests(unittest.TestCase):
+    def test_parse_app_config_clamps_invalid_runtime_values(self) -> None:
+        cfg = AppConfig.from_dict(
+            {
+                "runtime": {
+                    "tts_output_mode": "invalid_mode",
+                    "display_partial_strategy": "invalid_strategy",
+                    "passthrough_gain": -1.5,
+                    "tts_gain": 9.9,
+                    "chunk_ms": 5,
+                    "asr_queue_maxsize_local": 1,
+                    "asr_queue_maxsize_remote": 2,
+                    "tts_queue_maxsize_local": 0,
+                    "tts_queue_maxsize_remote": 1,
+                }
+            }
+        )
+
+        self.assertEqual(cfg.runtime.tts_output_mode, "subtitle_only")
+        self.assertEqual(cfg.runtime.display_partial_strategy, "stable_only")
+        self.assertEqual(cfg.runtime.passthrough_gain, 0.0)
+        self.assertEqual(cfg.runtime.tts_gain, 4.0)
+        self.assertEqual(cfg.runtime.chunk_ms, 20)
+        self.assertEqual(cfg.runtime.asr_queue_maxsize_local, 8)
+        self.assertEqual(cfg.runtime.asr_queue_maxsize_remote, 8)
+        self.assertEqual(cfg.runtime.tts_queue_maxsize_local, 4)
+        self.assertEqual(cfg.runtime.tts_queue_maxsize_remote, 4)
+
     def test_runtime_defaults_start_with_v2_stable_defaults(self) -> None:
         cfg = AppConfig()
         self.assertEqual(cfg.runtime.asr_pipeline, "v2")

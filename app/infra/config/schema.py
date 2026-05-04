@@ -4,6 +4,16 @@ from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from app.domain.constants import (
+    ASR_DEFAULT_CHUNK_MS,
+    ASR_DEFAULT_FRONTEND_HIGHPASS_ALPHA,
+    TTS_DEFAULT_DROP_BACKLOG_THRESHOLD,
+    TTS_DEFAULT_MAX_CHARS,
+    TTS_DEFAULT_MAX_WAIT_MS,
+    TTS_DEFAULT_PARTIAL_MIN_CHARS,
+    TTS_DEFAULT_QUEUE_MAXSIZE,
+)
+
 
 DEFAULT_FIXED_LLM_MODEL = "hy-mt1.5-7b"
 
@@ -238,7 +248,7 @@ class RuntimeConfig:
     asr_v2_backend: str = "faster_whisper_v2"
     asr_v2_endpointing: str = "neural_endpoint"
     sample_rate: int = 48000
-    chunk_ms: int = 100
+    chunk_ms: int = ASR_DEFAULT_CHUNK_MS
     passthrough_gain: float = 1.0
     tts_gain: float = 1.0
     adaptive_asr_enabled: bool = True
@@ -253,31 +263,31 @@ class RuntimeConfig:
     llm_partial_interval_floor_ms: int = 320
     early_final_enabled: bool = False
     tts_accept_stable_partial: bool = False
-    tts_partial_min_chars: int = 12
+    tts_partial_min_chars: int = TTS_DEFAULT_PARTIAL_MIN_CHARS
     tts_use_speech_profile: bool = False
     asr_queue_maxsize_local: int = 128
     asr_queue_maxsize_remote: int = 128
     llm_queue_maxsize_local: int = 32
     llm_queue_maxsize_remote: int = 32
-    tts_queue_maxsize_local: int = 32
-    tts_queue_maxsize_remote: int = 32
+    tts_queue_maxsize_local: int = TTS_DEFAULT_QUEUE_MAXSIZE
+    tts_queue_maxsize_remote: int = TTS_DEFAULT_QUEUE_MAXSIZE
     # Legacy shared queue settings kept for backward compatibility.
     asr_queue_maxsize: int = 128
     llm_queue_maxsize: int = 32
-    tts_queue_maxsize: int = 32
+    tts_queue_maxsize: int = TTS_DEFAULT_QUEUE_MAXSIZE
     translation_exact_cache_size: int = 256
     translation_prefix_min_delta_chars: int = 6
     tts_cancel_pending_on_new_final: bool = True
     tts_cancel_policy: str = "older_only"
-    tts_max_wait_ms: int = 4000
-    tts_max_chars: int = 200
-    tts_drop_backlog_threshold: int = 6
+    tts_max_wait_ms: int = TTS_DEFAULT_MAX_WAIT_MS
+    tts_max_chars: int = TTS_DEFAULT_MAX_CHARS
+    tts_drop_backlog_threshold: int = TTS_DEFAULT_DROP_BACKLOG_THRESHOLD
     llm_streaming_tokens: int = 16
     max_pipeline_latency_ms: int = 3000
     asr_frontend_enabled: bool = True
     asr_frontend_target_rms: float = 0.05
     asr_frontend_max_gain: float = 3.0
-    asr_frontend_highpass_alpha: float = 0.96
+    asr_frontend_highpass_alpha: float = ASR_DEFAULT_FRONTEND_HIGHPASS_ALPHA
     asr_enhancement_enabled: bool = True
     asr_enhancement_noise_reduce_strength: float = 0.42
     asr_enhancement_noise_adapt_rate: float = 0.18
