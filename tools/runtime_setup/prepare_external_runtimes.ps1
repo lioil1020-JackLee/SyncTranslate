@@ -6,6 +6,7 @@ param(
     [string]$LlmModelRepo = "tencent/HY-MT1.5-7B-GGUF",
     [string]$LlmModelFile = "HY-MT1.5-7B-Q4_K_M.gguf",
     [switch]$SkipLlmDownload,
+    [string]$LlamaCudaFlavor = "cu125",
     # Force CPU-only llama-cpp-python wheel (for CI without GPU, or CPU-only machines)
     [switch]$LlamaCpuOnly
 )
@@ -48,7 +49,7 @@ New-RuntimeVenv -Name "shared" -InstallCudaTorch -Packages @(
     "onnxruntime>=1.22.0"
 )
 
-# Install llama-cpp-python — auto-detects CUDA+MSVC for GPU build, falls back to CPU wheel.
+# Install llama-cpp-python. Auto-detects CUDA+MSVC for GPU build, falls back to CPU wheel.
 $sharedPy = Join-Path $RuntimeRoot "shared\Scripts\python.exe"
 
 function Find-VcVars64 {
@@ -73,43 +74,107 @@ function Install-LlamaCppPython {
     $vcvars  = Find-VcVars64
 
     if (-not $CpuOnly -and $hasNvcc -and $vcvars) {
-        Write-Host "[runtime:shared] CUDA + MSVC detected — building llama-cpp-python with CUDA support..."
+        Write-Host "[runtime:shared] CUDA + MSVC detected - building llama-cpp-python with CUDA support..."
         # Must run inside vcvars64 environment; use NMake generator to avoid VS CUDA toolset requirement
         # /utf-8 is required on Traditional Chinese Windows (CP950) to prevent C2001 errors in llama.cpp jinja headers
-        $cmdJoin = ([char]38).ToString() + ([char]38).ToString()
-        $buildSteps = @(
-            ('call "{0}"' -f $vcvars),
-            'set "CMAKE_ARGS=-DGGML_CUDA=on -G ^"NMake Makefiles^" -DCMAKE_C_FLAGS=/utf-8 -DCMAKE_CXX_FLAGS=/utf-8"',
-            'set "FORCE_CMAKE=1"',
-            ('"{0}" -m pip install "llama-cpp-python>=0.3.8" --no-binary llama-cpp-python --upgrade' -f $Py)
-        )
-        $buildCmd = [string]::Join(" $cmdJoin ", $buildSteps)
-        & cmd.exe /d /s /c $buildCmd
+        $cmdFile = Join-Path $env:TEMP "synctranslate_llama_cpp_build.cmd"
+        $cmdScript = @"
+call "$vcvars"
+set CMAKE_ARGS=-DGGML_CUDA=on -G "NMake Makefiles" -DCMAKE_C_FLAGS=/utf-8 -DCMAKE_CXX_FLAGS=/utf-8
+set FORCE_CMAKE=1
+"$Py" -m pip install "llama-cpp-python>=0.3.8" --no-binary llama-cpp-python --upgrade
+"@
+        Set-Content -LiteralPath $cmdFile -Value $cmdScript -Encoding ASCII
+        & $cmdFile
         if ($LASTEXITCODE -eq 0) {
             Write-Host "[runtime:shared] llama-cpp-python installed with CUDA support"
             return $true
         }
-        Write-Warning "[runtime:shared] CUDA build failed (exit $LASTEXITCODE), falling back to CPU wheel"
+        Write-Warning "[runtime:shared] CUDA build failed (exit $LASTEXITCODE), falling back to prebuilt CUDA wheel"
     } else {
-        if (-not $hasNvcc) { Write-Host "[runtime:shared] nvcc not found — skipping CUDA build" }
-        if (-not $vcvars)  { Write-Host "[runtime:shared] MSVC (vcvars64.bat) not found — skipping CUDA build" }
+        if (-not $hasNvcc) { Write-Host "[runtime:shared] nvcc not found - skipping CUDA build" }
+        if (-not $vcvars)  { Write-Host "[runtime:shared] MSVC (vcvars64.bat) not found - skipping CUDA build" }
     }
 
-    # Fallback: prebuilt CPU-only wheel from GitHub releases
-    Write-Host "[runtime:shared] installing llama-cpp-python (prebuilt CPU wheel)..."
-    $rel   = Invoke-RestMethod "https://api.github.com/repos/abetlen/llama-cpp-python/releases/latest"
-    $pyTag = & $Py -c "import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}')"
-    $asset = $rel.assets |
-        Where-Object { $_.name -like "*$pyTag*win_amd64*.whl" } |
-        Select-Object -First 1
-    if (-not $asset) {
-        $asset = $rel.assets | Where-Object { $_.name -like "*win_amd64*.whl" } | Select-Object -First 1
+    # Fallback: prebuilt wheel from GitHub releases. GitHub-hosted runners do
+    # not reliably provide nvcc, but release builds should still carry CUDA
+    # llama.cpp so they behave like local GPU builds.
+    $wheelKind = "CUDA"
+    if ($CpuOnly) {
+        $wheelKind = "CPU"
+    }
+    Write-Host "[runtime:shared] installing llama-cpp-python (prebuilt $wheelKind wheel)..."
+    $releases = Invoke-RestMethod "https://api.github.com/repos/abetlen/llama-cpp-python/releases?per_page=30"
+    $asset = $null
+    if ($CpuOnly) {
+        foreach ($release in $releases) {
+            $tag = [string]$release.tag_name
+            if ($tag -match "cu[0-9]+") {
+                continue
+            }
+            $asset = $release.assets |
+                Where-Object { $_.name -like "llama_cpp_python-*-py3-none-win_amd64.whl" } |
+                Select-Object -First 1
+            if ($asset) {
+                break
+            }
+        }
+    } else {
+        $preferredCudaTags = @()
+        if ($LlamaCudaFlavor) {
+            $preferredCudaTags += $LlamaCudaFlavor
+        }
+        $preferredCudaTags += @("cu125", "cu124", "cu123")
+        foreach ($flavor in ($preferredCudaTags | Select-Object -Unique)) {
+            foreach ($release in $releases) {
+                $tag = [string]$release.tag_name
+                if ($tag -notmatch [regex]::Escape($flavor)) {
+                    continue
+                }
+                $asset = $release.assets |
+                    Where-Object { $_.name -like "llama_cpp_python-*-py3-none-win_amd64.whl" } |
+                    Select-Object -First 1
+                if ($asset) {
+                    break
+                }
+            }
+            if ($asset) {
+                break
+            }
+        }
+    }
+    if ((-not $asset) -and (-not $CpuOnly)) {
+        foreach ($release in $releases) {
+            $tag = [string]$release.tag_name
+            if ($tag -notmatch "cu[0-9]+") {
+                continue
+            }
+            $asset = $release.assets |
+                Where-Object { $_.name -like "llama_cpp_python-*-win_amd64.whl" } |
+                Select-Object -First 1
+            if ($asset) {
+                break
+            }
+        }
+    } elseif ((-not $asset) -and $CpuOnly) {
+        foreach ($release in $releases) {
+            $tag = [string]$release.tag_name
+            if ($tag -match "cu[0-9]+") {
+                continue
+            }
+            $asset = $release.assets |
+                Where-Object { $_.name -like "llama_cpp_python-*-win_amd64.whl" } |
+                Select-Object -First 1
+            if ($asset) {
+                break
+            }
+        }
     }
     if ($asset) {
         Write-Host "[runtime:shared] installing wheel asset: $($asset.name)"
         & $Py -m pip install $asset.browser_download_url
     } else {
-        & $Py -m pip install "llama-cpp-python>=0.3.8"
+        throw "[runtime:shared] no prebuilt llama-cpp-python Windows $wheelKind wheel found"
     }
     if ($LASTEXITCODE -ne 0) {
         throw "[runtime:shared] llama-cpp-python installation failed"
