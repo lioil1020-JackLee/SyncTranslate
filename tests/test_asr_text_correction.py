@@ -4,7 +4,7 @@ import unittest
 
 from app.infra.asr.text_correction import AsrTextCorrector, _looks_like_safe_cjk_surface_fix
 from app.infra.config.schema import LlmConfig
-from app.infra.translation.lm_studio_adapter import LmStudioClient
+from app.infra.translation.inprocess_adapter import InProcessLlamaClient
 
 
 class _StubCorrectionClient:
@@ -17,7 +17,7 @@ class _StubCorrectionClient:
 
 class AsrTextCorrectionTests(unittest.TestCase):
     def test_extract_correction_rejects_structured_reply_junk(self) -> None:
-        cleaned = LmStudioClient._extract_correction_text('{"translation":"text"}')
+        cleaned = InProcessLlamaClient._extract_correction_text('{"translation":"text"}')
 
         self.assertEqual(cleaned, "")
 

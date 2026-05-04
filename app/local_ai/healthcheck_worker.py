@@ -15,7 +15,7 @@ from app.infra.config.schema import AsrConfig
 from app.infra.config.settings_store import load_config
 from app.infra.asr.profile_selection import iter_active_asr_profiles_for_sources
 from app.infra.translation.provider import create_translation_provider
-from app.infra.tts.engine import create_tts_engine
+from app.infra.tts.playback_queue import create_tts_engine
 from app.local_ai.healthcheck import LocalHealthReport
 from app.local_ai.healthcheck import run_local_healthcheck
 

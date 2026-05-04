@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from app.infra.config.schema import TtsConfig
-from app.infra.tts.engine import create_tts_engine, edge_tts_rate_for_style
+from app.infra.tts.playback_queue import create_tts_engine, edge_tts_rate_for_style
 
 
 class TtsStylePolicyTests(unittest.TestCase):

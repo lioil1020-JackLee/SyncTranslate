@@ -73,9 +73,14 @@ asr_profiles:
       soft_final_audio_ms: 2600
 llm_channels:
   local:
-    backend: lm_studio
-    base_url: http://127.0.0.1:1234
+    backend: local_llama_inprocess
     model: hy-mt1.5-7b
+    runtime:
+      model_path: .\runtimes\models\llm\hy-mt1.5-7b.gguf
+      ctx_size: 4096
+      gpu_layers: 35
+      threads: 8
+      batch_size: 512
     temperature: 0.0
     top_p: 0.8
     max_output_tokens: 112
@@ -135,9 +140,14 @@ llm_channels:
     caption_profile: live_caption_fast
     speech_profile: speech_output_natural
   remote:
-    backend: lm_studio
-    base_url: http://127.0.0.1:1234
+    backend: local_llama_inprocess
     model: hy-mt1.5-7b
+    runtime:
+      model_path: .\runtimes\models\llm\hy-mt1.5-7b.gguf
+      ctx_size: 4096
+      gpu_layers: 35
+      threads: 8
+      batch_size: 512
     temperature: 0.0
     top_p: 0.8
     max_output_tokens: 144

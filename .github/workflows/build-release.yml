@@ -39,9 +39,9 @@ jobs:
       - name: Prepare external AI runtimes
         shell: pwsh
         run: |
-          powershell -ExecutionPolicy Bypass -File .\tools\runtime_setup\prepare_external_runtimes.ps1
+          powershell -ExecutionPolicy Bypass -File .\tools\runtime_setup\prepare_external_runtimes.ps1 -LlamaCpuOnly
 
-      - name: Verify external runtime imports
+      - name: Verify external runtimes
         shell: pwsh
         run: |
           uv run python -c "import ssl; print('ssl ok')"
@@ -53,6 +53,15 @@ jobs:
             throw "Belle model is missing expected config.json"
           }
           Write-Host "belle model ok"
+          if (!(Test-Path "runtimes/models/llm/hy-mt1.5-7b.gguf")) {
+            throw "HY-MT1.5 GGUF model is missing"
+          }
+          & $sharedPy -c "import llama_cpp; print('llama_cpp=' + str(getattr(llama_cpp, '__version__', 'unknown')))"
+          $llmModel = Get-Item "runtimes/models/llm/hy-mt1.5-7b.gguf"
+          if ($llmModel.Length -lt 100MB) {
+            throw "HY-MT1.5 GGUF model is unexpectedly small: $($llmModel.Length)"
+          }
+          Write-Host "llm runtime ok: $($llmModel.Length) bytes"
 
       - name: Run test suite
         shell: pwsh
@@ -69,6 +78,15 @@ jobs:
         run: |
           powershell -ExecutionPolicy Bypass -File .\tools\runtime_setup\relocate_ai_runtime_artifacts.ps1 -DistRoot .\dist\SyncTranslate-onedir
 
+      - name: Verify packaged external runtimes
+        shell: pwsh
+        run: |
+          if (!(Test-Path ".\dist\SyncTranslate-onedir\runtimes\models\llm\hy-mt1.5-7b.gguf")) {
+            throw "Packaged HY-MT1.5 GGUF model is missing"
+          }
+          $packagedSharedPy = ".\dist\SyncTranslate-onedir\runtimes\shared\Scripts\python.exe"
+          & $packagedSharedPy -c "import llama_cpp; print('packaged llama_cpp ok')"
+
       - name: Package onedir output
         shell: pwsh
         run: |
@@ -77,7 +95,7 @@ jobs:
           }
           New-Item -ItemType Directory -Path .\release_staging | Out-Null
           Copy-Item .\dist\SyncTranslate-onedir .\release_staging\SyncTranslate-onedir -Recurse
-          Compress-Archive -Path .\release_staging\SyncTranslate-onedir -DestinationPath .\dist\SyncTranslate-onedir-windows.zip -Force
+          powershell -ExecutionPolicy Bypass -File .\tools\runtime_setup\package_onedir.ps1 -Source .\release_staging\SyncTranslate-onedir -Output .\dist\SyncTranslate-onedir-windows.zip
 
       - name: Split oversized release asset
         shell: pwsh

@@ -1,7 +1,13 @@
 param(
     [string]$RuntimeRoot = "runtimes",
     [switch]$CpuOnly,
-    [string]$BelleModelRepo = ""
+    [string]$BelleModelRepo = "",
+    [string]$LlmModelPath = "",
+    [string]$LlmModelRepo = "tencent/HY-MT1.5-7B-GGUF",
+    [string]$LlmModelFile = "HY-MT1.5-7B-Q4_K_M.gguf",
+    [switch]$SkipLlmDownload,
+    # Force CPU-only llama-cpp-python wheel (for CI without GPU, or CPU-only machines)
+    [switch]$LlamaCpuOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -37,10 +43,67 @@ function New-RuntimeVenv {
 
 New-Item -ItemType Directory -Path $RuntimeRoot -Force | Out-Null
 
-# Shared runtime for CUDA / common dependencies.
+# Shared runtime for CUDA / common dependencies + in-process LLM runtime.
 New-RuntimeVenv -Name "shared" -InstallCudaTorch -Packages @(
     "onnxruntime>=1.22.0"
 )
+
+# Install llama-cpp-python — auto-detects CUDA+MSVC for GPU build, falls back to CPU wheel.
+$sharedPy = Join-Path $RuntimeRoot "shared\Scripts\python.exe"
+
+function Find-VcVars64 {
+    $candidates = @(
+        "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat",
+        "C:\Program Files (x86)\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat",
+        "C:\Program Files (x86)\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat",
+        "C:\Program Files (x86)\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvars64.bat",
+        "C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat",
+        "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
+    )
+    foreach ($c in $candidates) {
+        if (Test-Path $c) { return $c }
+    }
+    return ""
+}
+
+function Install-LlamaCppPython {
+    param([string]$Py, [switch]$CpuOnly)
+
+    $hasNvcc = (Get-Command "nvcc" -ErrorAction SilentlyContinue) -ne $null
+    $vcvars  = Find-VcVars64
+
+    if (-not $CpuOnly -and $hasNvcc -and $vcvars) {
+        Write-Host "[runtime:shared] CUDA + MSVC detected — building llama-cpp-python with CUDA support..."
+        # Must run inside vcvars64 environment; use NMake generator to avoid VS CUDA toolset requirement
+        # /utf-8 is required on Traditional Chinese Windows (CP950) to prevent C2001 errors in llama.cpp jinja headers
+        $buildCmd = "`"$vcvars`" && set CMAKE_ARGS=-DGGML_CUDA=on -G `"NMake Makefiles`" -DCMAKE_C_FLAGS=/utf-8 -DCMAKE_CXX_FLAGS=/utf-8 && set FORCE_CMAKE=1 && `"$Py`" -m pip install `"llama-cpp-python>=0.3.8`" --no-binary llama-cpp-python --upgrade"
+        cmd /c $buildCmd
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "[runtime:shared] llama-cpp-python installed with CUDA support"
+            return $true
+        }
+        Write-Warning "[runtime:shared] CUDA build failed (exit $LASTEXITCODE), falling back to CPU wheel"
+    } else {
+        if (-not $hasNvcc) { Write-Host "[runtime:shared] nvcc not found — skipping CUDA build" }
+        if (-not $vcvars)  { Write-Host "[runtime:shared] MSVC (vcvars64.bat) not found — skipping CUDA build" }
+    }
+
+    # Fallback: prebuilt CPU-only wheel from GitHub releases
+    Write-Host "[runtime:shared] installing llama-cpp-python (prebuilt CPU wheel)..."
+    $rel   = Invoke-RestMethod "https://api.github.com/repos/abetlen/llama-cpp-python/releases/latest"
+    $asset = $rel.assets | Where-Object { $_.name -like "*win_amd64*.whl" } | Select-Object -First 1
+    if ($asset) {
+        & $Py -m pip install $asset.browser_download_url
+    } else {
+        & $Py -m pip install "llama-cpp-python>=0.3.8"
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw "[runtime:shared] llama-cpp-python installation failed"
+    }
+    return $true
+}
+
+Install-LlamaCppPython -Py $sharedPy -CpuOnly:($CpuOnly -or $LlamaCpuOnly)
 
 # Non-Chinese ASR runtime.
 New-RuntimeVenv -Name "faster_whisper" -Packages @(
@@ -68,8 +131,29 @@ elseif ($env:SYNC_TRANSLATE_BELLE_MODEL_REPO) {
 Write-Host "[runtime:belle_model] download model snapshot"
 uv run python @downloadArgs
 
+$llmModelsRoot = Join-Path $modelsRoot "llm"
+New-Item -ItemType Directory -Path $llmModelsRoot -Force | Out-Null
+$targetLlmModel = Join-Path $llmModelsRoot "hy-mt1.5-7b.gguf"
+if ($LlmModelPath) {
+    if (-not (Test-Path $LlmModelPath)) {
+        throw "LLM model file not found: $LlmModelPath"
+    }
+    Copy-Item -LiteralPath $LlmModelPath -Destination $targetLlmModel -Force
+}
+elseif ((-not $SkipLlmDownload) -and (-not (Test-Path $targetLlmModel))) {
+    uv run python ".\tools\runtime_setup\download_llm_model.py" `
+        --repo-id $LlmModelRepo `
+        --filename $LlmModelFile `
+        --local-file $targetLlmModel
+}
+elseif (-not (Test-Path $targetLlmModel)) {
+    Write-Warning "LLM GGUF not found at $targetLlmModel. Run without -SkipLlmDownload or pass -LlmModelPath."
+}
+
 Write-Host "External runtimes prepared under: $RuntimeRoot"
 Write-Host "Expected structure:"
 Write-Host "  runtimes/shared/Lib/site-packages"
 Write-Host "  runtimes/faster_whisper/Lib/site-packages"
 Write-Host "  runtimes/models/belle-zh-ct2"
+Write-Host "  runtimes/models/llm/hy-mt1.5-7b.gguf"
+Write-Host "  runtimes/shared/Lib/site-packages/llama_cpp"

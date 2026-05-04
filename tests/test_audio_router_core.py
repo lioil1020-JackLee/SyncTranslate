@@ -7,7 +7,7 @@ from app.application.audio_router import AudioRouter
 from app.application.transcript_service import TranscriptBuffer
 from app.domain.runtime_state import StateManager
 from app.infra.asr.contracts import ASREventWithSource
-from app.domain.events import ErrorEvent
+from app.domain.models import ErrorEvent
 
 
 class _FakeInputManager:

@@ -5,7 +5,7 @@ from datetime import datetime
 from threading import Lock
 import re
 
-from app.domain.transcript_models import TranscriptItem
+from app.domain.models import TranscriptItem
 
 
 _SENTENCE_END_RE = re.compile(r'[.?!。！？…]["\')\]\u300d\u300f\u3011\u300b\u3009]*$')

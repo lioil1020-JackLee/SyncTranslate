@@ -14,7 +14,7 @@ from app.infra.asr.language_profiles import normalize_asr_language, resolve_lang
 from app.infra.asr.stream_worker import StreamingAsr
 from app.infra.asr.faster_whisper_adapter import FasterWhisperEngine, _clear_model_cache_for_tests
 from app.infra.translation.engine import TranslatorManager
-from app.infra.translation.lm_studio_adapter import LmStudioClient
+from app.infra.translation.inprocess_adapter import InProcessLlamaClient
 from app.infra.tts.playback_queue import TTSManager
 from app.infra.tts.voice_policy import resolve_edge_voice_for_target
 
@@ -676,7 +676,7 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
         self.assertEqual(task.text, "final sentence")
 
     def test_translation_cleanup_rejects_overexpanded_zh_output(self) -> None:
-        cleaned = LmStudioClient._clean_translation_output(
+        cleaned = InProcessLlamaClient._clean_translation_output(
             "從現在開始，我會成為你的朋友。我也愛你，我能感受到你的存在。",
             target_lang="zh-TW",
         )

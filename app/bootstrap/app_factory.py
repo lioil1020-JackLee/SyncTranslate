@@ -74,7 +74,11 @@ def run_from_cli(argv: list[str] | None = None) -> int:
         )
         print(f"sample_rate={config.runtime.sample_rate} chunk_ms={config.runtime.chunk_ms}")
         print(f"asr={config.asr.engine}:{config.asr.model} device={config.asr.device}")
-        print(f"llm={config.llm.backend} model={config.llm.model} base_url={config.llm.base_url}")
+        print(
+            f"llm={config.llm.backend} model={config.llm.model} "
+            f"ctx={config.llm.runtime.ctx_size} gpu_layers={config.llm.runtime.gpu_layers} threads={config.llm.runtime.threads}"
+        )
+        print(f"llm_model_path={config.llm.runtime.model_path}")
         print(
             "meeting_tts="
             f"{config.meeting_tts.engine} voice={config.meeting_tts.voice_name or config.meeting_tts.model_path}"

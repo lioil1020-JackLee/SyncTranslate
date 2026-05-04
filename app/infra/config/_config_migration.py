@@ -125,15 +125,7 @@ def migrate_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
         profile.pop("funasr", None)
 
     llm = raw.get("llm") or {}
-    result["llm"]["backend"] = "lm_studio"
-    llm_base_url = str(llm.get("base_url", "")).strip()
-    legacy_base_url = str(openai.get("base_url", "")).strip()
-    if llm_base_url:
-        result["llm"]["base_url"] = llm_base_url
-    if legacy_base_url and "127.0.0.1" in legacy_base_url:
-        result["llm"]["base_url"] = legacy_base_url
-    if (not str(result["llm"]["base_url"]).strip()) or ("11434" in str(result["llm"]["base_url"])):
-        result["llm"]["base_url"] = "http://127.0.0.1:1234"
+    result["llm"]["backend"] = "local_llama_inprocess"
     result["llm"]["model"] = str(llm.get("model") or openai.get("translate_model") or result["llm"]["model"])
     result["llm"]["temperature"] = float(llm.get("temperature", result["llm"]["temperature"]))
     result["llm"]["top_p"] = float(llm.get("top_p", result["llm"]["top_p"]))

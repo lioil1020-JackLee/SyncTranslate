@@ -22,7 +22,7 @@ def collect_openssl_binaries():
 
 
 # NOTE: External runtimes (runtimes/shared, runtimes/faster_whisper)
-# are copied by the relocate_ai_runtime_artifacts.ps1 script after PyInstaller build.
+# and model files under runtimes/models are copied by relocate_ai_runtime_artifacts.ps1.
 # This keeps AI packages isolated from .venv and makes rebuilds faster - they're copied
 # directly from the pre-built runtimes/ directory in the dev environment.
 
@@ -47,13 +47,16 @@ endpoint_volume_script = os.path.join(here, "app", "infra", "audio", "windows_en
 if os.path.exists(endpoint_volume_script):
     datas.append((endpoint_volume_script, os.path.join("app", "infra", "audio")))
 
-prepare_external_runtime_script = os.path.join(here, "tools", "runtime_setup", "prepare_external_runtimes.ps1")
-if os.path.exists(prepare_external_runtime_script):
-    datas.append((prepare_external_runtime_script, os.path.join("tools", "runtime_setup")))
-
-relocate_runtime_script = os.path.join(here, "tools", "runtime_setup", "relocate_ai_runtime_artifacts.ps1")
-if os.path.exists(relocate_runtime_script):
-    datas.append((relocate_runtime_script, os.path.join("tools", "runtime_setup")))
+for runtime_script in (
+    "prepare_external_runtimes.ps1",
+    "relocate_ai_runtime_artifacts.ps1",
+    "download_llm_model.py",
+    "download_belle_model.py",
+    "package_onedir.ps1",
+):
+    script_path = os.path.join(here, "tools", "runtime_setup", runtime_script)
+    if os.path.exists(script_path):
+        datas.append((script_path, os.path.join("tools", "runtime_setup")))
 
 a = Analysis(
     ["main.py"],

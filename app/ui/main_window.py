@@ -20,13 +20,13 @@ except Exception:
 from app.application.audio_router import AudioRouter
 from app.application.export_service import ExportService
 from app.application.healthcheck_service import HealthCheckService
-from app.application.runtime_orchestrator import RuntimeFacade
+from app.application.session_service import RuntimeFacade
 from app.application.session_service import SessionController
 from app.application.settings_service import SettingsService
 from app.application.config_apply_service import ConfigApplyService
 from app.infra.audio.device_volume_controller import SystemDeviceVolumeController
 from app.bootstrap.dependency_container import build_pipeline_bundle
-from app.domain.events import ErrorEvent
+from app.domain.models import ErrorEvent
 from app.infra.audio.capture import AudioCapture
 from app.infra.audio.device_registry import DeviceManager, canonical_device_name
 from app.infra.audio.playback import AudioPlayback

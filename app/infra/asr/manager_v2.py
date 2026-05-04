@@ -8,7 +8,7 @@ from uuid import uuid4
 import numpy as np
 
 from app.infra.asr.backend_resolution import resolve_backend_for_language
-from app.domain.events import ErrorEvent
+from app.domain.models import ErrorEvent
 from app.infra.asr.backend_v2 import build_backend_pair
 from app.infra.asr.contracts import ASREventWithSource, AsrManagerProtocol
 from app.infra.asr.endpoint_profiles import get_endpoint_profile

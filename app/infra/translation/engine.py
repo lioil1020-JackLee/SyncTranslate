@@ -7,7 +7,7 @@ import time
 from typing import Callable
 
 from app.infra.asr.text_correction import AsrTextCorrector
-from app.domain.events import ErrorEvent
+from app.domain.models import ErrorEvent
 from app.infra.asr.contracts import ASREventWithSource
 from app.infra.translation.provider import create_translation_provider
 from app.infra.translation.stitcher import TranslationStitcher
@@ -311,7 +311,6 @@ class TranslatorManager:
         merged = deepcopy(channel)
         scalar_fields = (
             "backend",
-            "base_url",
             "model",
             "temperature",
             "top_p",
@@ -333,11 +332,13 @@ class TranslatorManager:
             merged.sliding_window = deepcopy(base.sliding_window)
         if channel.profiles == default.profiles and base.profiles != default.profiles:
             merged.profiles = deepcopy(base.profiles)
+        if channel.runtime == default.runtime and base.runtime != default.runtime:
+            merged.runtime = deepcopy(base.runtime)
         return merged
 
     @staticmethod
     def _supports_auto_asr_correction(config: LlmConfig) -> bool:
-        return str(getattr(config, "backend", "") or "").strip().lower() == "lm_studio"
+        return str(getattr(config, "backend", "") or "").strip().lower() == "local_llama_inprocess"
 
     def _should_attempt_asr_correction(self, *, source: str, text: str, language: str) -> bool:
         value = str(text or "").strip()

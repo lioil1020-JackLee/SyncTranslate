@@ -16,6 +16,7 @@ from app.infra.config.schema import (
     LanguageConfig,
     LlmChannelsConfig,
     LlmConfig,
+    LlmRuntimeConfig,
     RuntimeConfig,
     SlidingWindowConfig,
     TranslationProfileConfig,
@@ -26,6 +27,63 @@ from app.infra.config.schema import (
     VadSettings,
     merge_tts_configs,
 )
+
+
+def _normalize_llm_backend(value: object) -> str:
+    backend = str(value or "").strip().lower()
+    return backend or "local_llama_inprocess"
+
+
+def _parse_llm_runtime(raw: dict[str, Any], fallback: LlmRuntimeConfig | None = None) -> LlmRuntimeConfig:
+    defaults = fallback or LlmRuntimeConfig()
+    runtime_raw = raw.get("runtime") or {}
+    if not isinstance(runtime_raw, dict):
+        runtime_raw = {}
+    return LlmRuntimeConfig(
+        model_path=str(runtime_raw.get("model_path", defaults.model_path)),
+        ctx_size=int(runtime_raw.get("ctx_size", defaults.ctx_size)),
+        gpu_layers=int(runtime_raw.get("gpu_layers", defaults.gpu_layers)),
+        threads=int(runtime_raw.get("threads", defaults.threads)),
+        batch_size=int(runtime_raw.get("batch_size", defaults.batch_size)),
+    )
+
+
+def _parse_llm_config(raw: dict[str, Any], fallback: LlmConfig) -> LlmConfig:
+    runtime = _parse_llm_runtime(raw, fallback.runtime)
+    return LlmConfig(
+        backend=_normalize_llm_backend(raw.get("backend", fallback.backend)),
+        model=str(raw.get("model", fallback.model)) or fallback.model,
+        runtime=runtime,
+        temperature=float(raw.get("temperature", fallback.temperature)),
+        top_p=float(raw.get("top_p", fallback.top_p)),
+        max_output_tokens=int(raw.get("max_output_tokens", fallback.max_output_tokens)),
+        repeat_penalty=float(raw.get("repeat_penalty", fallback.repeat_penalty)),
+        stop_tokens=str(raw.get("stop_tokens", fallback.stop_tokens)),
+        request_timeout_sec=int(raw.get("request_timeout_sec", fallback.request_timeout_sec)),
+        sliding_window=SlidingWindowConfig(**(raw.get("sliding_window") or asdict(fallback.sliding_window))),
+        profiles=TranslationProfilesConfig(
+            live_caption_fast=TranslationProfileConfig(
+                **((raw.get("profiles") or {}).get("live_caption_fast") or asdict(fallback.profiles.live_caption_fast))
+            ),
+            dialogue_fast=TranslationProfileConfig(
+                **((raw.get("profiles") or {}).get("dialogue_fast") or asdict(fallback.profiles.dialogue_fast))
+            ),
+            live_caption_stable=TranslationProfileConfig(
+                **((raw.get("profiles") or {}).get("live_caption_stable") or asdict(fallback.profiles.live_caption_stable))
+            ),
+            speech_output_natural=TranslationProfileConfig(
+                **(
+                    (raw.get("profiles") or {}).get("speech_output_natural")
+                    or asdict(fallback.profiles.speech_output_natural)
+                )
+            ),
+            technical_meeting=TranslationProfileConfig(
+                **((raw.get("profiles") or {}).get("technical_meeting") or asdict(fallback.profiles.technical_meeting))
+            ),
+        ),
+        caption_profile=str(raw.get("caption_profile", fallback.caption_profile)),
+        speech_profile=str(raw.get("speech_profile", fallback.speech_profile)),
+    )
 
 
 def parse_app_config(raw: dict[str, Any]) -> AppConfig:  # noqa: PLR0912,PLR0915
@@ -68,111 +126,13 @@ def parse_app_config(raw: dict[str, Any]) -> AppConfig:  # noqa: PLR0912,PLR0915
         asr = deepcopy(asr_channels.local)
 
     llm_raw = raw.get("llm") or {}
-    llm = LlmConfig(
-        backend=str(llm_raw.get("backend", _llm_d.backend)),
-        base_url=str(llm_raw.get("base_url", _llm_d.base_url)),
-        model=str(llm_raw.get("model", _llm_d.model)),
-        temperature=float(llm_raw.get("temperature", _llm_d.temperature)),
-        top_p=float(llm_raw.get("top_p", _llm_d.top_p)),
-        max_output_tokens=int(llm_raw.get("max_output_tokens", _llm_d.max_output_tokens)),
-        repeat_penalty=float(llm_raw.get("repeat_penalty", _llm_d.repeat_penalty)),
-        stop_tokens=str(llm_raw.get("stop_tokens", _llm_d.stop_tokens)),
-        request_timeout_sec=int(llm_raw.get("request_timeout_sec", _llm_d.request_timeout_sec)),
-        sliding_window=SlidingWindowConfig(**(llm_raw.get("sliding_window") or {})),
-        profiles=TranslationProfilesConfig(
-            live_caption_fast=TranslationProfileConfig(
-                **((llm_raw.get("profiles") or {}).get("live_caption_fast") or {})
-            ),
-            dialogue_fast=TranslationProfileConfig(
-                **((llm_raw.get("profiles") or {}).get("dialogue_fast") or {})
-            ),
-            live_caption_stable=TranslationProfileConfig(
-                **((llm_raw.get("profiles") or {}).get("live_caption_stable") or {})
-            ),
-            speech_output_natural=TranslationProfileConfig(
-                **((llm_raw.get("profiles") or {}).get("speech_output_natural") or {})
-            ),
-            technical_meeting=TranslationProfileConfig(
-                **((llm_raw.get("profiles") or {}).get("technical_meeting") or {})
-            ),
-        ),
-        caption_profile=str(llm_raw.get("caption_profile", _llm_d.caption_profile)),
-        speech_profile=str(llm_raw.get("speech_profile", _llm_d.speech_profile)),
-    )
+    llm = _parse_llm_config(llm_raw, _llm_d)
     llm_channels_raw = raw.get("llm_channels") or {}
     llm_local_raw = llm_channels_raw.get("local") or llm_raw
     llm_remote_raw = llm_channels_raw.get("remote") or llm_raw
     llm_channels = LlmChannelsConfig(
-        local=LlmConfig(
-            backend=str(llm_local_raw.get("backend", llm.backend)),
-            base_url=str(llm_local_raw.get("base_url", llm.base_url)),
-            model=str(llm_local_raw.get("model", llm.model)),
-            temperature=float(llm_local_raw.get("temperature", llm.temperature)),
-            top_p=float(llm_local_raw.get("top_p", llm.top_p)),
-            max_output_tokens=int(llm_local_raw.get("max_output_tokens", llm.max_output_tokens)),
-            repeat_penalty=float(llm_local_raw.get("repeat_penalty", llm.repeat_penalty)),
-            stop_tokens=str(llm_local_raw.get("stop_tokens", llm.stop_tokens)),
-            request_timeout_sec=int(llm_local_raw.get("request_timeout_sec", llm.request_timeout_sec)),
-            sliding_window=SlidingWindowConfig(**(llm_local_raw.get("sliding_window") or asdict(llm.sliding_window))),
-            profiles=TranslationProfilesConfig(
-                live_caption_fast=TranslationProfileConfig(
-                    **((llm_local_raw.get("profiles") or {}).get("live_caption_fast") or asdict(llm.profiles.live_caption_fast))
-                ),
-                dialogue_fast=TranslationProfileConfig(
-                    **((llm_local_raw.get("profiles") or {}).get("dialogue_fast") or asdict(llm.profiles.dialogue_fast))
-                ),
-                live_caption_stable=TranslationProfileConfig(
-                    **((llm_local_raw.get("profiles") or {}).get("live_caption_stable") or asdict(llm.profiles.live_caption_stable))
-                ),
-                speech_output_natural=TranslationProfileConfig(
-                    **(
-                        (llm_local_raw.get("profiles") or {}).get("speech_output_natural")
-                        or asdict(llm.profiles.speech_output_natural)
-                    )
-                ),
-                technical_meeting=TranslationProfileConfig(
-                    **((llm_local_raw.get("profiles") or {}).get("technical_meeting") or asdict(llm.profiles.technical_meeting))
-                ),
-            ),
-            caption_profile=str(llm_local_raw.get("caption_profile", llm.caption_profile)),
-            speech_profile=str(llm_local_raw.get("speech_profile", llm.speech_profile)),
-        ),
-        remote=LlmConfig(
-            backend=str(llm_remote_raw.get("backend", llm.backend)),
-            base_url=str(llm_remote_raw.get("base_url", llm.base_url)),
-            model=str(llm_remote_raw.get("model", llm.model)),
-            temperature=float(llm_remote_raw.get("temperature", llm.temperature)),
-            top_p=float(llm_remote_raw.get("top_p", llm.top_p)),
-            max_output_tokens=int(llm_remote_raw.get("max_output_tokens", llm.max_output_tokens)),
-            repeat_penalty=float(llm_remote_raw.get("repeat_penalty", llm.repeat_penalty)),
-            stop_tokens=str(llm_remote_raw.get("stop_tokens", llm.stop_tokens)),
-            request_timeout_sec=int(llm_remote_raw.get("request_timeout_sec", llm.request_timeout_sec)),
-            sliding_window=SlidingWindowConfig(
-                **(llm_remote_raw.get("sliding_window") or asdict(llm.sliding_window))
-            ),
-            profiles=TranslationProfilesConfig(
-                live_caption_fast=TranslationProfileConfig(
-                    **((llm_remote_raw.get("profiles") or {}).get("live_caption_fast") or asdict(llm.profiles.live_caption_fast))
-                ),
-                dialogue_fast=TranslationProfileConfig(
-                    **((llm_remote_raw.get("profiles") or {}).get("dialogue_fast") or asdict(llm.profiles.dialogue_fast))
-                ),
-                live_caption_stable=TranslationProfileConfig(
-                    **((llm_remote_raw.get("profiles") or {}).get("live_caption_stable") or asdict(llm.profiles.live_caption_stable))
-                ),
-                speech_output_natural=TranslationProfileConfig(
-                    **(
-                        (llm_remote_raw.get("profiles") or {}).get("speech_output_natural")
-                        or asdict(llm.profiles.speech_output_natural)
-                    )
-                ),
-                technical_meeting=TranslationProfileConfig(
-                    **((llm_remote_raw.get("profiles") or {}).get("technical_meeting") or asdict(llm.profiles.technical_meeting))
-                ),
-            ),
-            caption_profile=str(llm_remote_raw.get("caption_profile", llm.caption_profile)),
-            speech_profile=str(llm_remote_raw.get("speech_profile", llm.speech_profile)),
-        ),
+        local=_parse_llm_config(llm_local_raw, llm),
+        remote=_parse_llm_config(llm_remote_raw, llm),
     )
     if not llm_raw and llm_channels_raw:
         llm = deepcopy(llm_channels.local)
@@ -193,8 +153,10 @@ def parse_app_config(raw: dict[str, Any]) -> AppConfig:  # noqa: PLR0912,PLR0915
     health_last_success = HealthStateConfig(**(raw.get("health_last_success") or {}))
 
     direction.mode = "bidirectional"
-    if llm.backend != "lm_studio":
-        llm.backend = "lm_studio"
+    for llm_config in (llm, llm_channels.local, llm_channels.remote):
+        llm_config.backend = _normalize_llm_backend(llm_config.backend)
+        if not llm_config.model.strip():
+            llm_config.model = _llm_d.model
     valid_profiles = {
         "live_caption_fast",
         "dialogue_fast",
@@ -207,8 +169,6 @@ def parse_app_config(raw: dict[str, Any]) -> AppConfig:  # noqa: PLR0912,PLR0915
         llm.caption_profile = "live_caption_fast"
     if llm.speech_profile not in valid_profiles:
         llm.speech_profile = "speech_output_natural"
-    if (not llm.base_url.strip()) or ("11434" in llm.base_url):
-        llm.base_url = "http://127.0.0.1:1234"
     for tts_config in (tts, meeting_tts, local_tts):
         if (tts_config.style_preset or "").strip() not in valid_tts_style_presets:
             tts_config.style_preset = "balanced"

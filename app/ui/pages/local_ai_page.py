@@ -249,7 +249,9 @@ class LocalAiPage(QWidget):
             zh_en_llm = config.llm_channels.local
             en_zh_llm = config.llm_channels.remote
             self._select_combo_data(self.llm_backend_combo, zh_en_llm.backend)
-            self._apply_backend_url(zh_en_llm.backend, self.llm_url_label)
+            self.llm_model_path_label.setText(zh_en_llm.runtime.model_path)
+            self.llm_gpu_layers_spin.setValue(zh_en_llm.runtime.gpu_layers)
+            self.llm_ctx_size_spin.setValue(zh_en_llm.runtime.ctx_size)
             self.llm_model_label.setText(_FIXED_LLM_MODEL)
             self.remote_llm_model_label.setText(_FIXED_LLM_MODEL)
             self.llm_timeout_spin.setValue(zh_en_llm.request_timeout_sec)
@@ -356,14 +358,15 @@ class LocalAiPage(QWidget):
         config.asr = zh_asr
         config.runtime.use_channel_specific_asr = True
 
-        backend = str(self.llm_backend_combo.currentData() or "lm_studio")
+        backend = str(self.llm_backend_combo.currentData() or "local_llama_inprocess")
         zh_en_llm = config.llm_channels.local
         en_zh_llm = config.llm_channels.remote
-        shared_url = self._backend_url(backend)
         for llm_cfg in (zh_en_llm, en_zh_llm):
             llm_cfg.backend = backend
-            llm_cfg.base_url = shared_url
             llm_cfg.model = _FIXED_LLM_MODEL
+            llm_cfg.runtime.model_path = self.llm_model_path_label.text().strip()
+            llm_cfg.runtime.gpu_layers = self.llm_gpu_layers_spin.value()
+            llm_cfg.runtime.ctx_size = self.llm_ctx_size_spin.value()
         zh_en_llm.request_timeout_sec = self.llm_timeout_spin.value()
         en_zh_llm.request_timeout_sec = self.remote_llm_timeout_spin.value()
         zh_en_llm.temperature = float(self.llm_temperature_spin.value())
@@ -964,12 +967,12 @@ class LocalAiPage(QWidget):
 
     def _build_llm_group(self) -> tuple[QGroupBox, QFormLayout]:
         self.llm_backend_combo = QComboBox()
-        self.llm_backend_combo.addItem("LM Studio", "lm_studio")
+        self.llm_backend_combo.addItem("內建 llama.cpp in-process", "local_llama_inprocess")
         self._configure_combo_popup(self.llm_backend_combo)
         self.llm_backend_combo.setEnabled(False)
-        self.llm_backend_combo.setToolTip("翻譯模型由 LM Studio 提供，預設使用固定模型。")
-        self.llm_url_label = QLabel("http://127.0.0.1:1234")
-        self.llm_url_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.llm_backend_combo.setToolTip("翻譯模型由 SyncTranslate 直接在主程序內載入 GGUF。")
+        self.llm_model_path_label = QLabel(r".\runtimes\models\llm\hy-mt1.5-7b.gguf")
+        self.llm_model_path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.llm_model_label = QLabel(_FIXED_LLM_MODEL)
         self.remote_llm_model_label = QLabel(_FIXED_LLM_MODEL)
         self.llm_model_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -1024,6 +1027,13 @@ class LocalAiPage(QWidget):
         self.llm_context_items_spin.setRange(2, 20)
         self.remote_llm_context_items_spin = QSpinBox()
         self.remote_llm_context_items_spin.setRange(2, 20)
+        self.llm_gpu_layers_spin = QSpinBox()
+        self.llm_gpu_layers_spin.setRange(0, 99)
+        self.llm_gpu_layers_spin.setValue(35)
+        self.llm_ctx_size_spin = QSpinBox()
+        self.llm_ctx_size_spin.setRange(512, 32768)
+        self.llm_ctx_size_spin.setSingleStep(512)
+        self.llm_ctx_size_spin.setValue(4096)
         self.llm_queue_local_spin = QSpinBox()
         self.llm_queue_local_spin.setRange(4, 512)
         self.llm_queue_remote_spin = QSpinBox()
@@ -1050,22 +1060,26 @@ class LocalAiPage(QWidget):
             self.remote_llm_trigger_tokens_spin,
             self.llm_context_items_spin,
             self.remote_llm_context_items_spin,
+            self.llm_gpu_layers_spin,
+            self.llm_ctx_size_spin,
             self.llm_queue_local_spin,
             self.llm_queue_remote_spin,
             self.llm_sliding_window_enabled,
             self.remote_llm_sliding_window_enabled,
         )
         self._set_dual_field_style(self.llm_model_label, self.remote_llm_model_label)
+        self._set_uniform_field_style(self.llm_model_path_label, minimum_width=180)
         self._set_uniform_field_style(self.llm_caption_profile_combo, minimum_width=180)
         self._set_uniform_field_style(self.llm_speech_profile_combo, minimum_width=180)
-        llm_service_row = self._build_inline_row(self.llm_url_label)
+        llm_runtime_row = self._build_dual_field_row(self.llm_gpu_layers_spin, self.llm_ctx_size_spin)
 
         form = QFormLayout()
         self._configure_form_layout(form)
         form.addRow("", self._build_dual_header_row("本地方向", "遠端方向"))
         form.addRow("模型", self._build_dual_field_row(self.llm_model_label, self.remote_llm_model_label))
         form.addRow("後端(共用)", self.llm_backend_combo)
-        form.addRow("服務位址(共用)", llm_service_row)
+        form.addRow("GGUF 模型", self.llm_model_path_label)
+        form.addRow("GPU Layers / Context", llm_runtime_row)
         form.addRow("字幕 Profile(共用)", self.llm_caption_profile_combo)
         form.addRow("語音 Profile(共用)", self.llm_speech_profile_combo)
         form.addRow("LLM 佇列", self._build_dual_field_row(self.llm_queue_local_spin, self.llm_queue_remote_spin))
@@ -1377,6 +1391,8 @@ class LocalAiPage(QWidget):
         for compact in (
             self.asr_engine_combo,
             self.llm_backend_combo,
+            self.llm_gpu_layers_spin,
+            self.llm_ctx_size_spin,
             self.runtime_sample_rate_spin,
             self.runtime_chunk_spin,
             self.runtime_translation_cache_spin,
@@ -1393,8 +1409,6 @@ class LocalAiPage(QWidget):
 
         self._set_uniform_field_style(self.asr_device_combo, minimum_width=150)
 
-        self.llm_url_label.setMinimumWidth(140)
-        self.llm_url_label.setMinimumHeight(_CONTROL_HEIGHT)
         self.asr_compute_label.setMinimumHeight(_CONTROL_HEIGHT)
         self.experience_preset_combo.currentIndexChanged.connect(self._on_experience_preset_changed)
         self.show_advanced_check.toggled.connect(self._set_advanced_settings_visible)
@@ -1452,6 +1466,8 @@ class LocalAiPage(QWidget):
             self.remote_llm_trigger_tokens_spin,
             self.llm_context_items_spin,
             self.remote_llm_context_items_spin,
+            self.llm_gpu_layers_spin,
+            self.llm_ctx_size_spin,
             self.llm_caption_profile_combo,
             self.llm_speech_profile_combo,
             self.runtime_sample_rate_spin,
@@ -1641,8 +1657,7 @@ class LocalAiPage(QWidget):
         return
 
     def _on_backend_changed(self) -> None:
-        backend = str(self.llm_backend_combo.currentData() or "lm_studio")
-        self._apply_backend_url(backend, self.llm_url_label)
+        _backend = str(self.llm_backend_combo.currentData() or "local_llama_inprocess")
         self.llm_model_label.setText(_FIXED_LLM_MODEL)
         self.remote_llm_model_label.setText(_FIXED_LLM_MODEL)
         self._notify_settings_changed()
@@ -1893,8 +1908,6 @@ class LocalAiPage(QWidget):
             widget.setMaximumHeight(_CONTROL_HEIGHT)
             widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
-    def _apply_backend_url(self, backend: str, label: QLabel) -> None:
-        label.setText(self._backend_url(backend))
 
     def _disable_wheel_for_advanced_controls(self) -> None:
         containers = (
@@ -1910,9 +1923,6 @@ class LocalAiPage(QWidget):
             for widget in container.findChildren(QAbstractSpinBox):
                 widget.installEventFilter(self)
 
-    @staticmethod
-    def _backend_url(backend: str) -> str:
-        return "http://127.0.0.1:1234"
 
     @staticmethod
     def _filter_llm_models(models: list[str]) -> list[str]:

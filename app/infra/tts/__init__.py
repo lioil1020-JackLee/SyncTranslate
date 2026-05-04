@@ -1,7 +1,6 @@
 ﻿
 from app.infra.tts.edge_tts_adapter import EdgeTtsProvider
-from app.infra.tts.engine import create_tts_engine
-from app.infra.tts.playback_queue import TTSManager
+from app.infra.tts.playback_queue import TTSManager, create_tts_engine
 from app.infra.tts.voice_policy import (
     default_voice_for_language,
     normalize_language,

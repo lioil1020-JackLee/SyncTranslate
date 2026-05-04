@@ -56,6 +56,11 @@ class ConfigMigrationTests(unittest.TestCase):
         cfg = AppConfig()
         self.assertEqual(cfg.runtime.asr_language_mode, "auto")
 
+    def test_default_llm_backend_uses_local_llama_inprocess(self) -> None:
+        cfg = AppConfig()
+        self.assertEqual(cfg.llm.backend, "local_llama_inprocess")
+        self.assertEqual(cfg.llm.runtime.model_path, r".\runtimes\models\llm\hy-mt1.5-7b.gguf")
+
     def test_default_remote_asr_profile_matches_local_asr_defaults(self) -> None:
         cfg = AppConfig()
         self.assertEqual(cfg.asr_channels.remote.beam_size, 1)
@@ -99,6 +104,7 @@ class ConfigMigrationTests(unittest.TestCase):
         self.assertEqual(migrated["runtime"]["sample_rate"], 16000)
         self.assertEqual(migrated["runtime"]["chunk_ms"], 30)
         self.assertEqual(migrated["runtime"]["config_schema_version"], 5)
+        self.assertEqual(migrated["llm"]["backend"], "local_llama_inprocess")
         self.assertIn("local", migrated["asr_channels"])
         self.assertIn("remote", migrated["llm_channels"])
 
@@ -377,8 +383,8 @@ class ConfigMigrationTests(unittest.TestCase):
                 "non_chinese": {"model": "remote-asr", "hallucination_filter": True},
             },
             "llm_channels": {
-                "local": {"base_url": "http://127.0.0.1:1234", "caption_profile": "technical_meeting"},
-                "remote": {"base_url": "http://127.0.0.1:1234", "request_timeout_sec": 12},
+                "local": {"caption_profile": "technical_meeting"},
+                "remote": {"request_timeout_sec": 12},
             },
             "tts": {
                 "engine": "edge_tts",

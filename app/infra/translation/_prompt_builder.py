@@ -1,4 +1,4 @@
-"""Prompt building helpers — extracted from lm_studio_adapter."""
+"""Prompt building helpers for OpenAI-compatible translation providers."""
 from __future__ import annotations
 
 from app.infra.config.schema import TranslationProfileConfig

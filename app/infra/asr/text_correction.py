@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 from app.infra.config.schema import DEFAULT_FIXED_LLM_MODEL, LlmConfig
 
 if TYPE_CHECKING:
-    from app.infra.translation.lm_studio_adapter import LmStudioClient
+    from app.infra.translation.inprocess_adapter import InProcessLlamaClient
 
 
 @dataclass(slots=True)
@@ -31,13 +31,17 @@ class AsrTextCorrector:
         self._enabled = bool(enabled)
         self._context: deque[str] = deque(maxlen=max(0, int(context_items)))
         self._max_chars = max(24, int(max_chars))
-        self._client: LmStudioClient | None | Any = None
+        self._client: InProcessLlamaClient | None | Any = None
         if self._enabled:
-            from app.infra.translation.lm_studio_adapter import LmStudioClient
+            from app.infra.translation.inprocess_adapter import InProcessLlamaClient
 
-            self._client = LmStudioClient(
-                base_url=config.base_url,
+            self._client = InProcessLlamaClient(
+                model_path=config.runtime.model_path,
                 model=DEFAULT_FIXED_LLM_MODEL,
+                ctx_size=config.runtime.ctx_size,
+                gpu_layers=config.runtime.gpu_layers,
+                threads=config.runtime.threads,
+                batch_size=config.runtime.batch_size,
                 temperature=0.0,
                 top_p=min(0.9, max(0.1, float(config.top_p))),
                 max_output_tokens=min(192, max(64, int(config.max_output_tokens))),

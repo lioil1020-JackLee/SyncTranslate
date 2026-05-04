@@ -14,19 +14,24 @@ language:
   local_target: en
 llm_channels:
   local:
-    backend: lm_studio
-    base_url: http://127.0.0.1:1234
+    backend: local_llama_inprocess
     model: hy-mt1.5-7b
+    runtime:
+      model_path: .\runtimes\models\llm\hy-mt1.5-7b.gguf
+      ctx_size: 4096
+      gpu_layers: 35
+      threads: 8
+      batch_size: 512
     temperature: 0.0
-    top_p: 0.7
-    max_output_tokens: 80
-    repeat_penalty: 1.06
+    top_p: 0.78
+    max_output_tokens: 96
+    repeat_penalty: 1.1
     stop_tokens: '</target>,Translation:'
     request_timeout_sec: 9
     sliding_window:
       enabled: true
-      trigger_tokens: 10
-      max_context_items: 3
+      trigger_tokens: 18
+      max_context_items: 4
     profiles:
       live_caption_fast:
         name: live_caption_fast
@@ -73,22 +78,27 @@ llm_channels:
         preserve_terms: true
         naturalize_tone: false
         allow_subject_completion: false
-    caption_profile: dialogue_fast
-    speech_profile: dialogue_fast
+    caption_profile: live_caption_fast
+    speech_profile: speech_output_natural
   remote:
-    backend: lm_studio
-    base_url: http://127.0.0.1:1234
+    backend: local_llama_inprocess
     model: hy-mt1.5-7b
+    runtime:
+      model_path: .\runtimes\models\llm\hy-mt1.5-7b.gguf
+      ctx_size: 4096
+      gpu_layers: 35
+      threads: 8
+      batch_size: 512
     temperature: 0.0
-    top_p: 0.7
-    max_output_tokens: 80
-    repeat_penalty: 1.06
+    top_p: 0.78
+    max_output_tokens: 128
+    repeat_penalty: 1.1
     stop_tokens: '</target>,Translation:'
     request_timeout_sec: 12
     sliding_window:
       enabled: true
-      trigger_tokens: 10
-      max_context_items: 3
+      trigger_tokens: 18
+      max_context_items: 4
     profiles:
       live_caption_fast:
         name: live_caption_fast
@@ -135,17 +145,17 @@ llm_channels:
         preserve_terms: true
         naturalize_tone: false
         allow_subject_completion: false
-    caption_profile: dialogue_fast
-    speech_profile: dialogue_fast
+    caption_profile: live_caption_fast
+    speech_profile: speech_output_natural
 tts:
   engine: edge_tts
   executable_path: ''
   model_path: ''
   config_path: ''
   voice_name: zh-TW-HsiaoChenNeural
-  style_preset: fast_response
+  style_preset: broadcast_clear
   speaker_id: 0
-  length_scale: 1.02
+  length_scale: 1.0
   noise_scale: 0.6
   noise_w: 0.65
   sample_rate: 24000
@@ -161,32 +171,32 @@ runtime:
   chunk_ms: 40
   adaptive_asr_enabled: true
   adaptive_llm_enabled: true
-  asr_pre_roll_ms: 300
+  asr_pre_roll_ms: 360
   latency_mode: balanced
   display_partial_strategy: stable_only
-  stable_partial_min_repeats: 2
+  stable_partial_min_repeats: 3
   partial_stability_max_delta_chars: 6
-  asr_partial_min_audio_ms: 280
-  asr_partial_interval_floor_ms: 240
-  llm_partial_interval_floor_ms: 240
+  asr_partial_min_audio_ms: 360
+  asr_partial_interval_floor_ms: 280
+  llm_partial_interval_floor_ms: 280
   early_final_enabled: false
   tts_accept_stable_partial: false
   tts_partial_min_chars: 12
   tts_use_speech_profile: false
-  asr_queue_maxsize_local: 192
-  asr_queue_maxsize_remote: 192
-  llm_queue_maxsize_local: 16
-  llm_queue_maxsize_remote: 16
-  tts_queue_maxsize_local: 12
-  tts_queue_maxsize_remote: 12
+  asr_queue_maxsize_local: 160
+  asr_queue_maxsize_remote: 160
+  llm_queue_maxsize_local: 24
+  llm_queue_maxsize_remote: 24
+  tts_queue_maxsize_local: 16
+  tts_queue_maxsize_remote: 16
   translation_exact_cache_size: 256
   translation_prefix_min_delta_chars: 6
   tts_cancel_pending_on_new_final: true
   tts_cancel_policy: older_only
-  tts_max_wait_ms: 1800
-  tts_max_chars: 128
-  tts_drop_backlog_threshold: 2
-  llm_streaming_tokens: 14
+  tts_max_wait_ms: 2200
+  tts_max_chars: 160
+  tts_drop_backlog_threshold: 3
+  llm_streaming_tokens: 16
   max_pipeline_latency_ms: 3200
   asr_frontend_enabled: true
   asr_frontend_target_rms: 0.06
@@ -228,8 +238,8 @@ runtime:
   enable_partial_stabilization: true
   enable_structured_logging: true
   runtime_log_format: jsonl
-  asr_profile_local: turn_taking
-  asr_profile_remote: turn_taking
+  asr_profile_local: meeting_room
+  asr_profile_remote: meeting_room
   degradation_policy_enabled: true
 asr_profiles:
   chinese:
@@ -251,24 +261,24 @@ asr_profiles:
     vad:
       enabled: true
       backend: silero_vad
-      min_speech_duration_ms: 160
-      min_silence_duration_ms: 360
-      max_speech_duration_s: 12.0
-      speech_pad_ms: 260
-      rms_threshold: 0.021
-      neural_threshold: 0.4
-      startup_suppress_ms: 200
+      min_speech_duration_ms: 220
+      min_silence_duration_ms: 600
+      max_speech_duration_s: 16.0
+      speech_pad_ms: 360
+      rms_threshold: 0.022
+      neural_threshold: 0.45
+      startup_suppress_ms: 400
     streaming:
-      partial_interval_ms: 320
+      partial_interval_ms: 520
       partial_history_seconds: 2
-      final_history_seconds: 16
-      soft_final_audio_ms: 2400
+      final_history_seconds: 20
+      soft_final_audio_ms: 4000
   non_chinese:
     engine: faster_whisper
     model: large-v3-turbo
     device: cuda
     compute_type: float16
-    beam_size: 2
+    beam_size: 1
     final_beam_size: 5
     condition_on_previous_text: false
     final_condition_on_previous_text: false
@@ -277,20 +287,20 @@ asr_profiles:
     speculative_draft_model: ''
     speculative_num_beams: 1
     temperature_fallback: '0.0'
-    no_speech_threshold: 0.36
+    no_speech_threshold: 0.32
     hallucination_filter: true
     vad:
       enabled: true
       backend: silero_vad
-      min_speech_duration_ms: 160
-      min_silence_duration_ms: 280
-      max_speech_duration_s: 12.0
-      speech_pad_ms: 240
-      rms_threshold: 0.019
-      neural_threshold: 0.36
+      min_speech_duration_ms: 200
+      min_silence_duration_ms: 520
+      max_speech_duration_s: 16.0
+      speech_pad_ms: 320
+      rms_threshold: 0.02
+      neural_threshold: 0.35
       startup_suppress_ms: 0
     streaming:
-      partial_interval_ms: 300
+      partial_interval_ms: 480
       partial_history_seconds: 2
-      final_history_seconds: 10
-      soft_final_audio_ms: 1800
+      final_history_seconds: 14
+      soft_final_audio_ms: 3400

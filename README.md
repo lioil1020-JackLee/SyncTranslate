@@ -25,7 +25,8 @@ SyncTranslate 是一個以 Windows 桌面為主的即時雙向字幕 / 翻譯 / 
   - 非中文 / `auto` 通道固定使用 `large-v3-turbo`（faster-whisper）
   - 每通道可獨立指定 ASR 語言，模型自動路由，不需手動選擇
 - 即時翻譯
-  - 目前以 LM Studio 為主要本地 LLM backend
+  - 使用 SyncTranslate 自動管理的本機 `llama.cpp in-process engine`
+  - 固定模型名稱 `hy-mt1.5-7b`，固定在主程序內 in-process 執行，不使用 URL 連線
 - TTS / passthrough 輸出
   - 每通道可獨立設定翻譯目標與輸出語音
 - 診斷與匯出
@@ -93,12 +94,12 @@ SyncTranslate 是一個以 Windows 桌面為主的即時雙向字幕 / 翻譯 / 
 
 ## 外部 AI 運行時架構
 
-本專案採用**外部化運行時**設計，將重量級 AI 依賴（PyTorch / faster-whisper）與主程式解耦：
+本專案採用**外部化運行時**設計，將重量級 AI 依賴（PyTorch / faster-whisper / llama.cpp in-process engine）與主程式解耦：
 
 ### 目標
 
 - **輕量化主包**：`SyncTranslate.exe` 與 UI 依賴獨立，不含 AI 套件（~200MB 而非 2GB+）
-- **模組化管理**：兩層隔離運行時（shared CUDA、faster-whisper）
+- **模組化管理**：隔離運行時（shared CUDA、faster-whisper、llama.cpp in-process engine）
 - **靈活部署**：可選離線/CUDA，支援獨立升級各 AI 套件
 - **超大資產支援**：GitHub Release 自動分片超過 2GB 的打包結果
 
@@ -114,8 +115,12 @@ SyncTranslate-onedir/
     ...（無 torch/faster-whisper）
   
   runtimes/                         # 外部 AI 運行時（從開發環境複製）
-    shared/Lib/site-packages/       # torch / torchaudio / onnxruntime
+    shared/Lib/site-packages/       # torch / torchaudio / onnxruntime / llama-cpp-python
     faster_whisper/Lib/site-packages/  # faster-whisper / ctranslate2 / tiktoken
+    models/
+      belle-zh-ct2/                 # 中文 ASR CTranslate2 模型
+      llm/
+        hy-mt1.5-7b.gguf            # 本機翻譯 GGUF（in-process 載入，無需額外 server）
   
   models/                           # 可選：離線模型快取
 ```
@@ -157,9 +162,11 @@ SyncTranslate-onedir/
 # 1. 安裝主程式依賴（輕量級，不含 torch/faster-whisper 等）
 uv sync --locked
 
-# 2. 準備外部 AI 運行時（torch, faster-whisper 等）
+# 2. 準備外部 AI 運行時（torch, faster-whisper, llama.cpp in-process engine, HY-MT GGUF）
 powershell -ExecutionPolicy Bypass -File .\tools\runtime_setup\prepare_external_runtimes.ps1
 ```
+
+此命令會自動安裝 in-process `llama-cpp-python` 並下載 `tencent/HY-MT1.5-7B-GGUF` 的 `HY-MT1.5-7B-Q4_K_M.gguf`，並存成 `runtimes\models\llm\hy-mt1.5-7b.gguf`。若要使用自己的 GGUF，可改加 `-LlmModelPath "D:\models\hy-mt1.5-7b.gguf"`。
 
 啟動程式：
 
@@ -188,7 +195,7 @@ uv run python .\tools\runtime_smoke\run_runtime_smoke.py --config config.yaml
 如果要打包 onedir：
 
 ```powershell
-# 1. 確保外部運行時已準備
+# 1. 確保外部運行時已準備（含 ASR、llama-cpp-python、HY-MT GGUF）
 powershell -ExecutionPolicy Bypass -File .\tools\runtime_setup\prepare_external_runtimes.ps1
 
 # 2. 安裝 build 工具
@@ -199,7 +206,13 @@ uv run pyinstaller .\SyncTranslate-onedir.spec --noconfirm --clean
 
 # 4. 複製外部運行時到 dist 根目錄
 powershell -ExecutionPolicy Bypass -File .\tools\runtime_setup\relocate_ai_runtime_artifacts.ps1
+
+# 5. 壓縮 onedir（需要 7-Zip；腳本會找 PATH 或 C:\Program Files\7-Zip\7z.exe）
+powershell -ExecutionPolicy Bypass -File .\tools\runtime_setup\package_onedir.ps1 -Source .\dist\SyncTranslate-onedir -Output .\dist\SyncTranslate-onedir-windows.zip
 ```
+
+`relocate_ai_runtime_artifacts.ps1` 會檢查 `runtimes/shared` 的 `llama_cpp` 套件與 `runtimes/models/llm/hy-mt1.5-7b.gguf`；缺任一項會中止打包，避免產出無法翻譯的 onedir。
+它只會複製必要 runtime 與模型，不會把本機 `runtimes\models\huggingface` cache 打進包，避免 symlink cache 在 dist 中被展開成雙倍大小。
 
 ## 設定重點
 
@@ -219,6 +232,10 @@ powershell -ExecutionPolicy Bypass -File .\tools\runtime_setup\relocate_ai_runti
 - `runtime.degradation_policy_enabled`：streaming 降級保護
 - `runtime.enable_structured_logging`：jsonl 結構化日誌
 - `runtime.asr_queue_maxsize_local` / `runtime.asr_queue_maxsize_remote`
+- `llm_channels.*.backend`：固定 `local_llama_inprocess`
+- `llm_channels.*.runtime.model_path`：預設 `.\runtimes\models\llm\hy-mt1.5-7b.gguf`
+- `llm_channels.*.runtime.gpu_layers` / `ctx_size`：預設 `35` / `4096`
+- `llm_channels.*.runtime.batch_size`：預設 `512`
 
 ### ASR 辨識率調校狀態（2026-04-30 v2.0.0）
 
@@ -335,5 +352,4 @@ Benchmark 結果存於 `downloads/benchmark_results/`。
 - [docs/快速安裝手冊.md](docs/快速安裝手冊.md)
 - [docs/更新紀錄.md](docs/更新紀錄.md)
 - [docs/ASR重構藍圖.md](docs/ASR重構藍圖.md)
-
 

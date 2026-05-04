@@ -1,4 +1,4 @@
-"""Response text parsing helpers — extracted from lm_studio_adapter."""
+"""Response text parsing helpers for OpenAI-compatible translation providers."""
 from __future__ import annotations
 
 import html

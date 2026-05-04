@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from app.infra.asr.factory import create_asr_manager, normalize_asr_pipeline_mode
+from app.infra.asr.manager_v2 import create_asr_manager, normalize_asr_pipeline_mode
 from app.infra.asr.manager_v2 import ASRManagerV2
 from app.infra.config.schema import AppConfig
 

@@ -1,18 +1,88 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import html
 import json
+from dataclasses import dataclass, field
+from pathlib import Path
 import re
-from dataclasses import dataclass
-from urllib import error, request
+from threading import Lock, RLock
+from typing import Any
 
 from app.infra.config.schema import DEFAULT_FIXED_LLM_MODEL, TranslationProfileConfig
 
 
 @dataclass(slots=True)
-class LmStudioClient:
-    base_url: str = "http://127.0.0.1:1234"
+class _RuntimeHandle:
+    model_path: str
+    llm: Any
+    lock: RLock = field(default_factory=RLock)
+
+
+_RUNTIME_CACHE: dict[tuple[str, int, int, int, int], _RuntimeHandle] = {}
+_RUNTIME_CACHE_LOCK = Lock()
+
+
+def _build_runtime(*, model_path: str, ctx_size: int, gpu_layers: int, threads: int, batch_size: int) -> _RuntimeHandle:
+    try:
+        from llama_cpp import Llama
+    except ImportError as exc:  # noqa: BLE001
+        raise RuntimeError(
+            "llama-cpp-python is not installed. "
+            "Run: .\\tools\\runtime_setup\\prepare_external_runtimes.ps1 to install all dependencies."
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            f"Failed to initialize llama-cpp-python: {exc}"
+        ) from exc
+
+    resolved = Path(model_path).resolve()
+    if not resolved.exists():
+        raise FileNotFoundError(f"LLM model file not found: {resolved}")
+
+    kwargs: dict[str, object] = {
+        "model_path": str(resolved),
+        "n_ctx": max(512, int(ctx_size)),
+        "n_gpu_layers": max(0, int(gpu_layers)),
+        "n_threads": max(1, int(threads)),
+        "verbose": False,
+    }
+    if int(batch_size) > 0:
+        kwargs["n_batch"] = int(batch_size)
+    llm = Llama(**kwargs)
+    return _RuntimeHandle(model_path=str(resolved), llm=llm)
+
+
+def _get_runtime(*, model_path: str, ctx_size: int, gpu_layers: int, threads: int, batch_size: int) -> _RuntimeHandle:
+    key = (
+        str(Path(model_path).resolve()),
+        max(512, int(ctx_size)),
+        max(0, int(gpu_layers)),
+        max(1, int(threads)),
+        max(1, int(batch_size)),
+    )
+    with _RUNTIME_CACHE_LOCK:
+        handle = _RUNTIME_CACHE.get(key)
+        if handle is not None:
+            return handle
+        created = _build_runtime(
+            model_path=model_path,
+            ctx_size=ctx_size,
+            gpu_layers=gpu_layers,
+            threads=threads,
+            batch_size=batch_size,
+        )
+        _RUNTIME_CACHE[key] = created
+        return created
+
+
+@dataclass(slots=True)
+class InProcessLlamaClient:
+    model_path: str
     model: str = DEFAULT_FIXED_LLM_MODEL
+    ctx_size: int = 4096
+    gpu_layers: int = 35
+    threads: int = 8
+    batch_size: int = 512
     temperature: float = 0.2
     top_p: float = 0.9
     max_output_tokens: int = 128
@@ -22,18 +92,32 @@ class LmStudioClient:
     _last_raw_response: str = ""
     _last_cleaned_response: str = ""
     _last_error: str = ""
+    _runtime: _RuntimeHandle | None = None
+
+    def __post_init__(self) -> None:
+        pass  # lazy: runtime loaded on first use
+
+    def _ensure_runtime(self) -> _RuntimeHandle:
+        if self._runtime is None:
+            self._runtime = _get_runtime(
+                model_path=self.model_path,
+                ctx_size=self.ctx_size,
+                gpu_layers=self.gpu_layers,
+                threads=self.threads,
+                batch_size=self.batch_size,
+            )
+        return self._runtime
 
     def health_check(self) -> tuple[bool, str]:
         try:
             self._chat_completion(messages=[{"role": "user", "content": "ping"}], max_tokens=2)
             return True, "ok"
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
+            self._last_error = str(exc)
             return False, str(exc)
 
     def list_models(self) -> list[str]:
-        payload = self._request_json("/v1/models", method="GET")
-        data = payload.get("data", [])
-        return [str(item.get("id", "")) for item in data if isinstance(item, dict)]
+        return [self.model]
 
     def translate(
         self,
@@ -53,15 +137,15 @@ class LmStudioClient:
         source_label = _language_label(source_lang)
         target_label = _language_label(target_lang)
         style_hint = _profile_hint(profile)
-        _trad_chinese_note = (
-            "IMPORTANT: The target language is Traditional Chinese (蝜?銝剜?). "
+        trad_chinese_note = (
+            "IMPORTANT: The target language is Traditional Chinese. "
             "You MUST use Traditional Chinese characters only. "
-            "Never use Simplified Chinese characters (蝪⊿?摮? under any circumstances.\n"
+            "Never use Simplified Chinese characters under any circumstances.\n"
         ) if "traditional chinese" in target_label.lower() else ""
         system_prompt = (
             "You are a real-time interpretation engine.\n"
             f"Translate only from {source_label} to {target_label}.\n"
-            f"{_trad_chinese_note}"
+            f"{trad_chinese_note}"
             f"Return JSON only in this exact format: {{\"translation\":\"...\"}} where the value is only {target_label}.\n"
             "Do not output any other keys.\n"
             "Do not explain, analyze, answer, summarize, add notes, add bullet points, use markdown, or show thinking process.\n"
@@ -113,7 +197,7 @@ class LmStudioClient:
                     {
                         "role": "user",
                         "content": (
-                            f"Return only valid JSON in the format {{\"translation\":\"...\"}}. "
+                            "Return only valid JSON in the format {\"translation\":\"...\"}. "
                             f"The translation value must be only {target_label}, with no explanation."
                         ),
                     },
@@ -194,7 +278,9 @@ class LmStudioClient:
         max_tokens: int = 512,
         response_format: dict[str, object] | None = None,
     ) -> str:
-        payload = {
+        runtime = self._ensure_runtime()
+
+        kwargs: dict[str, object] = {
             "model": self.model,
             "messages": messages,
             "temperature": self.temperature,
@@ -204,30 +290,36 @@ class LmStudioClient:
         }
         stop = _parse_stop_tokens(self.stop_tokens)
         if stop:
-            payload["stop"] = stop
+            kwargs["stop"] = stop
         if response_format:
-            payload["response_format"] = response_format
-        try:
-            data = self._request_json("/v1/chat/completions", payload=payload)
-        except ValueError as exc:
-            if response_format and "response_format.type" in str(exc):
-                payload["response_format"] = {"type": "text"}
-                data = self._request_json("/v1/chat/completions", payload=payload)
-            else:
-                raise
-        choices = data.get("choices", [])
+            kwargs["response_format"] = response_format
+
+        with runtime.lock:
+            try:
+                data = runtime.llm.create_chat_completion(**kwargs)
+            except TypeError:
+                kwargs.pop("response_format", None)
+                data = runtime.llm.create_chat_completion(**kwargs)
+            except Exception as exc:  # noqa: BLE001
+                self._last_error = str(exc)
+                raise ValueError(f"local in-process llm failed: {exc}") from exc
+
+        choices = data.get("choices", []) if isinstance(data, dict) else []
         if not choices:
             return ""
-        message = choices[0].get("message", {})
-        return str(message.get("content", "")).strip()
+        first = choices[0] if isinstance(choices[0], dict) else {}
+        message = first.get("message", {}) if isinstance(first, dict) else {}
+        if isinstance(message, dict):
+            return str(message.get("content", "")).strip()
+        return str(first.get("text", "")).strip() if isinstance(first, dict) else ""
 
     @staticmethod
     def _extract_translation_text(text: str, *, target_lang: str) -> str:
         stripped = _strip_thinking_sections(text)
         json_translation = _extract_translation_from_json(stripped)
         if json_translation:
-            return LmStudioClient._clean_translation_output(json_translation, target_lang=target_lang)
-        return LmStudioClient._clean_translation_output(stripped, target_lang=target_lang)
+            return InProcessLlamaClient._clean_translation_output(json_translation, target_lang=target_lang)
+        return InProcessLlamaClient._clean_translation_output(stripped, target_lang=target_lang)
 
     @staticmethod
     def _extract_correction_text(text: str) -> str:
@@ -317,28 +409,6 @@ class LmStudioClient:
             return True
         return False
 
-    def _request_json(self, path: str, payload: dict[str, object] | None = None, method: str = "POST") -> dict:
-        url = self.base_url.rstrip("/") + path
-        data = None if payload is None else json.dumps(payload).encode("utf-8")
-        headers = {"Accept": "application/json"}
-        if data is not None:
-            headers["Content-Type"] = "application/json"
-        req = request.Request(url=url, data=data, headers=headers, method=method)
-        try:
-            with request.urlopen(req, timeout=self.request_timeout_sec) as resp:
-                content = resp.read().decode("utf-8", errors="replace")
-        except error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            self._last_error = f"HTTP {exc.code}: {body or exc.reason}"
-            raise ValueError(f"HTTP {exc.code}: {body or exc.reason}") from exc
-        except error.URLError as exc:
-            reason = getattr(exc, "reason", exc)
-            self._last_error = f"local llm connection failed: {reason}"
-            raise ValueError(f"local llm connection failed: {reason}") from exc
-        if not content.strip():
-            return {}
-        return json.loads(content)
-
     @staticmethod
     def _trim_debug_text(text: str, limit: int = 240) -> str:
         value = (text or "").strip().replace("\n", "\\n")
@@ -347,7 +417,7 @@ class LmStudioClient:
         return value[: limit - 3] + "..."
 
 
-# Re-export helpers that live in dedicated sub-modules (kept here for backward compat).
+# Re-export helpers that live in dedicated sub-modules.
 from app.infra.translation._stream_parser import (  # noqa: E402, F401
     _contains_cjk,
     _looks_like_glossary,
@@ -369,4 +439,3 @@ from app.infra.translation._prompt_builder import (  # noqa: E402, F401
     _profile_hint,
     _parse_stop_tokens,
 )
-

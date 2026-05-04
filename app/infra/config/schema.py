@@ -165,10 +165,19 @@ class TranslationProfilesConfig:
 
 
 @dataclass(slots=True)
+class LlmRuntimeConfig:
+    model_path: str = r".\runtimes\models\llm\hy-mt1.5-7b.gguf"
+    ctx_size: int = 4096
+    gpu_layers: int = 35
+    threads: int = 8
+    batch_size: int = 512
+
+
+@dataclass(slots=True)
 class LlmConfig:
-    backend: str = "lm_studio"
-    base_url: str = "http://127.0.0.1:1234"
+    backend: str = "local_llama_inprocess"
     model: str = DEFAULT_FIXED_LLM_MODEL
+    runtime: LlmRuntimeConfig = field(default_factory=LlmRuntimeConfig)
     temperature: float = 0.2
     top_p: float = 0.9
     max_output_tokens: int = 128

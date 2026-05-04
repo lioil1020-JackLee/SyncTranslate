@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from app.infra.translation.lm_studio_adapter import LmStudioClient
 from app.infra.config.schema import DEFAULT_FIXED_LLM_MODEL, LlmConfig, TranslationProfileConfig
+from app.infra.translation.inprocess_adapter import InProcessLlamaClient
 
 
 @dataclass(slots=True)
@@ -37,11 +37,16 @@ class TranslationProvider(Protocol):
     def debug_snapshot(self) -> dict[str, str]: ...
 
 
-class LmStudioTranslationProvider:
+class LocalLlamaTranslationProvider:
     def __init__(self, config: LlmConfig) -> None:
-        self._client = LmStudioClient(
-            base_url=config.base_url,
+        self._config = config
+        self._client = InProcessLlamaClient(
+            model_path=config.runtime.model_path,
             model=DEFAULT_FIXED_LLM_MODEL,
+            ctx_size=config.runtime.ctx_size,
+            gpu_layers=config.runtime.gpu_layers,
+            threads=config.runtime.threads,
+            batch_size=config.runtime.batch_size,
             temperature=config.temperature,
             top_p=config.top_p,
             max_output_tokens=config.max_output_tokens,
@@ -89,6 +94,6 @@ class LmStudioTranslationProvider:
 
 def create_translation_provider(config: LlmConfig) -> TranslationProvider:
     backend = (config.backend or "").strip().lower()
-    if backend == "lm_studio":
-        return LmStudioTranslationProvider(config)
+    if backend == "local_llama_inprocess":
+        return LocalLlamaTranslationProvider(config)
     raise ValueError(f"Unsupported llm backend: {config.backend}")

@@ -593,6 +593,9 @@ class LocalAiPageUiTests(_QtTestCase):
         page.update_config(updated)
 
         self.assertTrue(updated.runtime.use_channel_specific_llm)
+        self.assertEqual(updated.llm.backend, "local_llama_inprocess")
+        self.assertEqual(page.llm_backend_combo.currentData(), "local_llama_inprocess")
+        self.assertIn("in-process", page.llm_backend_combo.currentText())
         self.assertEqual(page.llm_model_label.text(), "hy-mt1.5-7b")
         self.assertEqual(page.remote_llm_model_label.text(), "hy-mt1.5-7b")
         self.assertEqual(updated.llm_channels.local.model, "hy-mt1.5-7b")

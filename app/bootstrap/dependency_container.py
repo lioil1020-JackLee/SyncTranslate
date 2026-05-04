@@ -5,11 +5,11 @@ from typing import Callable
 
 from app.application.session_service import SessionController
 from app.application.audio_router import AudioRouter
-from app.domain.events import ErrorEvent
+from app.domain.models import ErrorEvent
 from app.infra.audio.capture import AudioCapture
 from app.infra.audio.playback import AudioPlayback
 from app.infra.audio.routing import AudioInputManager
-from app.infra.asr.factory import create_asr_manager
+from app.infra.asr.manager_v2 import create_asr_manager
 from app.infra.translation.engine import TranslatorManager
 from app.infra.tts.playback_queue import TTSManager
 from app.infra.config.schema import AppConfig

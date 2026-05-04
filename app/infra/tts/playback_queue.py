@@ -8,7 +8,7 @@ from typing import Any, Callable
 
 import numpy as np
 
-from app.domain.events import ErrorEvent
+from app.domain.models import ErrorEvent
 from app.infra.audio.playback import AudioPlayback
 from app.infra.tts.edge_tts_adapter import EdgeTtsProvider
 from app.infra.tts.voice_policy import resolve_tts_config_for_target

@@ -6,7 +6,7 @@ from typing import Callable
 
 import numpy as np
 
-from app.domain.events import ErrorEvent
+from app.domain.models import ErrorEvent
 from app.infra.audio.routing import AudioInputManager
 from app.infra.asr.contracts import ASREventWithSource, AsrManagerProtocol
 from app.infra.config.schema import AppConfig, AudioRouteConfig, RuntimeConfig
