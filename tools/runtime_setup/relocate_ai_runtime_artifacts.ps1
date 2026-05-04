@@ -48,7 +48,14 @@ function Assert-LlamaRuntime {
         [string]$Label
     )
     Assert-RuntimeFile -Path $PythonExe -Label "$Label Python"
-    & $PythonExe ".\tools\runtime_setup\verify_llama_runtime.py" --require-gpu | Out-Host
+    $verifyArgs = @(".\tools\runtime_setup\verify_llama_runtime.py")
+    if ($env:GITHUB_ACTIONS -eq "true") {
+        $verifyArgs += @("--static-cuda", "--allow-missing-nvidia-driver", "--skip-import")
+    }
+    else {
+        $verifyArgs += "--require-gpu"
+    }
+    & $PythonExe @verifyArgs | Out-Host
     if ($LASTEXITCODE -ne 0) {
         throw "$Label cannot load CUDA llama-cpp-python using $PythonExe"
     }

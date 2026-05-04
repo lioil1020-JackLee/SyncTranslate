@@ -80,7 +80,7 @@ function Install-LlamaCppPython {
         $cmdFile = Join-Path $env:TEMP "synctranslate_llama_cpp_build.cmd"
         $cmdScript = @"
 call "$vcvars"
-set CMAKE_ARGS=-DGGML_CUDA=on -G "NMake Makefiles" -DCMAKE_C_FLAGS=/utf-8 -DCMAKE_CXX_FLAGS=/utf-8
+set CMAKE_ARGS=-DGGML_CUDA=on -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL -G "NMake Makefiles" -DCMAKE_C_FLAGS=/utf-8 -DCMAKE_CXX_FLAGS=/utf-8
 set FORCE_CMAKE=1
 "$Py" -m pip install "llama-cpp-python>=0.3.8" --no-binary llama-cpp-python --upgrade
 "@
@@ -238,7 +238,10 @@ Write-Host "  runtimes/models/llm/hy-mt1.5-7b.gguf"
 Write-Host "  runtimes/shared/Lib/site-packages/llama_cpp"
 
 $verifyArgs = @(".\tools\runtime_setup\verify_llama_runtime.py")
-if ((-not $CpuOnly) -and (-not $LlamaCpuOnly)) {
+if ($env:GITHUB_ACTIONS -eq "true" -and (-not $CpuOnly) -and (-not $LlamaCpuOnly)) {
+    $verifyArgs += @("--static-cuda", "--allow-missing-nvidia-driver", "--skip-import")
+}
+elseif ((-not $CpuOnly) -and (-not $LlamaCpuOnly)) {
     $verifyArgs += "--require-gpu"
 }
 & $sharedPy @verifyArgs
