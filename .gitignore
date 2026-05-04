@@ -29,6 +29,7 @@ diagnostics_*.txt
 runtimes/
 models/
 logs/
+tmp_runtime_parse_probe/
 
 # IDE / OS
 .DS_Store
