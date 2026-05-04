@@ -55,6 +55,7 @@ class ASRManagerV2:
         self._active_utterance: dict[str, str | None] = {"local": None, "remote": None}
         self._revision: dict[str, int] = {"local": 0, "remote": 0}
         self._runtime_fingerprint = self._build_runtime_fingerprint()
+        self._warmup_lock = Lock()
 
     def configure_pipeline(self, config: AppConfig, pipeline_revision: int) -> None:
         self._config = config
@@ -71,6 +72,18 @@ class ASRManagerV2:
 
     def refresh_runtime(self) -> None:
         self.configure_pipeline(self._config, self._pipeline_revision)
+
+    def warmup(self, source: str | None = None) -> None:
+        if source in {"local", "remote"}:
+            sources = (str(source),)
+        else:
+            sources = ("local", "remote")
+        with self._warmup_lock:
+            for key in sources:
+                if resolve_backend_for_language(self._asr_language_for_source(key)).disabled:
+                    continue
+                runtime = self._runtime_of(key)
+                runtime.warmup()
 
     def start(self, source: str, on_event: Callable[[ASREventWithSource], None]) -> None:
         key = source if source in {"local", "remote"} else "local"
@@ -127,25 +140,27 @@ class ASRManagerV2:
 
     def stop(self, source: str) -> None:
         key = source if source in {"local", "remote"} else "local"
-        self._callbacks[key] = None
-        self._user_callbacks[key] = None
-        runtime = self._runtimes.pop(key, None)
-        if runtime is not None:
-            runtime.stop()
-        with self._lock:
-            self._active_utterance[key] = None
-            self._revision[key] = 0
+        with self._warmup_lock:
+            self._callbacks[key] = None
+            self._user_callbacks[key] = None
+            runtime = self._runtimes.pop(key, None)
+            if runtime is not None:
+                runtime.stop()
+            with self._lock:
+                self._active_utterance[key] = None
+                self._revision[key] = 0
 
     def stop_all(self) -> None:
-        for runtime in list(self._runtimes.values()):
-            runtime.stop()
-        self._runtimes.clear()
-        self._source_resolution.clear()
-        self._callbacks = {"local": None, "remote": None}
-        self._user_callbacks = {"local": None, "remote": None}
-        with self._lock:
-            self._active_utterance = {"local": None, "remote": None}
-            self._revision = {"local": 0, "remote": 0}
+        with self._warmup_lock:
+            for runtime in list(self._runtimes.values()):
+                runtime.stop()
+            self._runtimes.clear()
+            self._source_resolution.clear()
+            self._callbacks = {"local": None, "remote": None}
+            self._user_callbacks = {"local": None, "remote": None}
+            with self._lock:
+                self._active_utterance = {"local": None, "remote": None}
+                self._revision = {"local": 0, "remote": 0}
 
     def submit(self, source: str, chunk: np.ndarray, sample_rate: float) -> None:
         key = source if source in {"local", "remote"} else "local"

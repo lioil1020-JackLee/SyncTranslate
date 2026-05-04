@@ -5,6 +5,10 @@ from pathlib import Path
 import sys
 
 
+_DLL_DIRECTORY_HANDLES: list[object] = []
+_DLL_DIRECTORY_PATHS: set[str] = set()
+
+
 def _base_dir() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
@@ -52,6 +56,7 @@ def _dll_dir_candidates(site_packages: Path) -> list[Path]:
     dirs: list[Path] = []
     dirs.append(site_packages / "torch" / "lib")
     dirs.append(site_packages / "onnxruntime" / "capi")
+    dirs.append(site_packages / "llama_cpp" / "lib")
 
     nvidia_root = site_packages / "nvidia"
     if nvidia_root.exists():
@@ -72,12 +77,23 @@ def _prepend_sys_path(path: Path) -> None:
 def _add_dll_directory(path: Path) -> None:
     if os.name != "nt":
         return
+    text = str(path)
+    if text in _DLL_DIRECTORY_PATHS:
+        return
+    current_path = os.environ.get("PATH", "")
+    if text not in current_path.split(os.pathsep):
+        os.environ["PATH"] = text + os.pathsep + current_path if current_path else text
     if not hasattr(os, "add_dll_directory"):
         return
     try:
-        os.add_dll_directory(str(path))
+        handle = os.add_dll_directory(text)
     except Exception:
         pass
+    else:
+        # Keep the handle alive for the full process lifetime.  If it is
+        # discarded, Windows removes the directory from the DLL search path.
+        _DLL_DIRECTORY_HANDLES.append(handle)
+        _DLL_DIRECTORY_PATHS.add(text)
 
 
 def _configure_model_cache_env(base: Path) -> None:

@@ -241,7 +241,7 @@ def migrate_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
     result["runtime"]["asr_language_mode"] = "auto"
     result["runtime"]["config_schema_version"] = 5
     result["runtime"]["last_migration_note"] = "migrated_from_legacy"
-    result["runtime"]["warmup_on_start"] = False
+    result["runtime"]["warmup_on_start"] = True
     result["runtime"]["use_channel_specific_asr"] = True
     result["runtime"]["use_channel_specific_llm"] = True
 

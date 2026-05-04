@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+import sys
+from threading import Lock, Thread
 from typing import Callable
 
 import numpy as np
@@ -83,6 +85,8 @@ class AudioRouter:
         self._partial_display_policy = PartialDisplayPolicy(runtime_config=None)
         self._latency_tracker = PipelineLatencyTracker(tts_manager=tts_manager)
         self._postprocessor: TranscriptPostProcessor = TranscriptPostProcessor(enabled=False)
+        self._warmup_lock = Lock()
+        self._warmup_thread: Thread | None = None
 
     @property
     def running(self) -> bool:
@@ -91,7 +95,7 @@ class AudioRouter:
     @property
     def _effective_runtime(self) -> RuntimeConfig | None:
         cfg = self._runtime_config
-        return cfg.runtime if cfg is not None else None
+        return getattr(cfg, "runtime", None) if cfg is not None else None
 
     def start(self, mode: str, routes: AudioRouteConfig, sample_rate: int, chunk_ms: int = ASR_DEFAULT_CHUNK_MS) -> None:
         self.stop()
@@ -108,6 +112,7 @@ class AudioRouter:
             raise ValueError("No active sources configured")
 
         self._start_translation_workers()
+        self._warmup_asr_sources(sorted(source for source in self._active_sources if desired[source]["asr"]))
         self._reconcile_runtime_sources()
 
     def stop(self) -> None:
@@ -402,6 +407,35 @@ class AudioRouter:
                 config,
                 getattr(self._asr_manager, "_pipeline_revision", 1),
             )
+        runtime = getattr(config, "runtime", None)
+        if bool(getattr(runtime, "warmup_on_start", True)) and getattr(sys, "frozen", False):
+            self.prewarm_asr()
+
+    def prewarm_asr(self, sources: tuple[str, ...] = ("local", "remote")) -> None:
+        with self._warmup_lock:
+            if self._warmup_thread is not None and self._warmup_thread.is_alive():
+                return
+            self._warmup_thread = Thread(target=self._warmup_asr_sources, args=(list(sources),), daemon=True)
+            self._warmup_thread.start()
+
+    def _warmup_asr_sources(self, sources: list[str]) -> None:
+        runtime = self._effective_runtime
+        if runtime is not None and not bool(getattr(runtime, "warmup_on_start", True)):
+            return
+        warmup = getattr(self._asr_manager, "warmup", None)
+        if not callable(warmup):
+            return
+        for source in sources:
+            if source not in {"local", "remote"}:
+                continue
+            if runtime is not None:
+                attr = "remote_asr_language" if source == "remote" else "local_asr_language"
+                if str(getattr(runtime, attr, "auto") or "auto").strip().lower() == "none":
+                    continue
+            try:
+                warmup(source)
+            except Exception as exc:
+                self._emit_diagnostic_event(f"asr_warmup_failed source={source} error={exc}")
 
     def _rebuild_postprocessor(self, config: AppConfig) -> None:
         """依 config.runtime 重新建立 TranscriptPostProcessor。"""

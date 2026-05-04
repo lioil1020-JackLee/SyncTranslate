@@ -29,11 +29,27 @@ function Assert-RuntimeFile {
     }
 }
 
+function Assert-PythonModule {
+    param(
+        [string]$PythonExe,
+        [string]$ModuleName,
+        [string]$Label
+    )
+    Assert-RuntimeFile -Path $PythonExe -Label "$Label Python"
+    & $PythonExe -c "import $ModuleName; print('$ModuleName ok')" | Out-Host
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Label cannot import Python module '$ModuleName' using $PythonExe"
+    }
+}
+
 if (-not $SkipValidation) {
     Assert-RuntimeFile -Path (Join-Path $DevRuntimesPath "shared") -Label "Shared runtime"
     Assert-RuntimeFile -Path (Join-Path $DevRuntimesPath "faster_whisper") -Label "faster-whisper runtime"
+    Assert-RuntimeFile -Path (Join-Path $DevRuntimesPath "shared\Lib\site-packages\llama_cpp\__init__.py") -Label "llama-cpp-python package"
+    Assert-RuntimeFile -Path (Join-Path $DevRuntimesPath "shared\Lib\site-packages\llama_cpp\lib\llama.dll") -Label "llama.cpp DLL"
     Assert-RuntimeFile -Path (Join-Path $DevRuntimesPath "models\belle-zh-ct2\config.json") -Label "Belle ASR model"
     Assert-RuntimeFile -Path (Join-Path $DevRuntimesPath "models\llm\hy-mt1.5-7b.gguf") -Label "HY-MT1.5 GGUF model"
+    Assert-PythonModule -PythonExe (Join-Path $DevRuntimesPath "shared\Scripts\python.exe") -ModuleName "llama_cpp" -Label "Shared runtime"
 }
 
 $runtimesDestRoot = Join-Path $DistRoot "runtimes"
@@ -67,6 +83,9 @@ Write-Host "Copied runtimes: $($runtimesInDist -join ', ')"
 
 if (-not $SkipValidation) {
     Assert-RuntimeFile -Path (Join-Path $runtimesDestRoot "models\llm\hy-mt1.5-7b.gguf") -Label "Packaged HY-MT1.5 GGUF model"
+    Assert-RuntimeFile -Path (Join-Path $runtimesDestRoot "shared\Lib\site-packages\llama_cpp\__init__.py") -Label "Packaged llama-cpp-python package"
+    Assert-RuntimeFile -Path (Join-Path $runtimesDestRoot "shared\Lib\site-packages\llama_cpp\lib\llama.dll") -Label "Packaged llama.cpp DLL"
+    Assert-PythonModule -PythonExe (Join-Path $runtimesDestRoot "shared\Scripts\python.exe") -ModuleName "llama_cpp" -Label "Packaged shared runtime"
 }
 
 # Clean up any legacy _internal/runtimes/ directory if it exists

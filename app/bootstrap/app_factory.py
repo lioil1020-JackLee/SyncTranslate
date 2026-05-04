@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 import shutil
 import sys
+import time
 
 from PySide6.QtGui import QFont, QFontDatabase, QIcon
 from PySide6.QtWidgets import QApplication
@@ -45,6 +47,8 @@ def create_cli_parser() -> argparse.ArgumentParser:
     parser.add_argument("--check", action="store_true", help="Run config + device checks without opening the UI")
     parser.add_argument("--healthcheck-worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--healthcheck-config", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--llm-runtime-check", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--translation-smoke", action="store_true", help=argparse.SUPPRESS)
     return parser
 
 
@@ -61,6 +65,11 @@ def run_from_cli(argv: list[str] | None = None) -> int:
         return int(healthcheck_worker_main(worker_args))
 
     config = load_config(args.config)
+    if args.llm_runtime_check:
+        return _run_llm_runtime_check(config)
+    if args.translation_smoke:
+        return _run_translation_smoke(config)
+
     devices = DeviceManager().list_all()
     if args.check:
         print(f"Config OK: {args.config}")
@@ -115,6 +124,46 @@ def run_from_cli(argv: list[str] | None = None) -> int:
         return app.exec()
     except KeyboardInterrupt:
         return 130
+
+
+def _run_llm_runtime_check(config) -> int:
+    from app.bootstrap.external_runtime import configure_external_ai_runtime
+    from app.infra.translation.inprocess_adapter import _find_llama_cpp, _resolve_model_path
+
+    info = configure_external_ai_runtime()
+    Llama = _find_llama_cpp()
+    model_path = _resolve_model_path(config.llm.runtime.model_path)
+    payload = {
+        "ok": bool(model_path.exists()),
+        "llama_class": f"{Llama.__module__}.{Llama.__name__}",
+        "model_path": str(model_path),
+        "site_packages": info.get("site_packages", []),
+    }
+    print(json.dumps(payload, ensure_ascii=False))
+    return 0 if payload["ok"] else 1
+
+
+def _run_translation_smoke(config) -> int:
+    from app.infra.translation.provider import create_translation_provider
+
+    provider = create_translation_provider(config.llm)
+    started = time.perf_counter()
+    translated = provider.translate(
+        "Hello, this is a packaged runtime translation test.",
+        source_lang="en",
+        target_lang="zh-TW",
+        context=[],
+        profile=config.llm.profiles.live_caption_fast,
+    )
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
+    payload = {
+        "ok": bool(translated.strip()),
+        "elapsed_ms": elapsed_ms,
+        "translation": translated,
+        "debug": provider.debug_snapshot(),
+    }
+    print(json.dumps(payload, ensure_ascii=False))
+    return 0 if payload["ok"] else 1
 
 
 def _apply_windows_app_id() -> None:

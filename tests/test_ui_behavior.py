@@ -86,6 +86,118 @@ class LiveCaptionPageUiTests(_QtTestCase):
         self.assertIn("meeting:q=0 p=4 f=5 pause=260 ep=3/4/1 deg=normal rej=2(markup-leak)", text)
         self.assertIn("local:q=1 p=2 f=3 pause=80 ep=2/1/0 deg=congested rej=0", text)
 
+    def test_main_window_panel_status_waits_for_asr_model_readiness(self) -> None:
+        captured: dict[str, str] = {}
+        config = AppConfig()
+        stats = SimpleNamespace(
+            active_sources=["remote"],
+            capture={
+                "remote": {"running": True, "frame_count": 120},
+                "local": {"running": False, "frame_count": 0},
+            },
+            asr={
+                "remote": {"model_init_mode": "lazy", "partial_count": 0, "final_count": 0, "init_failure": ""},
+                "local": {"model_init_mode": "lazy", "partial_count": 0, "final_count": 0, "init_failure": ""},
+            },
+        )
+
+        class _Router:
+            def stats(self):
+                return stats
+
+        class _Session:
+            def is_running(self) -> bool:
+                return True
+
+        class _Page:
+            def set_panel_statuses(self, **kwargs):
+                captured.update(kwargs)
+
+        class _Window:
+            _resolve_active_sources = MainWindow._resolve_active_sources
+            _resolve_source_runtime_state = MainWindow._resolve_source_runtime_state
+
+            def __init__(self) -> None:
+                self.audio_router = _Router()
+                self.session_controller = _Session()
+                self.live_caption_page = _Page()
+                self.config = config
+                self._session_action_running = False
+                self._session_action_name = ""
+
+        window = _Window()
+
+        MainWindow._update_live_panel_statuses(
+            window,  # type: ignore[arg-type]
+            remote_original_active=False,
+            remote_translated_active=False,
+            local_original_active=False,
+            local_translated_active=False,
+        )
+
+        self.assertEqual(captured["remote_original"], "preparing")
+        self.assertEqual(captured["remote_translated"], "preparing")
+
+    def test_main_window_translation_panel_runs_only_after_translation_output(self) -> None:
+        captured: dict[str, str] = {}
+        config = AppConfig()
+        stats = SimpleNamespace(
+            active_sources=["remote"],
+            capture={
+                "remote": {"running": True, "frame_count": 120},
+                "local": {"running": False, "frame_count": 0},
+            },
+            asr={
+                "remote": {"model_init_mode": "warm", "partial_count": 0, "final_count": 0, "init_failure": ""},
+                "local": {"model_init_mode": "lazy", "partial_count": 0, "final_count": 0, "init_failure": ""},
+            },
+        )
+
+        class _Router:
+            def stats(self):
+                return stats
+
+        class _Session:
+            def is_running(self) -> bool:
+                return True
+
+        class _Page:
+            def set_panel_statuses(self, **kwargs):
+                captured.update(kwargs)
+
+        class _Window:
+            _resolve_active_sources = MainWindow._resolve_active_sources
+            _resolve_source_runtime_state = MainWindow._resolve_source_runtime_state
+
+            def __init__(self) -> None:
+                self.audio_router = _Router()
+                self.session_controller = _Session()
+                self.live_caption_page = _Page()
+                self.config = config
+                self._session_action_running = False
+                self._session_action_name = ""
+
+        window = _Window()
+
+        MainWindow._update_live_panel_statuses(
+            window,  # type: ignore[arg-type]
+            remote_original_active=False,
+            remote_translated_active=False,
+            local_original_active=False,
+            local_translated_active=False,
+        )
+        self.assertEqual(captured["remote_original"], "running")
+        self.assertEqual(captured["remote_translated"], "preparing")
+
+        MainWindow._update_live_panel_statuses(
+            window,  # type: ignore[arg-type]
+            remote_original_active=True,
+            remote_translated_active=True,
+            local_original_active=False,
+            local_translated_active=False,
+        )
+        self.assertEqual(captured["remote_translated"], "running")
+
     def test_runtime_mode_controls_apply_to_labels_and_target_pickers(self) -> None:
         page = LiveCaptionPage()
         config = AppConfig()

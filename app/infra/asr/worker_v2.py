@@ -238,6 +238,18 @@ class SourceRuntimeV2(_AdaptiveTunerMixin):
         self._thread = Thread(target=self._run, daemon=True)
         self._thread.start()
 
+    def warmup(self) -> None:
+        warmed: set[int] = set()
+        for backend in (self._partial_backend, self._final_backend):
+            marker = id(backend)
+            if marker in warmed:
+                continue
+            warmed.add(marker)
+            warmup = getattr(backend, "warmup", None)
+            if callable(warmup):
+                warmup()
+        self._debug("v2 warmup ready")
+
     def stop(self) -> None:
         self._stop_event.set()
         if self._thread and self._thread.is_alive():

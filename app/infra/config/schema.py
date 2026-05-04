@@ -309,7 +309,7 @@ class RuntimeConfig:
     remote_echo_guard_resume_delay_ms: int = 300
     config_schema_version: int = 5
     last_migration_note: str = ""
-    warmup_on_start: bool = False
+    warmup_on_start: bool = True
     remote_translation_enabled: bool = True
     local_translation_enabled: bool = True
     translation_enabled: bool = True

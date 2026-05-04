@@ -59,6 +59,7 @@ class _FakeAsrManager:
         self.stop_calls: list[str] = []
         self.submit_calls: list[tuple[str, float]] = []
         self.configure_calls: list[tuple[object, int]] = []
+        self.warmup_calls: list[str] = []
 
     def set_enabled(self, source: str, enabled: bool) -> None:
         self.enabled[source] = enabled
@@ -74,6 +75,9 @@ class _FakeAsrManager:
 
     def configure_pipeline(self, config, pipeline_revision: int) -> None:
         self.configure_calls.append((config, pipeline_revision))
+
+    def warmup(self, source: str | None = None) -> None:
+        self.warmup_calls.append(source or "all")
 
     def submit(self, source: str, chunk, sample_rate: float) -> None:
         self.submit_calls.append((source, sample_rate))
@@ -233,6 +237,31 @@ class AudioRouterPolicyTests(unittest.TestCase):
         self.assertIn("remote", asr_manager.start_calls)
         self.assertNotIn("local", input_manager.start_calls)
         self.assertNotIn("local", asr_manager.start_calls)
+
+    def test_start_warms_asr_before_capture(self) -> None:
+        router, input_manager, asr_manager, _, _ = _build_router(enabled_by_source={"remote": True, "local": True})
+        config = type(
+            "Cfg",
+            (),
+            {
+                "runtime": type(
+                    "Rt",
+                    (),
+                    {
+                        "remote_asr_language": "en",
+                        "local_asr_language": "zh-TW",
+                        "warmup_on_start": True,
+                    },
+                )()
+            },
+        )()
+        router.refresh_runtime_config(config)  # type: ignore[arg-type]
+        routes = AudioRouteConfig(meeting_in="remote-dev", microphone_in="local-dev", speaker_out="spk", meeting_out="mtg")
+
+        router.start("bidirectional", routes, sample_rate=24000, chunk_ms=40)
+
+        self.assertEqual(asr_manager.warmup_calls, ["local", "remote"])
+        self.assertEqual(input_manager.start_calls, ["local", "remote"])
 
     def test_passthrough_toggle_changes_capture_need_for_local_source(self) -> None:
         router, input_manager, asr_manager, translator, _ = _build_router(enabled_by_source={"remote": True, "local": True})

@@ -91,8 +91,15 @@ function Install-LlamaCppPython {
     # Fallback: prebuilt CPU-only wheel from GitHub releases
     Write-Host "[runtime:shared] installing llama-cpp-python (prebuilt CPU wheel)..."
     $rel   = Invoke-RestMethod "https://api.github.com/repos/abetlen/llama-cpp-python/releases/latest"
-    $asset = $rel.assets | Where-Object { $_.name -like "*win_amd64*.whl" } | Select-Object -First 1
+    $pyTag = & $Py -c "import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}')"
+    $asset = $rel.assets |
+        Where-Object { $_.name -like "*$pyTag*win_amd64*.whl" } |
+        Select-Object -First 1
+    if (-not $asset) {
+        $asset = $rel.assets | Where-Object { $_.name -like "*win_amd64*.whl" } | Select-Object -First 1
+    }
     if ($asset) {
+        Write-Host "[runtime:shared] installing wheel asset: $($asset.name)"
         & $Py -m pip install $asset.browser_download_url
     } else {
         & $Py -m pip install "llama-cpp-python>=0.3.8"
@@ -157,3 +164,16 @@ Write-Host "  runtimes/faster_whisper/Lib/site-packages"
 Write-Host "  runtimes/models/belle-zh-ct2"
 Write-Host "  runtimes/models/llm/hy-mt1.5-7b.gguf"
 Write-Host "  runtimes/shared/Lib/site-packages/llama_cpp"
+
+& $sharedPy -c "from llama_cpp import Llama; import llama_cpp; print('llama_cpp ready: ' + str(getattr(llama_cpp, '__version__', 'unknown')))"
+if ($LASTEXITCODE -ne 0) {
+    throw "llama-cpp-python verification failed in runtimes/shared"
+}
+
+if (-not (Test-Path (Join-Path $RuntimeRoot "shared\Lib\site-packages\llama_cpp\lib\llama.dll"))) {
+    throw "llama.cpp DLL is missing from runtimes/shared"
+}
+
+if (-not (Test-Path $targetLlmModel)) {
+    throw "LLM GGUF model is missing: $targetLlmModel"
+}

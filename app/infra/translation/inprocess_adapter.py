@@ -3,8 +3,10 @@ from __future__ import annotations
 import html
 import json
 from dataclasses import dataclass, field
+import os
 from pathlib import Path
 import re
+import sys
 from threading import Lock, RLock
 from typing import Any
 
@@ -41,22 +43,146 @@ class _RuntimeHandle:
 
 _RUNTIME_CACHE: dict[tuple[str, int, int, int, int], _RuntimeHandle] = {}
 _RUNTIME_CACHE_LOCK = Lock()
+_LLAMA_DLL_HANDLES: list[object] = []
+_LLAMA_DLL_PATHS: set[str] = set()
+
+
+def _add_llama_dll_dir(path: Path) -> None:
+    if os.name != "nt":
+        return
+    if not path.is_dir():
+        return
+    text = str(path)
+    if text in _LLAMA_DLL_PATHS:
+        return
+    current_path = os.environ.get("PATH", "")
+    if text not in current_path.split(os.pathsep):
+        os.environ["PATH"] = text + os.pathsep + current_path if current_path else text
+    if hasattr(os, "add_dll_directory"):
+        try:
+            handle = os.add_dll_directory(text)
+        except Exception:
+            handle = None
+        if handle is not None:
+            _LLAMA_DLL_HANDLES.append(handle)
+    _LLAMA_DLL_PATHS.add(text)
+
+
+def _runtime_base_candidates() -> list[Path]:
+    candidates: list[Path] = []
+    if getattr(sys, "frozen", False):
+        candidates.append(Path(sys.executable).resolve().parent)
+        meipass = getattr(sys, "_MEIPASS", "")
+        if meipass:
+            candidates.append(Path(meipass).resolve())
+    candidates.append(Path.cwd().resolve())
+    try:
+        candidates.append(Path(__file__).resolve().parents[3])
+    except Exception:
+        pass
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        text = str(candidate)
+        if text not in seen:
+            unique.append(candidate)
+            seen.add(text)
+    return unique
+
+
+def _find_llama_cpp() -> type:
+    """Import Llama from the external runtime used by PyInstaller onedir."""
+    try:
+        from app.bootstrap.external_runtime import configure_external_ai_runtime
+
+        configure_external_ai_runtime()
+    except Exception:
+        pass
+
+    candidates: list[Path] = []
+    for base in _runtime_base_candidates():
+        candidates.extend(
+            [
+                base / "runtimes" / "shared" / "Lib" / "site-packages",
+                base / "runtimes" / "shared" / "site-packages",
+                base / "_internal" / "runtimes" / "shared" / "Lib" / "site-packages",
+                base / "_internal" / "runtimes" / "shared" / "site-packages",
+                base / "runtimes" / "faster_whisper" / "Lib" / "site-packages",
+                base / "runtimes" / "faster_whisper" / "site-packages",
+            ]
+        )
+
+    # Also retry any already-mounted external runtime paths.  The first import
+    # may have failed before llama_cpp/lib was registered as a DLL directory.
+    for item in list(sys.path):
+        path = Path(item)
+        if path.name == "site-packages" and "runtimes" in path.parts:
+            candidates.append(path)
+
+    errors: list[str] = []
+    seen: set[str] = set()
+    for site_packages in candidates:
+        site_packages = site_packages.resolve()
+        text = str(site_packages)
+        if text in seen or not site_packages.is_dir():
+            continue
+        seen.add(text)
+        _add_llama_dll_dir(site_packages / "llama_cpp" / "lib")
+        if text not in sys.path:
+            sys.path.insert(0, text)
+        try:
+            from llama_cpp import Llama  # type: ignore[import]  # noqa: PLC0415
+
+            return Llama
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{text}: {exc.__class__.__name__}: {exc}")
+            for module_name in list(sys.modules):
+                if module_name == "llama_cpp" or module_name.startswith("llama_cpp."):
+                    sys.modules.pop(module_name, None)
+
+    detail = "; ".join(errors[-4:])
+    suffix = f" Checked paths: {detail}" if detail else ""
+    raise RuntimeError(
+        "llama-cpp-python is not available from the packaged external runtime. "
+        "Run: .\\tools\\runtime_setup\\prepare_external_runtimes.ps1, then rebuild and run "
+        ".\\tools\\runtime_setup\\relocate_ai_runtime_artifacts.ps1."
+        + suffix
+    )
+
+
+def _resolve_model_path(model_path: str) -> Path:
+    configured = Path(model_path)
+    if configured.is_absolute():
+        return configured.resolve()
+
+    candidates: list[Path] = []
+    for base in _runtime_base_candidates():
+        candidates.append(base / configured)
+    candidates.append(Path.cwd() / configured)
+
+    models_dir = os.environ.get("SYNC_TRANSLATE_MODELS_DIR", "").strip()
+    if models_dir:
+        candidates.append(Path(models_dir) / "llm" / configured.name)
+
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved.exists():
+            return resolved
+    return candidates[0].resolve()
 
 
 def _build_runtime(*, model_path: str, ctx_size: int, gpu_layers: int, threads: int, batch_size: int) -> _RuntimeHandle:
     try:
-        from llama_cpp import Llama
-    except ImportError as exc:  # noqa: BLE001
-        raise RuntimeError(
-            "llama-cpp-python is not installed. "
-            "Run: .\\tools\\runtime_setup\\prepare_external_runtimes.ps1 to install all dependencies."
-        ) from exc
+        Llama = _find_llama_cpp()
+    except RuntimeError:
+        raise
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError(
             f"Failed to initialize llama-cpp-python: {exc}"
         ) from exc
 
-    resolved = Path(model_path).resolve()
+    resolved = _resolve_model_path(model_path)
     if not resolved.exists():
         raise FileNotFoundError(f"LLM model file not found: {resolved}")
 

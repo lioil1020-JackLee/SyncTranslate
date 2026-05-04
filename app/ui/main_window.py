@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from queue import Empty, Queue
@@ -370,9 +371,10 @@ class MainWindow(QMainWindow):
         route = self.audio_routing_page.selected_audio_routes()
         try:
             self._validate_route_devices_or_raise(route)
-            self._sync_ui_to_config()
-            self._runtime_facade.mark_dirty()
-            self._ensure_pipelines_ready()
+            config_changed = self._sync_ui_to_config_and_detect_changes()
+            if config_changed:
+                self._runtime_facade.mark_dirty()
+                self._ensure_pipelines_ready()
             self.clear_live_caption()
             self._run_session_action(
                 "start",
@@ -724,20 +726,40 @@ class MainWindow(QMainWindow):
         except Exception:
             return set()
 
-    def _resolve_source_ready(self) -> dict[str, bool]:
+    def _resolve_source_runtime_state(self) -> dict[str, dict[str, object]]:
+        empty = {
+            "local": {"capture_ready": False, "asr_ready": False, "translation_ready": False},
+            "remote": {"capture_ready": False, "asr_ready": False, "translation_ready": False},
+        }
         if not self.audio_router:
-            return {"local": False, "remote": False}
+            return empty
         try:
             stats = self.audio_router.stats()
-            ready: dict[str, bool] = {"local": False, "remote": False}
+            ready: dict[str, dict[str, object]] = {}
             for source in ("local", "remote"):
                 capture = stats.capture.get(source) or {}
+                asr = stats.asr.get(source) or {}
                 running = bool(capture.get("running", False))
                 frame_count = int(capture.get("frame_count", 0) or 0)
-                ready[source] = running and frame_count > 0
+                partial_count = int(asr.get("partial_count", 0) or 0)
+                final_count = int(asr.get("final_count", 0) or 0)
+                init_mode = str(asr.get("model_init_mode", "lazy") or "lazy").strip().lower()
+                init_failure = str(asr.get("init_failure", "") or "").strip()
+                ready[source] = {
+                    "capture_ready": running and frame_count > 0,
+                    "asr_ready": not init_failure and (init_mode == "warm" or partial_count > 0 or final_count > 0),
+                    "translation_ready": bool(translation_enabled_for_source(self.config.runtime, source)),
+                }
             return ready
         except Exception:
-            return {"local": False, "remote": False}
+            return empty
+
+    def _resolve_source_ready(self) -> dict[str, bool]:
+        state = self._resolve_source_runtime_state()
+        return {
+            source: bool(item.get("capture_ready", False) and item.get("asr_ready", False))
+            for source, item in state.items()
+        }
 
     def _update_live_panel_statuses(
         self,
@@ -748,25 +770,49 @@ class MainWindow(QMainWindow):
         local_translated_active: bool,
     ) -> None:
         active_sources = self._resolve_active_sources()
-        ready_sources = self._resolve_source_ready()
+        runtime_state = self._resolve_source_runtime_state()
         is_preparing = self._session_action_running and self._session_action_name == "start"
 
         remote_enabled = "remote" in active_sources
         local_enabled = "local" in active_sources
 
-        def _status(enabled: bool, source_ready: bool) -> str:
+        def _original_status(enabled: bool, source: str, has_output: bool) -> str:
             if not enabled:
                 return "idle"
+            state = runtime_state.get(source, {})
+            source_ready = bool(state.get("capture_ready", False) and state.get("asr_ready", False))
             if is_preparing or not source_ready:
                 return "preparing"
-            # Once session is running and source is active, user can start speaking.
+            if has_output or source_ready:
+                return "running"
             return "running"
 
+        def _translated_status(enabled: bool, source: str, original_state: str, has_output: bool) -> str:
+            if not enabled or not bool(runtime_state.get(source, {}).get("translation_ready", False)):
+                return "idle"
+            if has_output:
+                return "running"
+            if is_preparing or original_state != "running":
+                return "preparing"
+            return "preparing"
+
+        remote_original = _original_status(remote_enabled, "remote", remote_original_active)
+        local_original = _original_status(local_enabled, "local", local_original_active)
         self.live_caption_page.set_panel_statuses(
-            remote_original=_status(remote_enabled, bool(ready_sources.get("remote", False))),
-            remote_translated=_status(remote_enabled, bool(ready_sources.get("remote", False))),
-            local_original=_status(local_enabled, bool(ready_sources.get("local", False))),
-            local_translated=_status(local_enabled, bool(ready_sources.get("local", False))),
+            remote_original=remote_original,
+            remote_translated=_translated_status(
+                remote_enabled,
+                "remote",
+                remote_original,
+                remote_translated_active,
+            ),
+            local_original=local_original,
+            local_translated=_translated_status(
+                local_enabled,
+                "local",
+                local_original,
+                local_translated_active,
+            ),
         )
 
     def _get_speaker_output_device(self) -> str:
@@ -1169,6 +1215,11 @@ class MainWindow(QMainWindow):
 
     def _sync_ui_to_config(self) -> None:
         self._config_apply_service.sync_ui_to_config(self.config)
+
+    def _sync_ui_to_config_and_detect_changes(self) -> bool:
+        before = asdict(self.config)
+        self._sync_ui_to_config()
+        return asdict(self.config) != before
 
     def _apply_audio_route_levels(self) -> None:
         self._config_apply_service.apply_audio_route_levels(self.config.audio)

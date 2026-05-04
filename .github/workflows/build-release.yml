@@ -85,7 +85,12 @@ jobs:
             throw "Packaged HY-MT1.5 GGUF model is missing"
           }
           $packagedSharedPy = ".\dist\SyncTranslate-onedir\runtimes\shared\Scripts\python.exe"
-          & $packagedSharedPy -c "import llama_cpp; print('packaged llama_cpp ok')"
+          & $packagedSharedPy -c "from llama_cpp import Llama; import llama_cpp; print('packaged llama_cpp=' + str(getattr(llama_cpp, '__version__', 'unknown')))"
+          uv run python -c "import sys; from pathlib import Path; sys.frozen=True; sys.executable=str(Path('dist/SyncTranslate-onedir/SyncTranslate.exe').resolve()); from app.bootstrap.external_runtime import configure_external_ai_runtime; info=configure_external_ai_runtime(); print('mounted=' + str(info['site_packages'])); from app.infra.translation.inprocess_adapter import _find_llama_cpp, _resolve_model_path; print('Llama=' + str(_find_llama_cpp())); p=_resolve_model_path(r'.\runtimes\models\llm\hy-mt1.5-7b.gguf'); print('model=' + str(p)); assert p.exists()"
+          $probe = Start-Process -FilePath ".\dist\SyncTranslate-onedir\SyncTranslate.exe" -ArgumentList @("--llm-runtime-check", "--config", ".\dist\SyncTranslate-onedir\config.yaml") -Wait -PassThru -NoNewWindow
+          if ($probe.ExitCode -ne 0) {
+            throw "Packaged SyncTranslate.exe --llm-runtime-check failed with exit code $($probe.ExitCode)"
+          }
 
       - name: Package onedir output
         shell: pwsh

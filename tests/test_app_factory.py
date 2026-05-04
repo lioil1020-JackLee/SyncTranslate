@@ -17,6 +17,12 @@ class AppFactoryTests(TestCase):
         self.assertTrue(Path(args.config).is_absolute())
         self.assertEqual(Path(args.config).name, "config.yaml")
 
+    def test_parser_accepts_packaged_runtime_checks(self) -> None:
+        args = create_cli_parser().parse_args(["--llm-runtime-check", "--translation-smoke"])
+
+        self.assertTrue(args.llm_runtime_check)
+        self.assertTrue(args.translation_smoke)
+
     def test_default_config_path_uses_executable_dir_when_frozen(self) -> None:
         fake_exe = Path(r"E:\dist\SyncTranslate\SyncTranslate.exe")
         with patch.object(sys, "frozen", True, create=True):
