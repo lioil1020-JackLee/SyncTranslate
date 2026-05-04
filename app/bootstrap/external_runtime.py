@@ -8,7 +8,29 @@ import sys
 def _base_dir() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parents[2]
+    candidate = Path(__file__).resolve().parents[2]
+    if (candidate / "runtimes").exists():
+        return candidate
+    # In a git worktree, __file__ resolves into the worktree directory which
+    # has no runtimes/.  The worktree's .git file points back to the main
+    # repository: "gitdir: <main>/.git/worktrees/<name>".  Resolve that path
+    # to find the main repository root where runtimes/ lives.
+    git_marker = candidate / ".git"
+    if git_marker.is_file():
+        try:
+            content = git_marker.read_text(encoding="utf-8", errors="replace").strip()
+            if content.startswith("gitdir:"):
+                git_dir = Path(content[len("gitdir:"):].strip())
+                if not git_dir.is_absolute():
+                    git_dir = (candidate / git_dir).resolve()
+                # git_dir is .../main_repo/.git/worktrees/<name>
+                # parents[2] is .../main_repo
+                main_repo = git_dir.parents[2]
+                if (main_repo / "runtimes").exists():
+                    return main_repo
+        except Exception:
+            pass
+    return candidate
 
 
 def _site_packages_candidates(base: Path) -> list[Path]:
