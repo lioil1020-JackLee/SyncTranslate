@@ -76,8 +76,15 @@ function Install-LlamaCppPython {
         Write-Host "[runtime:shared] CUDA + MSVC detected — building llama-cpp-python with CUDA support..."
         # Must run inside vcvars64 environment; use NMake generator to avoid VS CUDA toolset requirement
         # /utf-8 is required on Traditional Chinese Windows (CP950) to prevent C2001 errors in llama.cpp jinja headers
-        $buildCmd = "`"$vcvars`" && set CMAKE_ARGS=-DGGML_CUDA=on -G `"NMake Makefiles`" -DCMAKE_C_FLAGS=/utf-8 -DCMAKE_CXX_FLAGS=/utf-8 && set FORCE_CMAKE=1 && `"$Py`" -m pip install `"llama-cpp-python>=0.3.8`" --no-binary llama-cpp-python --upgrade"
-        cmd /c $buildCmd
+        $cmdJoin = ([char]38).ToString() + ([char]38).ToString()
+        $buildSteps = @(
+            ('call "{0}"' -f $vcvars),
+            'set "CMAKE_ARGS=-DGGML_CUDA=on -G ^"NMake Makefiles^" -DCMAKE_C_FLAGS=/utf-8 -DCMAKE_CXX_FLAGS=/utf-8"',
+            'set "FORCE_CMAKE=1"',
+            ('"{0}" -m pip install "llama-cpp-python>=0.3.8" --no-binary llama-cpp-python --upgrade' -f $Py)
+        )
+        $buildCmd = [string]::Join(" $cmdJoin ", $buildSteps)
+        & cmd.exe /d /s /c $buildCmd
         if ($LASTEXITCODE -eq 0) {
             Write-Host "[runtime:shared] llama-cpp-python installed with CUDA support"
             return $true
@@ -165,7 +172,12 @@ Write-Host "  runtimes/models/belle-zh-ct2"
 Write-Host "  runtimes/models/llm/hy-mt1.5-7b.gguf"
 Write-Host "  runtimes/shared/Lib/site-packages/llama_cpp"
 
-& $sharedPy -c "from llama_cpp import Llama; import llama_cpp; print('llama_cpp ready: ' + str(getattr(llama_cpp, '__version__', 'unknown')))"
+$verifyLlamaCpp = @'
+from llama_cpp import Llama
+import llama_cpp
+print("llama_cpp ready: " + str(getattr(llama_cpp, "__version__", "unknown")))
+'@
+& $sharedPy -c $verifyLlamaCpp
 if ($LASTEXITCODE -ne 0) {
     throw "llama-cpp-python verification failed in runtimes/shared"
 }
