@@ -1,355 +1,145 @@
-﻿# SyncTranslate
+# SyncTranslate
 
-SyncTranslate 是一個以 Windows 桌面為主的即時雙向字幕 / 翻譯 / 語音輸出工具。它可以同時處理本地與遠端兩條音訊通道，將音訊送進 ASR、翻譯與 TTS，並在 UI 中即時顯示原文與譯文。
+## 畫面截圖
 
-目前專案的主線已切換到 `ASR v2`。新的 ASR 架構重點是：
+![即時字幕畫面](image/即時字幕.png)
 
-- 中文 ASR 固定使用 `belle-zh-ct2`（faster-whisper CTranslate2）+ silero-vad
-- 非中文與 `auto` 固定使用 `large-v3-turbo`（faster-whisper）
-- `none` 會直接停用該通道 ASR
-- ASR 模型由系統根據通道語言自動路由，**不需手動選擇**
-- 模型採懶載入與共享 registry，避免啟動時重複初始化
-- diagnostics / session report 會輸出每通道實際使用的 backend、effective device、初始化狀態
-- 依 ASR 語言套用 `language_profiles.py` 的辨識參數，中文、英文、日文、韓文、泰文會使用不同 VAD / endpoint / prompt / no-speech 設定
-- 即時串流路徑會使用 segment-local VAD 統計與短尾端幻聽過濾，降低空白尾音被辨識成 `You`、`Thank you`、片尾訂閱提示等文字的機率
+![設定畫面](image/設定.png)
 
-專案內部現在只維護單一路徑 `ASR v2`。舊版執行路徑已移除，僅保留極小的相容 helper 供測試與舊介面引用。
+SyncTranslate 是一個 Windows 桌面即時雙向字幕、翻譯與語音輸出工具。它可以同時處理會議遠端音訊與本機麥克風，將兩邊語音轉成字幕，必要時使用本地 LLM 翻譯，再透過 TTS 或音訊旁路輸出到指定裝置。
 
-## 目前功能
+目前專案以 ASR v2、本地 llama.cpp in-process 翻譯、Edge TTS 與 PySide6 UI 為主線。舊的 ASR worker、未接入 UI 的 controller 抽離檔、重複 metrics/dispatcher shim 已移除，程式碼結構以實際 runtime 路徑為準。
 
-- 雙通道音訊路由
-  - `remote` 與 `local` 可同時存在
-  - 可對應 VoiceMeeter / 實體裝置 / 虛擬裝置
-- 即時 ASR
-  - 中文通道固定使用 `belle-zh-ct2`（faster-whisper CTranslate2）
-  - 非中文 / `auto` 通道固定使用 `large-v3-turbo`（faster-whisper）
-  - 每通道可獨立指定 ASR 語言，模型自動路由，不需手動選擇
-- 即時翻譯
-  - 使用 SyncTranslate 自動管理的本機 `llama.cpp in-process engine`
-  - 固定模型名稱 `hy-mt1.5-7b`，固定在主程序內 in-process 執行，不使用 URL 連線
-- TTS / passthrough 輸出
-  - 每通道可獨立設定翻譯目標與輸出語音
-- 診斷與匯出
-  - runtime stats
-  - session report
-  - 字幕原文 / 譯文匯出
+## 功能
 
-## 架構摘要
+- 雙通道即時字幕：`remote` 代表會議/系統音訊，`local` 代表本機麥克風。
+- ASR 語言分流：中文使用中文 profile，非中文與 auto 使用 faster-whisper profile。
+- 本地翻譯：透過 `llama-cpp-python` 載入 GGUF 模型，不依賴遠端翻譯 API。
+- TTS / 旁路 / 只顯示字幕：依每個通道的輸出模式決定。
+- 音訊路由：支援麥克風、會議音訊、喇叭、虛擬裝置與 Windows endpoint volume 控制。
+- 診斷與匯出：包含 healthcheck、session report、diagnostics export。
 
-主要資料流如下：
-
-1. `AudioCapture` 收到本地或遠端音訊
-2. `AudioRouter` 將 chunk 分流到 ASR / translation / TTS
-3. `ASRManagerV2` 建立每通道 v2 runtime 與 backend pair
-4. `EndpointingRuntime` 執行 VAD / endpointing
-5. `SourceRuntimeV2` 負責 partial / final / validator / diagnostics
-6. 翻譯與 TTS 消費 final transcript
-7. `MainWindow` / `LiveCaptionPage` 顯示字幕與 diagnostics
-
-重要模組：
-
-- `app/application/`
-  - `audio_router.py`
-  - `transcript_service.py`
-  - `transcript_postprocessor.py`
-  - `translation_dispatcher.py`
-  - `tts_dispatcher.py`
-  - `pipeline_metrics.py`
-  - `_partial_display_policy.py`（partial 顯示策略）
-  - `_latency_tracker.py`（pipeline 延遲記錄）
-- `app/domain/`
-  - `glossary.py`
-  - `metrics.py`
-  - `models.py`（transcript_models + events 合併）
-  - `unicode_utils.py`（CJK/Unicode 判斷集中）
-- `app/infra/asr/`
-  - `factory.py`
-  - `manager_v2.py`
-  - `worker_v2.py`
-  - `backend_resolution.py`
-  - `backend_v2.py`
-  - `endpointing_v2.py`
-  - `faster_whisper_adapter.py`
-  - `streaming_policy.py`
-  - `endpoint_profiles.py`
-  - `_hallucination_filter.py`（幻覺過濾函數集中）
-  - `_adaptive_tuner.py`（adaptive tuning mixin）
-  - `audio_pipeline/`
-- `app/infra/audio/`
-  - `_device_selector.py`（裝置搜尋 helper）
-- `app/infra/translation/`
-  - `_stream_parser.py`（streaming token 解析）
-  - `_prompt_builder.py`（prompt 格式建構）
-- `app/infra/tts/`
-- `app/ui/`
-  - `controllers/`
-- `tools/asr_benchmark/`（開發工具）
-
-更完整內容請看：
-
-- [docs/架構說明.md](docs/架構說明.md)
-- [docs/設定說明.md](docs/設定說明.md)
-- [docs/測試說明.md](docs/測試說明.md)
-- [docs/ASR重構藍圖.md](docs/ASR重構藍圖.md)
-
-## 外部 AI 運行時架構
-
-本專案採用**外部化運行時**設計，將重量級 AI 依賴（PyTorch / faster-whisper / llama.cpp in-process engine）與主程式解耦：
-
-### 目標
-
-- **輕量化主包**：`SyncTranslate.exe` 與 UI 依賴獨立，不含 AI 套件（~200MB 而非 2GB+）
-- **模組化管理**：隔離運行時（shared CUDA、faster-whisper、llama.cpp in-process engine）
-- **靈活部署**：可選離線/CUDA，支援獨立升級各 AI 套件
-- **超大資產支援**：GitHub Release 自動分片超過 2GB 的打包結果
-
-### 最終目錄結構（發行版）
+## 專案結構
 
 ```text
-SyncTranslate-onedir/
-  SyncTranslate.exe                 # 主應用
-  config.yaml
-  _internal/                        # PyInstaller 主程式依賴
-    app/
-    PySide6/
-    ...（無 torch/faster-whisper）
-  
-  runtimes/                         # 外部 AI 運行時（從開發環境複製）
-    shared/Lib/site-packages/       # torch / torchaudio / onnxruntime / llama-cpp-python
-    faster_whisper/Lib/site-packages/  # faster-whisper / ctranslate2 / tiktoken
-    models/
-      belle-zh-ct2/                 # 中文 ASR CTranslate2 模型
-      llm/
-        hy-mt1.5-7b.gguf            # 本機翻譯 GGUF（in-process 載入，無需額外 server）
-  
-  models/                           # 可選：離線模型快取
+main.py                         # GUI / CLI 入口
+app/bootstrap/                  # 啟動、外部 runtime、DI container
+app/application/                # 管線協調、字幕、翻譯 dispatch、設定服務、診斷匯出
+app/domain/                     # 共用模型、狀態、常數、文字工具
+app/infra/asr/                  # ASR v2 runtime、endpointing、frontend、faster-whisper adapter
+app/infra/audio/                # 音訊擷取、播放、裝置列舉、音量控制
+app/infra/config/               # YAML schema、載入、儲存、遷移
+app/infra/translation/          # 本地 LLM 翻譯 provider、prompt、parser、stitcher
+app/infra/tts/                  # Edge TTS、播放 queue、voice policy
+app/local_ai/                   # 本地 AI healthcheck 與 subprocess worker
+app/ui/                         # PySide6 主視窗與頁面
+tests/                          # 單元與可控整合測試
+tools/asr_benchmark/            # ASR benchmark 與報表工具
+tools/runtime_setup/            # 外部 runtime / 模型 / 打包輔助工具
+tools/runtime_smoke/            # 實機 runtime smoke test
+tools/youtube_srt/              # YouTube 字幕比對工具
 ```
 
-### 啟動時的自動掛載
+## 安裝
 
-應用啟動時，`app/bootstrap/external_runtime.py` 會：
-1. 掃描 `runtimes/{shared,faster_whisper}/Lib/site-packages`
-2. 將路徑加入 `sys.path`
-3. 自動註冊 Windows DLL 目錄（torch/lib、onnxruntime/capi、nvidia CUDA bins）
-4. 設定模型快取環境變數（`MODELSCOPE_CACHE` / `HF_HOME`）
-
-這樣 ASR 初始化時能直接找到外部運行時中的套件。
-
-### 核心程式碼改動
-
-| 檔案 | 用途 |
-|---|---|
-| `app/bootstrap/external_runtime.py` | 啟動期外部運行時掛載 |
-| `main.py` | 在 import `app_factory` 前呼叫 `configure_external_ai_runtime()` |
-| `SyncTranslate-onedir.spec` | 排除 AI 套件，改由 relocate 腳本複製 |
-| `app/infra/asr/faster_whisper_adapter.py` | 錯誤訊息導向外部運行時路徑 |
-| `pyproject.toml` | 移除 AI 套件依賴（輕量化 .venv） |
-| `conftest.py` | pytest 自動配置外部運行時 |
-
-### 風險與對策
-
-| 風險 | 對策 |
-|---|---|
-| 外部 runtime 缺套件 | 重跑 `prepare_external_runtimes.ps1` 或補齊對應套件 |
-| CUDA DLL 未被解析 | 確認 `runtimes/shared/Lib/site-packages/torch/lib` 與 nvidia 路徑存在 |
-| Release 資產超過 2GB | 工作流程自動分片為 `.part001/.part002...`，使用者可用附帶腳本重組 |
-
-## 安裝與執行
-
-建議使用 `uv`：
+建議使用 Python 3.11 與 `uv`。
 
 ```powershell
-# 1. 安裝主程式依賴（輕量級，不含 torch/faster-whisper 等）
-uv sync --locked
+uv sync
+```
 
-# 2. 準備外部 AI 運行時（torch, faster-whisper, llama.cpp in-process engine, HY-MT GGUF）
+準備外部 AI runtime 與模型：
+
+```powershell
 powershell -ExecutionPolicy Bypass -File .\tools\runtime_setup\prepare_external_runtimes.ps1
 ```
 
-此命令會自動安裝 in-process `llama-cpp-python` 並下載 `tencent/HY-MT1.5-7B-GGUF` 的 `HY-MT1.5-7B-Q4_K_M.gguf`，並存成 `runtimes\models\llm\hy-mt1.5-7b.gguf`。若要使用自己的 GGUF，可改加 `-LlmModelPath "D:\models\hy-mt1.5-7b.gguf"`。
+這個步驟會準備 `runtimes/shared`、`runtimes/faster_whisper` 與必要模型。外部 runtime 不由 `pyproject.toml` 直接管理，目的是讓 GUI app、打包與 AI 套件隔離。
 
-啟動程式：
-
-```powershell
-uv run python .\main.py
-```
-
-執行健康檢查：
+## 啟動
 
 ```powershell
-uv run python .\main.py --check
+uv run python main.py
 ```
 
-執行測試（透過 `conftest.py` 自動配置外部運行時）：
+指定設定檔：
 
 ```powershell
-uv run pytest -q
+uv run python main.py --config config.yaml
 ```
 
-執行實際入口 smoke（更接近直接開 app 後按健康檢查）：
+檢查設定與 runtime：
+
+```powershell
+uv run python main.py --check
+```
+
+## 設定
+
+主要設定檔是 `config.yaml`，範本是 `config.example.yaml`。啟動時會載入 YAML 並轉成 `AppConfig`；UI 修改會先套用到記憶體，按下儲存後才寫回設定檔。
+
+重點欄位：
+
+- `runtime.local_asr_language` / `runtime.remote_asr_language`
+- `language.local_target` / `language.meeting_target`
+- `runtime.local_tts_voice` / `runtime.remote_tts_voice`
+- `audio.*_device`
+- `asr_profiles.*`
+- `llm_profiles.*`
+- `tts.*`
+
+更多細節見 [docs/設定說明.md](docs/設定說明.md)。
+
+## 測試
+
+快速檢查：
+
+```powershell
+uv run python -m compileall -q app main.py tools tests
+uv run pytest
+```
+
+只跑核心測試：
+
+```powershell
+uv run pytest tests/test_audio_router_core.py tests/test_translation_stitcher.py tests/test_asr_v2_endpointing.py
+```
+
+實機 runtime smoke：
 
 ```powershell
 uv run python .\tools\runtime_smoke\run_runtime_smoke.py --config config.yaml
 ```
 
-如果要打包 onedir：
+更多測試策略見 [docs/測試說明.md](docs/測試說明.md)。
+
+## 打包
+
+先準備 runtime，再執行 PyInstaller spec：
 
 ```powershell
-# 1. 確保外部運行時已準備（含 ASR、llama-cpp-python、HY-MT GGUF）
 powershell -ExecutionPolicy Bypass -File .\tools\runtime_setup\prepare_external_runtimes.ps1
-
-# 2. 安裝 build 工具
-uv sync --locked --group build
-
-# 3. 構建 onedir
-uv run pyinstaller .\SyncTranslate-onedir.spec --noconfirm --clean
-
-# 4. 複製外部運行時到 dist 根目錄
+uv run pyinstaller SyncTranslate-onedir.spec --noconfirm
 powershell -ExecutionPolicy Bypass -File .\tools\runtime_setup\relocate_ai_runtime_artifacts.ps1
+```
 
-# 5. 壓縮 onedir（需要 7-Zip；腳本會找 PATH 或 C:\Program Files\7-Zip\7z.exe）
+壓縮 onedir：
+
+```powershell
 powershell -ExecutionPolicy Bypass -File .\tools\runtime_setup\package_onedir.ps1 -Source .\dist\SyncTranslate-onedir -Output .\dist\SyncTranslate-onedir-windows.zip
 ```
 
-`relocate_ai_runtime_artifacts.ps1` 會檢查 `runtimes/shared` 的 `llama_cpp` 套件與 `runtimes/models/llm/hy-mt1.5-7b.gguf`；缺任一項會中止打包，避免產出無法翻譯的 onedir。
-它只會複製必要 runtime 與模型，不會把本機 `runtimes\models\huggingface` cache 打進包，避免 symlink cache 在 dist 中被展開成雙倍大小。
-
-## 設定重點
-
-目前最重要的 runtime 設定包括：
-
-- `runtime.asr_pipeline`：預設 `v2`
-- `runtime.local_asr_language` / `runtime.remote_asr_language`：決定 ASR backend
-- `asr_profiles.chinese` / `asr_profiles.non_chinese`：決定中文與非中文 ASR 實際模型與 VAD / streaming 參數
-- `runtime.asr_v2_endpointing`
-- `runtime.asr_profile_local` / `runtime.asr_profile_remote`：endpoint profile（預設 `meeting_room`）
-- `runtime.early_final_enabled`：預設 `false`
-- `runtime.stable_partial_min_repeats`：預設 `3`
-- `runtime.partial_stability_max_delta_chars`：預設 `6`
-- `runtime.asr_partial_min_audio_ms`：預設 `360`
-- `runtime.enable_postprocessor` / `runtime.enable_partial_stabilization`：ASR 後處理
-- `runtime.glossary_enabled` / `runtime.glossary_path`：術語表套用
-- `runtime.degradation_policy_enabled`：streaming 降級保護
-- `runtime.enable_structured_logging`：jsonl 結構化日誌
-- `runtime.asr_queue_maxsize_local` / `runtime.asr_queue_maxsize_remote`
-- `llm_channels.*.backend`：固定 `local_llama_inprocess`
-- `llm_channels.*.runtime.model_path`：預設 `.\runtimes\models\llm\hy-mt1.5-7b.gguf`
-- `llm_channels.*.runtime.gpu_layers` / `ctx_size`：預設 `35` / `4096`
-- `llm_channels.*.runtime.batch_size`：預設 `512`
-
-### ASR 辨識率調校狀態（2026-04-30 v2.0.0）
-
-四組中文 ASR 離線 benchmark（袘觀）：
-
-| 組合 | 辨識率 |
-|---|---|
-| turbo + 對話模式 | **88.67%** |
-| turbo + 會議模式 | 86.97% |
-| belle + 對話模式 | 85.60% |
-| belle + 會議模式 | 85.10% |
-
-即時串流參考：
-
-- 即時英文：尾端幻聽過濾後 normalized accuracy 約 `99.3%`
-- 即時中文長故事：約 `86.3%`（背景音與即時切段波動為主要瓶頸）
-
-使用時請優先確認 `runtime.local_asr_language` / `runtime.remote_asr_language` 與實際說話語言一致。語言鎖錯時，辨識率會明顯下降。
-
-設定鏈路目前統一為：啟動時由 `config.yaml` 載入 `AppConfig`，UI 顯示同一份設定；UI 變更會先套用到記憶體中的 `AppConfig` 並重建 runtime，按「儲存設定」才寫回 `config.yaml`。Python 內的預設值只在設定檔缺欄位或第一次產生設定檔時使用。
-
-ASR 模型不再依「遠端 / 本地」來源決定，而是依每個通道的 ASR 語言決定：
-
-- 中文語言（`zh-TW` / `zh` / `cmn` / `yue`）使用 `asr_profiles.chinese`
-- 非中文與 `auto` 使用 `asr_profiles.non_chinese`
-- `none` 停用該通道 ASR
-
-因此遠端 ASR 若選「中文」，實際會使用中文 profile（例如 `.\runtimes\models\belle-zh-ct2`），UI 標籤、健康檢查與 runtime 都會走同一條解析規則。快速情境模式只調整延遲 / 穩定度參數，不會覆蓋已選定的 ASR 模型。
-
-UI 內建兩種快速模式：
-
-- **會議模式（穩定切段）** `meeting_monitor`
-  - ASR 使用 `meeting_room` profile，VAD min_silence=600ms，soft_final=4000ms；適合長句字幕、會議監聽、影片字幕
-- **對話模式（低延遲）** `dialogue`
-  - ASR 使用 `turn_taking` profile，VAD min_silence=280ms，soft_final=2000ms；適合雙向短句對話，切段更快
-
-ASR 路由規則：
-
-- `zh` / `zh-TW` / `zh-CN` / `cmn` / `yue` -> `belle-zh-ct2`（faster-whisper CTranslate2）
-- 其他語言 -> `large-v3-turbo`（faster-whisper）
-- `auto` -> `large-v3-turbo`（faster-whisper）
-- `none` -> disabled
-
-## Diagnostics 觀測
-
-diagnostics / runtime stats / 匯出目前可直接看到：
-
-- `resolved_backend`
-- `device_effective`
-- `endpoint_signal.pause_ms`
-- `speech_started_count / soft_endpoint_count / hard_endpoint_count`
-- validator / post-processor 的 `rejected_count`
-- 最近一次 `last_rejection_reason`
-
-這些欄位能直接幫助判斷是：
-
-- endpoint 太敏感
-- final 切太碎
-- validator 正在擋垃圾輸出
-- 或 queue / degradation 已開始影響品質
-
-## 目前已知限制
-
-- 若實際 `effective device` 為 `CPU`，雙通道同時中文發話時仍可能因吞吐量不足而增加延遲
-- speaker diarization 目前仍屬實驗性功能，預設關閉
-- `runtime.asr_v2_backend` 目前主要作為相容欄位保留；實際 backend 以通道語言解析結果為準
-- `stream_worker.py` 只剩 compatibility helpers；不再承載實際 ASR 執行流程
-
-## 開發工具
-
-### ASR Benchmark（`tools/asr_benchmark/`）
-
-離線 ASR 品質量測工具，不打包進發行版：
-
-```powershell
-# 跑 benchmark（輸出 jsonl）
-uv run python tools/asr_benchmark/run_benchmark.py \
-  --audio <音訊檔> --profile default --reference <參考文字> \
-  --chunk-ms 40 --output downloads/benchmark_results/result.jsonl
-
-# 產生報表（table / csv / json）
-uv run python tools/asr_benchmark/report.py \
-  --input downloads/benchmark_results/result.jsonl --format table
-```
-
-### YouTube SRT 工具（`tools/youtube_srt/`）
-
-下載 YouTube 字幕並與 ASR 結果做 CER/WER 比對，可用於評估辨識品質：
-
-```powershell
-# 下載中文字幕參考集
-uv run python tools/youtube_srt/download_chinese.py
-
-# 下載英文字幕參考集
-uv run python tools/youtube_srt/download_english.py
-
-# 對指定 YouTube 影片進行 ASR benchmark
-uv run python tools/youtube_srt/benchmark_against_yt.py \
-  --url "https://www.youtube.com/watch?v=<VIDEO_ID>" \
-  --source remote --lang en --profile default \
-  --out-dir downloads/benchmark \
-  --output downloads/benchmark_results/result.json
-```
-
-字幕下載結果存於 `downloads/chinese_srt/` 與 `downloads/english_srt/`。  
-Benchmark 結果存於 `downloads/benchmark_results/`。
-
-## 文件索引
+## 文件
 
 - [docs/架構說明.md](docs/架構說明.md)
 - [docs/設定說明.md](docs/設定說明.md)
 - [docs/測試說明.md](docs/測試說明.md)
 - [docs/音訊裝置建議配置.md](docs/音訊裝置建議配置.md)
-- [docs/快速安裝手冊.md](docs/快速安裝手冊.md)
-- [docs/更新紀錄.md](docs/更新紀錄.md)
-- [docs/ASR重構藍圖.md](docs/ASR重構藍圖.md)
 
+## 維護原則
+
+- ASR runtime 以 `app/infra/asr/worker_v2.py`、`endpointing_v2.py`、`backend_v2.py` 為主。
+- UI 行為以 `app/ui/main_window.py` 與 `app/ui/pages/` 為準。
+- 管線協調以 `app/application/audio_router.py` 為主。
+- 不再保留只為舊 API 或未接入抽離設計存在的 shim。
+- 文件只描述目前可執行的架構，不保留一次性 PR summary 或流水帳式歷史文件。

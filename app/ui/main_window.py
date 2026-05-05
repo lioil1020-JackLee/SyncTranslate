@@ -611,9 +611,9 @@ class MainWindow(QMainWindow):
         local_original_items = self.transcript_buffer.latest("local_original", limit=2000)
         local_translated_items = self.transcript_buffer.latest("local_translated", limit=2000)
         remote_original_lines = self._build_transcript_lines(remote_original_items)
-        remote_translated_lines = self._build_transcript_lines(remote_translated_items)
+        remote_translated_lines = self._build_transcript_lines(remote_translated_items, include_state=False)
         local_original_lines = self._build_transcript_lines(local_original_items)
-        local_translated_lines = self._build_transcript_lines(local_translated_items)
+        local_translated_lines = self._build_transcript_lines(local_translated_items, include_state=False)
 
         if remote_original_lines != self._remote_line_cache:
             self.live_caption_page.set_remote_original_lines(remote_original_lines)
@@ -825,21 +825,28 @@ class MainWindow(QMainWindow):
         self._apply_output_switches_to_router()
 
     @staticmethod
-    def _format_transcript_line(text: str, is_final: bool, speaker_label: str = "") -> str:
+    def _format_transcript_line(text: str, is_final: bool, speaker_label: str = "", *, include_state: bool = True) -> str:
         if _S2T_CONVERTER is not None:
             try:
                 text = _S2T_CONVERTER.convert(text)
             except Exception:
                 pass
-        state = "final" if is_final else "partial"
         speaker_prefix = f"{speaker_label}: " if speaker_label else ""
+        if not include_state:
+            return f"{speaker_prefix}{text}"
+        state = "final" if is_final else "partial"
         return f"[{state}] {speaker_prefix}{text}"
 
     @classmethod
-    def _build_transcript_lines(cls, items) -> list[str]:
+    def _build_transcript_lines(cls, items, *, include_state: bool = True) -> list[str]:
         # newest first: 讓最新字幕顯示在畫面最上方
         return [
-            cls._format_transcript_line(item.text, item.is_final, getattr(item, "speaker_label", ""))
+            cls._format_transcript_line(
+                item.text,
+                item.is_final,
+                getattr(item, "speaker_label", ""),
+                include_state=include_state,
+            )
             for item in reversed(items)
         ]
 

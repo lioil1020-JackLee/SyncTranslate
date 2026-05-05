@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from app.infra.asr.stream_worker import _format_asr_exception_message
+from app.infra.asr._hallucination_filter import _format_asr_exception_message
 
 
 class AsrErrorFormattingTests(unittest.TestCase):

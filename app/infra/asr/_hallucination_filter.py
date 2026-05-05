@@ -132,7 +132,7 @@ __all__ = [
     "looks_like_repetitive_loop",
     "looks_like_short_cta_tail",
     "tail_hallucination_drop_reason",
-    # --- stream_worker hallucination helpers ---
+    # --- transcript hallucination helpers ---
     "_HALLUCINATION_PATTERNS",
     "_NON_SPEECH_NORMALIZED_SUBSTRINGS",
     "_NON_SPEECH_TEXT_PATTERNS",
@@ -146,7 +146,7 @@ __all__ = [
 
 
 # ---------------------------------------------------------------------------
-# Hallucination / non-speech helpers (migrated from stream_worker.py)
+# Hallucination / non-speech helpers shared by ASR runtime and tests.
 # ---------------------------------------------------------------------------
 
 _HALLUCINATION_PATTERNS = (

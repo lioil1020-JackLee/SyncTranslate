@@ -323,6 +323,30 @@ class AudioRouterPolicyTests(unittest.TestCase):
         self.assertEqual(translated[0].text, "hello from asr")
         self.assertEqual(tts.enqueued, [])
 
+    def test_partial_asr_does_not_trigger_translation(self) -> None:
+        router, _, _, translator, _ = _build_router(translation_enabled=True)
+        event = ASREventWithSource(
+            source="remote",
+            utterance_id="u-partial",
+            revision=1,
+            pipeline_revision=1,
+            config_fingerprint="fp",
+            created_at=0.0,
+            text="draft from asr",
+            is_final=False,
+            is_early_final=False,
+            start_ms=0,
+            end_ms=500,
+            latency_ms=50,
+            detected_language="en",
+        )
+
+        router._on_asr_event(event)
+
+        translated = router._transcript_buffer.latest("meeting_translated", limit=1)
+        self.assertEqual(translator.process_calls, 0)
+        self.assertEqual(translated, [])
+
     def test_original_panel_keeps_raw_asr_when_correction_is_applied(self) -> None:
         translator = _CorrectingTranslatorManager(enabled=False)
         router, _, _, _, _ = _build_router(translation_enabled=False, translator_manager=translator)

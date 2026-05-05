@@ -352,8 +352,8 @@ class PipelineIntegrationTests(_QtTestCase):
 
         self.assertEqual([item.text for item in remote_original_items], ["hello world", "next sentence now"])
         self.assertEqual([item.is_final for item in remote_original_items], [True, False])
-        self.assertEqual([item.text for item in remote_translated_items], ["ZH:hello world", "ZH:next sentence now"])
-        self.assertEqual([item.is_final for item in remote_translated_items], [True, False])
+        self.assertEqual([item.text for item in remote_translated_items], ["ZH:hello world"])
+        self.assertEqual([item.is_final for item in remote_translated_items], [True])
         self.assertEqual([item.text for item in local_original_items], ["ni hao ma"])
         self.assertEqual([item.text for item in local_translated_items], ["EN:ni hao ma"])
         self.assertEqual(
@@ -366,9 +366,9 @@ class PipelineIntegrationTests(_QtTestCase):
 
         page = LiveCaptionPage()
         page.set_remote_original_lines(MainWindow._build_transcript_lines(remote_original_items))
-        page.set_remote_translated_lines(MainWindow._build_transcript_lines(remote_translated_items))
+        page.set_remote_translated_lines(MainWindow._build_transcript_lines(remote_translated_items, include_state=False))
         page.set_local_original_lines(MainWindow._build_transcript_lines(local_original_items))
-        page.set_local_translated_lines(MainWindow._build_transcript_lines(local_translated_items))
+        page.set_local_translated_lines(MainWindow._build_transcript_lines(local_translated_items, include_state=False))
 
         self.assertEqual(
             page.remote_original.toPlainText(),
@@ -376,10 +376,10 @@ class PipelineIntegrationTests(_QtTestCase):
         )
         self.assertEqual(
             page.remote_translated.toPlainText(),
-            "[partial] ZH:next sentence now\n[final] ZH:hello world",
+            "ZH:hello world",
         )
         self.assertEqual(page.local_original.toPlainText(), "[final] ni hao ma")
-        self.assertEqual(page.local_translated.toPlainText(), "[final] EN:ni hao ma")
+        self.assertEqual(page.local_translated.toPlainText(), "EN:ni hao ma")
 
     def test_unstable_partial_is_hidden_until_a_stable_follow_up_arrives(self) -> None:
         transcript_buffer = TranscriptBuffer()
@@ -434,7 +434,7 @@ class PipelineIntegrationTests(_QtTestCase):
             )
         )
         self.assertEqual([item.text for item in transcript_buffer.latest("meeting_original", limit=10)], ["draft sentence now"])
-        self.assertEqual([item.text for item in transcript_buffer.latest("meeting_translated", limit=10)], ["ZH:draft sentence now"])
+        self.assertEqual(transcript_buffer.latest("meeting_translated", limit=10), [])
 
 
 if __name__ == "__main__":

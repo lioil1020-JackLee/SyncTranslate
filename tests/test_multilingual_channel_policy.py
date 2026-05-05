@@ -7,11 +7,9 @@ from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 from app.infra.asr.manager_v2 import ASRManagerV2
-from app.infra.asr.language_policy import VadSegmenter
 from app.infra.config.schema import AppConfig
 from app.infra.asr.backend_v2 import _sanitize_initial_prompt_for_language
 from app.infra.asr.language_profiles import normalize_asr_language, resolve_language_asr_profile
-from app.infra.asr.stream_worker import StreamingAsr
 from app.infra.asr.faster_whisper_adapter import FasterWhisperEngine, _clear_model_cache_for_tests
 from app.infra.translation.engine import TranslatorManager
 from app.infra.translation.inprocess_adapter import InProcessLlamaClient
@@ -441,159 +439,11 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
             480,
         )
 
-    def test_streaming_asr_keeps_segment_helpers_on_class(self) -> None:
-        self.assertTrue(hasattr(StreamingAsr, "_segment_audio_ms"))
-        self.assertTrue(hasattr(StreamingAsr, "_limited_audio"))
-        self.assertTrue(hasattr(StreamingAsr, "_reset_segment"))
-        self.assertTrue(hasattr(StreamingAsr, "_append_pre_roll_chunk"))
-        self.assertTrue(hasattr(StreamingAsr, "_prime_segment_from_pre_roll"))
-
-    def test_streaming_asr_uses_runtime_partial_floor_instead_of_old_hard_clamp(self) -> None:
-        class _DummyEngine:
-            pass
-
-        class _DummyVad:
-            last_rms = 0.0
-            effective_rms_threshold = 0.0
-            _config = type("_Cfg", (), {"min_silence_duration_ms": 220})()
-
-            def reset(self) -> None:
-                pass
-
-        stream = StreamingAsr(
-            engine=_DummyEngine(),  # type: ignore[arg-type]
-            vad=_DummyVad(),  # type: ignore[arg-type]
-            partial_interval_ms=250,
-            partial_interval_floor_ms=250,
-            min_partial_audio_ms=240,
-        )
-
-        self.assertEqual(stream._partial_interval_ms, 250)
-        self.assertEqual(stream._min_partial_audio_ms, 240)
-
-    def test_streaming_asr_adapts_for_short_turns(self) -> None:
-        stream = StreamingAsr(
-            engine=object(),  # type: ignore[arg-type]
-            vad=VadSegmenter(type("Cfg", (), {
-                "enabled": True,
-                "min_speech_duration_ms": 150,
-                "min_silence_duration_ms": 520,
-                "max_speech_duration_s": 10.0,
-                "speech_pad_ms": 320,
-                "rms_threshold": 0.02,
-            })()),  # type: ignore[arg-type]
-            partial_interval_ms=800,
-            partial_interval_floor_ms=520,
-            soft_final_audio_ms=4200,
-            adaptive_enabled=True,
-        )
-
-        for idx in range(4):
-            stream._record_final_adaptation(audio_ms=1400, latency_ms=420, now_ms=1000 + idx)
-
-        stats = stream.stats()
-        self.assertEqual(stats.adaptive_mode, "short_turn")
-        self.assertLess(stats.adaptive_partial_interval_ms, 800)
-        self.assertLess(stats.adaptive_min_silence_duration_ms, 520)
-        self.assertLess(stats.adaptive_soft_final_audio_ms, 4200)
-
-    def test_streaming_asr_load_sheds_when_recent_latency_is_high(self) -> None:
-        stream = StreamingAsr(
-            engine=object(),  # type: ignore[arg-type]
-            vad=VadSegmenter(type("Cfg", (), {
-                "enabled": True,
-                "min_speech_duration_ms": 150,
-                "min_silence_duration_ms": 520,
-                "max_speech_duration_s": 10.0,
-                "speech_pad_ms": 320,
-                "rms_threshold": 0.02,
-            })()),  # type: ignore[arg-type]
-            partial_interval_ms=800,
-            partial_interval_floor_ms=520,
-            soft_final_audio_ms=4200,
-            adaptive_enabled=True,
-        )
-
-        for idx in range(4):
-            stream._record_partial_adaptation(latency_ms=1200 + idx * 20)
-
-        stats = stream.stats()
-        self.assertIn("load_shed", stats.adaptive_mode)
-        self.assertGreater(stats.adaptive_partial_interval_ms, 800)
-        self.assertLess(stats.adaptive_soft_final_audio_ms, 4200)
-
-    def test_vad_reports_short_pause_before_full_finalize(self) -> None:
-        vad = VadSegmenter(type("Cfg", (), {
-            "enabled": True,
-            "min_speech_duration_ms": 80,
-            "min_silence_duration_ms": 900,
-            "max_speech_duration_s": 10.0,
-            "speech_pad_ms": 520,
-            "rms_threshold": 0.02,
-        })())
-
-        speech = np.full((1600,), 0.05, dtype=np.float32)
-        silence = np.zeros((3200,), dtype=np.float32)
-
-        vad.update(speech, 16000)
-        active = vad.update(speech, 16000)
-        paused = vad.update(silence, 16000)
-
-        self.assertTrue(active.speech_active)
-        self.assertGreater(paused.pause_ms, 0.0)
-        self.assertFalse(paused.finalize)
-
-    def test_streaming_asr_soft_split_prefers_pause_over_fixed_length(self) -> None:
-        class _DummyVad:
-            last_rms = 0.0
-            effective_rms_threshold = 0.02
-            effective_min_silence_duration_ms = 900
-
-            def reset(self) -> None:
-                pass
-
-            def set_runtime_tuning(self, *, min_silence_duration_ms: int | None = None) -> None:
-                pass
-
-        stream = StreamingAsr(
-            engine=object(),  # type: ignore[arg-type]
-            vad=_DummyVad(),  # type: ignore[arg-type]
-            soft_final_audio_ms=4200,
-            adaptive_enabled=False,
-        )
-        stream._segment_sample_rate = 16000
-        stream._segment_chunks = [np.zeros((16000 * 5,), dtype=np.float32)]
-
-        self.assertFalse(stream._should_emit_soft_split(type("Decision", (), {"pause_ms": 0.0})()))
-        self.assertTrue(stream._should_emit_soft_split(type("Decision", (), {"pause_ms": 240.0})()))
-
     def test_speaker_diarization_is_disabled_by_default(self) -> None:
         cfg = AppConfig()
         manager = ASRManagerV2(cfg)
 
         self.assertIsNone(manager._speaker_diarizer_for_source("local"))
-
-    @patch("app.infra.asr.language_policy._SileroStreamingVad")
-    def test_neural_vad_backend_can_drive_speech_detection(self, mock_vad_cls) -> None:
-        backend = mock_vad_cls.return_value
-        backend.available = True
-        backend.probability.return_value = 0.92
-
-        vad = VadSegmenter(type("Cfg", (), {
-            "enabled": True,
-            "backend": "silero_vad",
-            "min_speech_duration_ms": 80,
-            "min_silence_duration_ms": 900,
-            "max_speech_duration_s": 10.0,
-            "speech_pad_ms": 520,
-            "rms_threshold": 0.02,
-            "neural_threshold": 0.5,
-        })())
-
-        decision = vad.update(np.zeros((1600,), dtype=np.float32), 16000)
-
-        self.assertTrue(decision.speech_active)
-        backend.probability.assert_called()
 
     def test_tts_queue_can_accept_stable_partial_before_final(self) -> None:
         cfg = AppConfig()

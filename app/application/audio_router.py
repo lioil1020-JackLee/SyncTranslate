@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import replace
 from datetime import datetime
 import sys
 from threading import Lock, Thread
@@ -251,22 +252,25 @@ class AudioRouter:
             created_at=datetime.fromtimestamp(event.created_at),
             speaker_label=getattr(event, "speaker_label", ""),
         )
+        if not event.is_final:
+            return
+        translation_event = replace(event, text=processed_text)
         translation_checker = getattr(self._translator_manager, "translation_enabled", lambda *_args: True)
         try:
-            translation_enabled = bool(translation_checker(event.source))
+            translation_enabled = bool(translation_checker(translation_event.source))
         except TypeError:
             translation_enabled = bool(translation_checker())
         if not translation_enabled:
             self._handle_asr_event_no_translation(
-                event=event,
+                event=translation_event,
                 translated_channel=translated_channel,
                 tts_channel=tts_channel,
             )
             return
         if self._async_translation:
-            self._enqueue_translation_event(event)
+            self._enqueue_translation_event(translation_event)
             return
-        self._process_translation_event(event)
+        self._process_translation_event(translation_event)
 
     def _handle_asr_event_no_translation(
         self,
