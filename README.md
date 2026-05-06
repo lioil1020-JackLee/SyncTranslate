@@ -1,68 +1,68 @@
 # SyncTranslate
 
-## 畫面截圖
+SyncTranslate 是一個 Windows 本地即時字幕、ASR、翻譯與 TTS runtime。專案目前以 PySide6 GUI 為主，使用 faster-whisper/CTranslate2 做 ASR，使用本地 llama.cpp in-process GGUF 模型做翻譯，並可透過 Edge TTS 或 passthrough 輸出聲音。
 
-![即時字幕畫面](image/即時字幕.png)
+![即時字幕](image/即時字幕.png)
 
-![設定畫面](image/設定.png)
+![設定](image/設定.png)
 
-SyncTranslate 是一個 Windows 桌面即時雙向字幕、翻譯與語音輸出工具。它可以同時處理會議遠端音訊與本機麥克風，將兩邊語音轉成字幕，必要時使用本地 LLM 翻譯，再透過 TTS 或音訊旁路輸出到指定裝置。
+## 目前能力
 
-目前專案以 ASR v2、本地 llama.cpp in-process 翻譯、Edge TTS 與 PySide6 UI 為主線。舊的 ASR worker、未接入 UI 的 controller 抽離檔、重複 metrics/dispatcher shim 已移除，程式碼結構以實際 runtime 路徑為準。
-
-## 功能
-
-- 雙通道即時字幕：`remote` 代表會議/系統音訊，`local` 代表本機麥克風。
-- ASR 語言分流：中文使用中文 profile，非中文與 auto 使用 faster-whisper profile。
-- 本地翻譯：透過 `llama-cpp-python` 載入 GGUF 模型，不依賴遠端翻譯 API。
-- TTS / 旁路 / 只顯示字幕：依每個通道的輸出模式決定。
-- 音訊路由：支援麥克風、會議音訊、喇叭、虛擬裝置與 Windows endpoint volume 控制。
-- 診斷與匯出：包含 healthcheck、session report、diagnostics export。
+- 雙路字幕：`remote` 對應會議/遠端音訊，`local` 對應本地麥克風或本機播放路由。
+- ASR v2：`SourceRuntimeV2` 管理音訊前端、VAD endpoint、partial/final decode、queue 背壓與 hallucination 過濾。
+- 語言路由：中文 ASR 預設走 `asr_channels.local` 的 `belle-zh-ct2`；非中文與 `auto` 預設走 `asr_channels.remote` 的 `large-v3-turbo`。
+- 中文 ASR 前端：保留 AGC/high-pass，但中文 profile 會停用頻譜增強器，降低 belle-zh-ct2 對降噪失真的誤識別。
+- 翻譯：本地 `hy-mt1.5-7b.gguf` 透過 `llama-cpp-python` in-process provider 執行。
+- 字幕緩衝：ASR final 會先去除相鄰 final 的重疊前綴，再進入翻譯，翻譯字幕不顯示 `[final]` 標記。
+- 背壓保護：ASR queue 預設 local/remote 為 `256`，worker 在 queue 壓力下會合併更多 chunk，並延後昂貴的 forced final decode，避免越忙越掉音訊。
+- 診斷：可輸出 session report、healthcheck、runtime smoke 與 ASR benchmark 結果。
 
 ## 專案結構
 
 ```text
 main.py                         # GUI / CLI 入口
-app/bootstrap/                  # 啟動、外部 runtime、DI container
-app/application/                # 管線協調、字幕、翻譯 dispatch、設定服務、診斷匯出
-app/domain/                     # 共用模型、狀態、常數、文字工具
-app/infra/asr/                  # ASR v2 runtime、endpointing、frontend、faster-whisper adapter
-app/infra/audio/                # 音訊擷取、播放、裝置列舉、音量控制
-app/infra/config/               # YAML schema、載入、儲存、遷移
-app/infra/translation/          # 本地 LLM 翻譯 provider、prompt、parser、stitcher
-app/infra/tts/                  # Edge TTS、播放 queue、voice policy
-app/local_ai/                   # 本地 AI healthcheck 與 subprocess worker
-app/ui/                         # PySide6 主視窗與頁面
-tests/                          # 單元與可控整合測試
-tools/asr_benchmark/            # ASR benchmark 與報表工具
-tools/runtime_setup/            # 外部 runtime / 模型 / 打包輔助工具
-tools/runtime_smoke/            # 實機 runtime smoke test
-tools/youtube_srt/              # YouTube 字幕比對工具
+app/bootstrap/                  # runtime path、app factory、DI bundle
+app/application/                # AudioRouter、session、diagnostics、transcript、translation dispatcher
+app/domain/                     # domain model、runtime state、常數
+app/infra/asr/                  # ASR v2 backend、worker、endpointing、frontend、language profiles
+app/infra/audio/                # sounddevice capture/playback、device registry、routing
+app/infra/config/               # AppConfig schema、YAML parser、migration、serialization
+app/infra/translation/          # local llama translation provider、prompt、parser、stitcher
+app/infra/tts/                  # TTS queue、voice policy、Edge TTS integration
+app/local_ai/                   # local AI healthcheck 與 subprocess worker
+app/ui/                         # PySide6 UI pages
+tests/                          # pytest 測試
+tools/asr_benchmark/            # streaming ASR benchmark 與報表
+tools/runtime_setup/            # runtime 下載、搬移、onedir 打包輔助
+tools/runtime_smoke/            # runtime smoke tests
+tools/youtube_srt/              # YouTube 字幕解析工具
 ```
 
 ## 安裝
 
-建議使用 Python 3.11 與 `uv`。
+建議使用 Python 3.12 與 `uv`。
 
 ```powershell
 uv sync
 ```
 
-準備外部 AI runtime 與模型：
+準備外部 AI runtime：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\tools\runtime_setup\prepare_external_runtimes.ps1
 ```
 
-這個步驟會準備 `runtimes/shared`、`runtimes/faster_whisper` 與必要模型。外部 runtime 不由 `pyproject.toml` 直接管理，目的是讓 GUI app、打包與 AI 套件隔離。
+這會準備 `runtimes/shared`、`runtimes/faster_whisper` 與相關模型/runtime 檔案。實際可執行 runtime 會被 PyInstaller onedir 使用。
 
-## 啟動
+## 執行
+
+開發環境：
 
 ```powershell
 uv run python main.py
 ```
 
-指定設定檔：
+指定設定：
 
 ```powershell
 uv run python main.py --config config.yaml
@@ -74,51 +74,81 @@ uv run python main.py --config config.yaml
 uv run python main.py --check
 ```
 
+onedir runtime 直接執行原始入口：
+
+```powershell
+.\dist\SyncTranslate-onedir\runtimes\shared\Scripts\python.exe .\main.py
+```
+
 ## 設定
 
-主要設定檔是 `config.yaml`，範本是 `config.example.yaml`。啟動時會載入 YAML 並轉成 `AppConfig`；UI 修改會先套用到記憶體，按下儲存後才寫回設定檔。
+主要設定檔為 `config.yaml`，範本為 `config.example.yaml`。設定會被解析成 `app/infra/config/schema.py` 的 `AppConfig`。
 
-重點欄位：
+常用 runtime key：
 
 - `runtime.local_asr_language` / `runtime.remote_asr_language`
-- `language.local_target` / `language.meeting_target`
+- `runtime.local_translation_target` / `runtime.remote_translation_target`
 - `runtime.local_tts_voice` / `runtime.remote_tts_voice`
-- `audio.*_device`
-- `asr_profiles.*`
-- `llm_profiles.*`
-- `tts.*`
+- `runtime.asr_profile_local` / `runtime.asr_profile_remote`
+- `runtime.asr_queue_maxsize_local` / `runtime.asr_queue_maxsize_remote`
+- `runtime.asr_frontend_enabled`
+- `runtime.asr_enhancement_enabled`
+- `runtime.display_partial_strategy`
+- `runtime.max_pipeline_latency_ms`
 
-更多細節見 [docs/設定說明.md](docs/設定說明.md)。
+常用 audio key：
+
+- `audio.meeting_in`
+- `audio.microphone_in`
+- `audio.speaker_out`
+- `audio.meeting_out`
+- `audio.meeting_in_gain`
+- `audio.microphone_in_gain`
+- `audio.speaker_out_volume`
+- `audio.meeting_out_volume`
+
+完整說明見 [設定說明](docs/設定說明.md)。
 
 ## 測試
 
-快速檢查：
+基本檢查：
 
 ```powershell
 uv run python -m compileall -q app main.py tools tests
 uv run pytest
 ```
 
-只跑核心測試：
+ASR v2 重點測試：
 
 ```powershell
-uv run pytest tests/test_audio_router_core.py tests/test_translation_stitcher.py tests/test_asr_v2_endpointing.py
+uv run pytest tests/test_asr_streaming_and_profiles.py tests/test_asr_frontend_v2.py tests/test_asr_v2_endpointing.py
 ```
 
-實機 runtime smoke：
+runtime smoke：
 
 ```powershell
 uv run python .\tools\runtime_smoke\run_runtime_smoke.py --config config.yaml
 ```
 
-更多測試策略見 [docs/測試說明.md](docs/測試說明.md)。
+ASR benchmark：
+
+```powershell
+uv run python tools/asr_benchmark/run_multi_benchmark.py --only-lang zh --output-dir downloads/benchmark_results/manual_zh
+```
+
+完整說明見 [測試說明](docs/測試說明.md)。
 
 ## 打包
 
-先準備 runtime，再執行 PyInstaller spec：
+準備 runtime：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\tools\runtime_setup\prepare_external_runtimes.ps1
+```
+
+建立 PyInstaller onedir：
+
+```powershell
 uv run pyinstaller SyncTranslate-onedir.spec --noconfirm
 powershell -ExecutionPolicy Bypass -File .\tools\runtime_setup\relocate_ai_runtime_artifacts.ps1
 ```
@@ -131,15 +161,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\runtime_setup\package_onedir.ps
 
 ## 文件
 
-- [docs/架構說明.md](docs/架構說明.md)
-- [docs/設定說明.md](docs/設定說明.md)
-- [docs/測試說明.md](docs/測試說明.md)
-- [docs/音訊裝置建議配置.md](docs/音訊裝置建議配置.md)
-
-## 維護原則
-
-- ASR runtime 以 `app/infra/asr/worker_v2.py`、`endpointing_v2.py`、`backend_v2.py` 為主。
-- UI 行為以 `app/ui/main_window.py` 與 `app/ui/pages/` 為準。
-- 管線協調以 `app/application/audio_router.py` 為主。
-- 不再保留只為舊 API 或未接入抽離設計存在的 shim。
-- 文件只描述目前可執行的架構，不保留一次性 PR summary 或流水帳式歷史文件。
+- [架構說明](docs/架構說明.md)
+- [設定說明](docs/設定說明.md)
+- [測試說明](docs/測試說明.md)
+- [音訊裝置建議配置](docs/音訊裝置建議配置.md)
