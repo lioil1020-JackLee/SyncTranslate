@@ -143,6 +143,55 @@ class TranscriptServiceTests(unittest.TestCase):
         self.assertEqual(items[0].text, "first sentence")
         self.assertEqual(items[1].text, "second sentence")
 
+    def test_overlapping_final_prefix_is_trimmed_from_next_item(self) -> None:
+        svc = TranscriptService()
+        now = datetime.now()
+        svc.upsert_event(
+            source="meeting_original",
+            channel="meeting_original",
+            kind="original",
+            text="去年舉發違反道路交通管理事件一共有一千六百三十一萬",
+            is_final=True,
+            created_at=now,
+        )
+        svc.upsert_event(
+            source="meeting_original",
+            channel="meeting_original",
+            kind="original",
+            text="一千六百三十一萬九千五百四十六件舉發件數以違規停車最多",
+            is_final=True,
+            created_at=now + timedelta(milliseconds=1900),
+        )
+
+        items = svc.latest("meeting_original", limit=10)
+        self.assertEqual(len(items), 2)
+        self.assertEqual(items[1].text, "九千五百四十六件舉發件數以違規停車最多")
+
+    def test_fully_duplicated_final_is_dropped(self) -> None:
+        svc = TranscriptService()
+        now = datetime.now()
+        text = "According to the latest traffic management statistics"
+        svc.upsert_event(
+            source="meeting_original",
+            channel="meeting_original",
+            kind="original",
+            text=text,
+            is_final=True,
+            created_at=now,
+        )
+        svc.upsert_event(
+            source="meeting_original",
+            channel="meeting_original",
+            kind="original",
+            text=text,
+            is_final=True,
+            created_at=now + timedelta(milliseconds=2100),
+        )
+
+        items = svc.latest("meeting_original", limit=10)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].text, text)
+
 
 if __name__ == "__main__":
     unittest.main()

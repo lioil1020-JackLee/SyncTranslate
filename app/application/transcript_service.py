@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import replace
 from datetime import datetime
 from threading import Lock
 import re
@@ -63,6 +64,10 @@ class TranscriptService:
             if item.utterance_id and self._upsert_by_utterance_locked(item):
                 return
             self._remove_latest_partial_locked(source)
+            if item.is_final:
+                item = self._trim_overlap_with_previous_final_locked(item)
+                if not item.text.strip():
+                    return
             if self._merge_with_previous_final_locked(item):
                 return
             self._items.append(item)
@@ -92,6 +97,35 @@ class TranscriptService:
             created_at=created_at,
             speaker_label=speaker_label,
         )
+
+    def preview_final_text(
+        self,
+        *,
+        source: str,
+        channel: str,
+        kind: str,
+        text: str,
+        utterance_id: str | None = None,
+        revision: int = 0,
+        latency_ms: int | None = None,
+        created_at: datetime | None = None,
+        speaker_label: str = "",
+    ) -> str:
+        item = TranscriptItem(
+            source=source,
+            channel=channel,
+            kind=kind,
+            utterance_id=utterance_id,
+            revision=max(0, int(revision)),
+            text=text,
+            is_final=True,
+            is_stable_partial=False,
+            latency_ms=None if latency_ms is None else int(latency_ms),
+            created_at=created_at or datetime.now(),
+            speaker_label=str(speaker_label or ""),
+        )
+        with self._lock:
+            return self._trim_overlap_with_previous_final_locked(item).text
 
     def _upsert_by_utterance_locked(self, item: TranscriptItem) -> bool:
         items = list(self._items)
@@ -142,6 +176,78 @@ class TranscriptService:
         )
         self._items = deque(items, maxlen=self._items.maxlen)
         return True
+
+    def _trim_overlap_with_previous_final_locked(self, item: TranscriptItem) -> TranscriptItem:
+        items = list(self._items)
+        if not items:
+            return item
+        previous = items[-1]
+        if not self._same_final_context(previous, item):
+            return item
+        trimmed_text = self._trim_overlapping_prefix(previous.text, item.text)
+        if trimmed_text == item.text:
+            return item
+        return replace(item, text=trimmed_text)
+
+    @staticmethod
+    def _same_final_context(previous: TranscriptItem, current: TranscriptItem) -> bool:
+        if not previous.is_final or not current.is_final:
+            return False
+        if previous.source != current.source or previous.channel != current.channel or previous.kind != current.kind:
+            return False
+        return previous.speaker_label == current.speaker_label
+
+    @staticmethod
+    def _trim_overlapping_prefix(previous: str, current: str) -> str:
+        left = (previous or "").strip()
+        right = (current or "").strip()
+        if not left or not right:
+            return current
+
+        overlap = TranscriptService._find_suffix_prefix_overlap(left, right)
+        if overlap <= 0:
+            overlap = TranscriptService._find_compact_suffix_prefix_overlap(left, right)
+            if overlap <= 0:
+                return current
+            compact_seen = 0
+            trim_at = 0
+            for index, char in enumerate(right):
+                if char.isspace():
+                    continue
+                compact_seen += 1
+                if compact_seen >= overlap:
+                    trim_at = index + 1
+                    break
+            return right[trim_at:].lstrip()
+
+        return right[overlap:].lstrip()
+
+    @staticmethod
+    def _find_suffix_prefix_overlap(left: str, right: str) -> int:
+        min_overlap = TranscriptService._minimum_overlap_chars(left, right)
+        max_overlap = min(len(left), len(right), 120)
+        for size in range(max_overlap, min_overlap - 1, -1):
+            if left[-size:] == right[:size]:
+                return size
+        return 0
+
+    @staticmethod
+    def _find_compact_suffix_prefix_overlap(left: str, right: str) -> int:
+        left_compact = "".join(left.split())
+        right_compact = "".join(right.split())
+        if not left_compact or not right_compact:
+            return 0
+        min_overlap = TranscriptService._minimum_overlap_chars(left_compact, right_compact)
+        max_overlap = min(len(left_compact), len(right_compact), 120)
+        for size in range(max_overlap, min_overlap - 1, -1):
+            if left_compact[-size:] == right_compact[:size]:
+                return size
+        return 0
+
+    @staticmethod
+    def _minimum_overlap_chars(left: str, right: str) -> int:
+        has_cjk = any("\u4e00" <= char <= "\u9fff" for char in f"{left}{right}")
+        return 5 if has_cjk else 12
 
     @staticmethod
     def _should_merge_adjacent_finals(previous: TranscriptItem, current: TranscriptItem) -> bool:

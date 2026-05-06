@@ -48,6 +48,25 @@ def _build_router() -> AudioRouter:
     )
 
 
+def _build_runtime() -> SourceRuntimeV2:
+    return SourceRuntimeV2(
+        source="local",
+        partial_backend=object(),
+        final_backend=object(),
+        endpointing=object(),  # type: ignore[arg-type]
+        partial_interval_ms=480,
+        partial_history_seconds=2,
+        final_history_seconds=12,
+        soft_final_audio_ms=4200,
+        pre_roll_ms=320,
+        min_partial_audio_ms=320,
+        queue_maxsize=32,
+        early_final_enabled=True,
+        adaptive_enabled=False,
+        degradation_enabled=False,
+    )
+
+
 def test_router_accepts_large_append_when_prefix_is_stable() -> None:
     router = _build_router()
     config = AppConfig()
@@ -130,22 +149,7 @@ def test_reason_to_prefer_last_partial_reports_only_real_truncation() -> None:
 
 
 def test_empty_final_can_retry_on_shorter_tail() -> None:
-    runtime = SourceRuntimeV2(
-        source="local",
-        partial_backend=object(),
-        final_backend=object(),
-        endpointing=object(),  # type: ignore[arg-type]
-        partial_interval_ms=480,
-        partial_history_seconds=2,
-        final_history_seconds=12,
-        soft_final_audio_ms=4200,
-        pre_roll_ms=320,
-        min_partial_audio_ms=320,
-        queue_maxsize=32,
-        early_final_enabled=True,
-        adaptive_enabled=False,
-        degradation_enabled=False,
-    )
+    runtime = _build_runtime()
     runtime._segment_sample_rate = 16000
     runtime._segment_chunks = [
         __import__("numpy").ones((16000 * 14,), dtype=__import__("numpy").float32),

@@ -32,6 +32,7 @@ def _make_signal(
     soft_endpoint: bool = False,
     hard_endpoint: bool = False,
     pause_ms: float = 0.0,
+    is_speech_frame: bool = False,
 ):
     from app.infra.asr.endpointing_v2 import EndpointSignal
     return EndpointSignal(
@@ -41,6 +42,7 @@ def _make_signal(
         soft_endpoint=soft_endpoint,
         hard_endpoint=hard_endpoint,
         pause_ms=pause_ms,
+        is_speech_frame=is_speech_frame,
     )
 
 
@@ -202,6 +204,46 @@ class TestStreamingPolicyFinalization:
         decision = policy.decide(ctx)
         assert decision.emit_final is True
         assert decision.is_early_final is False
+
+    def test_soft_endpoint_final_does_not_restart_runtime_segment(self):
+        decision = StreamingDecision(
+            emit_final=True,
+            is_early_final=True,
+            reset_endpointing_after_final=True,
+            reason="soft_endpoint",
+        )
+        signal = _make_signal(
+            speech_active=True,
+            soft_endpoint=True,
+            pause_ms=260.0,
+            is_speech_frame=False,
+        )
+
+        assert SourceRuntimeV2._should_restart_after_final(decision=decision, signal=signal) is False
+
+    def test_non_boundary_final_restarts_when_endpointing_still_active(self):
+        decision = StreamingDecision(emit_final=True, reason="ceiling")
+
+        assert SourceRuntimeV2._should_restart_after_final(
+            decision=decision,
+            signal=_make_signal(speech_active=True, is_speech_frame=True),
+        ) is True
+        assert SourceRuntimeV2._should_restart_after_final(
+            decision=decision,
+            signal=_make_signal(speech_active=True, is_speech_frame=False),
+        ) is True
+
+    def test_adaptive_length_final_restarts_even_on_pause_frame(self):
+        decision = StreamingDecision(emit_final=True, reason="adaptive_length")
+
+        assert SourceRuntimeV2._should_restart_after_final(
+            decision=decision,
+            signal=_make_signal(speech_active=True, pause_ms=190.0, is_speech_frame=False),
+        ) is True
+        assert SourceRuntimeV2._should_restart_after_final(
+            decision=decision,
+            signal=_make_signal(speech_active=False, pause_ms=190.0, is_speech_frame=False),
+        ) is False
 
 
 # ---------------------------------------------------------------------------

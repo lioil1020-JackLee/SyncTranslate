@@ -10,6 +10,7 @@ from app.infra.config.schema import AsrConfig
 class FrontendTuning:
     noise_reduce_strength: float
     music_suppress_strength: float
+    enhancement_enabled: bool | None = None
 
 
 @dataclass(slots=True)
@@ -72,7 +73,11 @@ def _build_zh_profile(base: AsrConfig) -> LanguageAsrProfile:
     return LanguageAsrProfile(
         language="zh",
         endpoint_profile="meeting_room",
-        frontend=FrontendTuning(noise_reduce_strength=0.42, music_suppress_strength=0.20),
+        frontend=FrontendTuning(
+            noise_reduce_strength=0.42,
+            music_suppress_strength=0.20,
+            enhancement_enabled=False,
+        ),
         asr=profile,
     )
 

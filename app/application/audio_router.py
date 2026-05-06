@@ -239,6 +239,35 @@ class AudioRouter:
                 language=detected_language,
                 utterance_id=event.utterance_id or "",
             )
+        created_at = datetime.fromtimestamp(event.created_at)
+        speaker_label = getattr(event, "speaker_label", "")
+        if event.is_final:
+            processed_text = self._transcript_buffer.preview_final_text(
+                source=original_channel,
+                channel=original_channel,
+                kind="original",
+                text=processed_text,
+                utterance_id=event.utterance_id,
+                revision=event.revision,
+                latency_ms=event.latency_ms,
+                created_at=created_at,
+                speaker_label=speaker_label,
+            ).strip()
+            if not processed_text:
+                self._maybe_store_transcript(
+                    source=original_channel,
+                    channel=original_channel,
+                    kind="original",
+                    text=processed_text,
+                    is_final=True,
+                    is_stable_partial=False,
+                    utterance_id=event.utterance_id,
+                    revision=event.revision,
+                    latency_ms=event.latency_ms,
+                    created_at=created_at,
+                    speaker_label=speaker_label,
+                )
+                return
         self._maybe_store_transcript(
             source=original_channel,
             channel=original_channel,
@@ -249,8 +278,8 @@ class AudioRouter:
             utterance_id=event.utterance_id,
             revision=event.revision,
             latency_ms=event.latency_ms,
-            created_at=datetime.fromtimestamp(event.created_at),
-            speaker_label=getattr(event, "speaker_label", ""),
+            created_at=created_at,
+            speaker_label=speaker_label,
         )
         if not event.is_final:
             return

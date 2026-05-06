@@ -294,7 +294,7 @@ class ASRManagerV2:
         _profile_name = self._endpoint_profile_name_for_source(source, language_profile=language_profile)
         _ep_profile = get_endpoint_profile(_profile_name)
         _ep_kwargs = _ep_profile.to_worker_kwargs()
-        noise_reduce_strength, music_suppress_strength = self._frontend_enhancement_strengths(
+        enhancement_enabled, noise_reduce_strength, music_suppress_strength = self._frontend_enhancement_settings(
             language,
             source=source,
         )
@@ -323,7 +323,7 @@ class ASRManagerV2:
             frontend_highpass_alpha=float(
                 getattr(self._config.runtime, "asr_frontend_highpass_alpha", ASR_DEFAULT_FRONTEND_HIGHPASS_ALPHA)
             ),
-            enhancement_enabled=bool(getattr(self._config.runtime, "asr_enhancement_enabled", True)),
+            enhancement_enabled=enhancement_enabled,
             enhancement_noise_reduce_strength=noise_reduce_strength,
             enhancement_noise_adapt_rate=float(
                 getattr(self._config.runtime, "asr_enhancement_noise_adapt_rate", 0.18)
@@ -354,10 +354,13 @@ class ASRManagerV2:
             return configured_name
         return language_profile.endpoint_profile or configured_name or "default"
 
-    def _frontend_enhancement_strengths(self, language: str, *, source: str = "local") -> tuple[float, float]:
+    def _frontend_enhancement_settings(self, language: str, *, source: str = "local") -> tuple[bool, float, float]:
         profile = resolve_language_asr_profile(self._profile_for_language(language), language=language)
         runtime = self._config.runtime
         defaults = RuntimeConfig()
+        configured_enabled = bool(getattr(runtime, "asr_enhancement_enabled", defaults.asr_enhancement_enabled))
+        profile_enabled = getattr(profile.frontend, "enhancement_enabled", None)
+        enhancement_enabled = configured_enabled and (True if profile_enabled is None else bool(profile_enabled))
         configured_noise = float(
             getattr(runtime, "asr_enhancement_noise_reduce_strength", defaults.asr_enhancement_noise_reduce_strength)
         )
@@ -379,9 +382,14 @@ class ASRManagerV2:
             else configured_music
         )
         return (
+            enhancement_enabled,
             noise,
             music,
         )
+
+    def _frontend_enhancement_strengths(self, language: str, *, source: str = "local") -> tuple[float, float]:
+        _, noise, music = self._frontend_enhancement_settings(language, source=source)
+        return noise, music
 
     def _queue_maxsize_for_source(self, source: str) -> int:
         runtime = self._config.runtime

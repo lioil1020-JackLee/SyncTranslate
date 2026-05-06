@@ -121,6 +121,8 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
 
         self.assertEqual(manager._frontend_enhancement_strengths("th"), (0.08, 0.0))
         self.assertEqual(manager._frontend_enhancement_strengths("zh-TW"), (0.42, 0.2))
+        self.assertEqual(manager._frontend_enhancement_settings("th"), (True, 0.08, 0.0))
+        self.assertEqual(manager._frontend_enhancement_settings("zh-TW"), (False, 0.42, 0.2))
 
     def test_language_profile_resolver_returns_independent_profiles(self) -> None:
         base = AppConfig().asr_channels.local
@@ -228,6 +230,7 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
         manager = ASRManagerV2(cfg)
 
         self.assertEqual(manager._frontend_enhancement_strengths("th"), (0.31, 0.11))
+        self.assertEqual(manager._frontend_enhancement_settings("zh-TW"), (False, 0.31, 0.11))
 
     def test_tts_voice_fallback_covers_ja_ko_th(self) -> None:
         cfg = AppConfig()

@@ -62,6 +62,7 @@ class AsrAudioFrontendV2:
         self._prev_input = 0.0
         self._prev_output = 0.0
         self._last_stats = {
+            "enhancement_enabled": bool(enhancement_enabled),
             "input_rms": 0.0,
             "output_rms": 0.0,
             "applied_gain": 1.0,
@@ -77,6 +78,7 @@ class AsrAudioFrontendV2:
         self._prev_output = 0.0
         self._enhancer.reset()
         self._last_stats = {
+            "enhancement_enabled": self._enhancer.enabled,
             "input_rms": 0.0,
             "output_rms": 0.0,
             "applied_gain": 1.0,
@@ -107,6 +109,7 @@ class AsrAudioFrontendV2:
             mono = mono.reshape(-1).astype(np.float32, copy=False)
             rms = _rms(mono)
             self._last_stats = {
+                "enhancement_enabled": self._enhancer.enabled,
                 "input_rms": round(rms, 5),
                 "output_rms": round(rms, 5),
                 "applied_gain": 1.0,
@@ -152,6 +155,7 @@ class AsrAudioFrontendV2:
         clipped_ratio = float(np.mean(np.abs(processed) >= 0.995)) if processed.size else 0.0
         output_rms = _rms(processed)
         self._last_stats = {
+            "enhancement_enabled": self._enhancer.enabled,
             "input_rms": round(input_rms, 5),
             "output_rms": round(output_rms, 5),
             "applied_gain": round(gain, 3),

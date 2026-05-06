@@ -442,14 +442,21 @@ class SourceRuntimeV2(_AdaptiveTunerMixin):
                     now_ms=now_ms,
                     is_early_final=decision.is_early_final,
                 )
+                boundary_final = bool(
+                    decision.reset_endpointing_after_final
+                    or signal.speech_ended
+                    or signal.hard_endpoint
+                )
                 if decision.reset_endpointing_after_final:
-                    # Treat a soft endpoint final as an utterance boundary so the
+                    # Treat a soft/pause endpoint final as an utterance boundary.
                     self._endpointing.reset()
                 self._reset_segment()
-                # If speech was still active when we hit a ceiling/force-final
-                # (not a speech_ended boundary), immediately start a new segment
-                # so continuous speech (e.g. with background music) is not lost.
-                if signal.speech_active and not signal.speech_ended:
+                if boundary_final:
+                    self._clear_pre_roll()
+                # Non-boundary length/queue cuts must continue immediately.
+                # Reset-style soft/pause endpoints are true utterance
+                # boundaries, so they wait for a fresh speech_started signal.
+                if self._should_restart_after_final(decision=decision, signal=signal):
                     self._start_segment(sample_rate=sample_rate_int, now_ms=now_ms)
             self._recompute_adaptive_tuning(now_ms=now_ms, segment_audio_ms=segment_audio_ms, signal=signal)
 
@@ -486,6 +493,10 @@ class SourceRuntimeV2(_AdaptiveTunerMixin):
         while self._pre_roll_chunks and self._pre_roll_sample_count > max_samples:
             removed = self._pre_roll_chunks.popleft()
             self._pre_roll_sample_count -= int(removed.shape[0])
+
+    def _clear_pre_roll(self) -> None:
+        self._pre_roll_chunks.clear()
+        self._pre_roll_sample_count = 0
 
     def _emit_partial(self, *, now_ms: int) -> None:
         if self._on_event is None:
@@ -764,6 +775,16 @@ class SourceRuntimeV2(_AdaptiveTunerMixin):
             f"segment_ms={segment_audio_ms} hold_ms={hold_ms}"
         )
         return True
+
+    @staticmethod
+    def _should_restart_after_final(*, decision: StreamingDecision, signal: EndpointSignal) -> bool:
+        if decision.reset_endpointing_after_final:
+            return False
+        if signal.speech_ended or signal.hard_endpoint:
+            return False
+        if not signal.speech_active:
+            return False
+        return decision.reason in {"adaptive_length", "ceiling", "force_final(queue_pressure)"}
 
     @staticmethod
     def _token_overlap_ratio(left: str, right: str) -> float:

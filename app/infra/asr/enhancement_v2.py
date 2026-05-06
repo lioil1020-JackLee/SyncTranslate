@@ -56,6 +56,10 @@ class AsrSpeechEnhancerV2:
             "spectral_flatness": 0.0,
         }
 
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
     def stats(self) -> dict[str, float]:
         return dict(self._last_stats)
 

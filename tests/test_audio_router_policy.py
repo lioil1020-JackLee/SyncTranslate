@@ -110,6 +110,7 @@ class _FakeTranslatorManager:
         self.enabled = enabled
         self.enabled_by_source = enabled_by_source or {}
         self.process_calls = 0
+        self.processed_events = []
 
     def original_channel_of(self, source: str) -> str:
         return source
@@ -121,6 +122,7 @@ class _FakeTranslatorManager:
 
     def process(self, event):
         self.process_calls += 1
+        self.processed_events.append(event)
         return None
 
 
@@ -346,6 +348,46 @@ class AudioRouterPolicyTests(unittest.TestCase):
         translated = router._transcript_buffer.latest("meeting_translated", limit=1)
         self.assertEqual(translator.process_calls, 0)
         self.assertEqual(translated, [])
+
+    def test_overlapping_final_is_trimmed_before_translation(self) -> None:
+        router, _, _, translator, _ = _build_router(translation_enabled=True)
+        first = ASREventWithSource(
+            source="local",
+            utterance_id="u-overlap-1",
+            revision=1,
+            pipeline_revision=1,
+            config_fingerprint="fp",
+            created_at=0.0,
+            text="去年舉發違反道路交通管理事件一共有一千六百三十一萬",
+            is_final=True,
+            is_early_final=False,
+            start_ms=0,
+            end_ms=500,
+            latency_ms=50,
+            detected_language="zh-TW",
+        )
+        second = ASREventWithSource(
+            source="local",
+            utterance_id="u-overlap-2",
+            revision=1,
+            pipeline_revision=1,
+            config_fingerprint="fp",
+            created_at=2.0,
+            text="一千六百三十一萬九千五百四十六件舉發件數以違規停車最多",
+            is_final=True,
+            is_early_final=False,
+            start_ms=500,
+            end_ms=1000,
+            latency_ms=50,
+            detected_language="zh-TW",
+        )
+
+        router._on_asr_event(first)
+        router._on_asr_event(second)
+
+        original = router._transcript_buffer.latest("local_original", limit=10)
+        self.assertEqual(original[-1].text, "九千五百四十六件舉發件數以違規停車最多")
+        self.assertEqual(translator.processed_events[-1].text, "九千五百四十六件舉發件數以違規停車最多")
 
     def test_original_panel_keeps_raw_asr_when_correction_is_applied(self) -> None:
         translator = _CorrectingTranslatorManager(enabled=False)

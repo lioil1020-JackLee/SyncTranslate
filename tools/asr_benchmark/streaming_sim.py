@@ -332,6 +332,12 @@ def run_streaming_sim(
             if hasattr(config.runtime, key):
                 setattr(config.runtime, key, value)
 
+    configured_enhancement_enabled = bool(getattr(config.runtime, "asr_enhancement_enabled", True))
+    profile_enhancement_enabled = getattr(language_profile.frontend, "enhancement_enabled", None)
+    effective_enhancement_enabled = configured_enhancement_enabled and (
+        True if profile_enhancement_enabled is None else bool(profile_enhancement_enabled)
+    )
+
     if verbose:
         print(f"[sim] VAD backend={profile.vad.backend} neural_threshold={profile.vad.neural_threshold} "
               f"min_silence={profile.vad.min_silence_duration_ms}ms", flush=True)
@@ -488,7 +494,7 @@ def run_streaming_sim(
         frontend_target_rms=float(getattr(config.runtime, "asr_frontend_target_rms", 0.05)),
         frontend_max_gain=float(getattr(config.runtime, "asr_frontend_max_gain", 3.0)),
         frontend_highpass_alpha=float(getattr(config.runtime, "asr_frontend_highpass_alpha", 0.96)),
-        enhancement_enabled=bool(getattr(config.runtime, "asr_enhancement_enabled", True)),
+        enhancement_enabled=effective_enhancement_enabled,
         enhancement_noise_reduce_strength=float(getattr(config.runtime, "asr_enhancement_noise_reduce_strength", 0.42)),
         enhancement_noise_adapt_rate=float(getattr(config.runtime, "asr_enhancement_noise_adapt_rate", 0.18)),
         enhancement_music_suppress_strength=float(getattr(config.runtime, "asr_enhancement_music_suppress_strength", 0.2)),
@@ -610,6 +616,7 @@ def run_streaming_sim(
             "partial_interval_ms": _resolved_timing["partial_interval_ms"],
             "pre_roll_ms": _resolved_timing["pre_roll_ms"],
             "min_partial_audio_ms": _resolved_timing["min_partial_audio_ms"],
+            "enhancement_enabled": effective_enhancement_enabled,
         },
     }
     return result
