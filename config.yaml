@@ -183,8 +183,8 @@ runtime:
   tts_accept_stable_partial: false
   tts_partial_min_chars: 12
   tts_use_speech_profile: false
-  asr_queue_maxsize_local: 160
-  asr_queue_maxsize_remote: 160
+  asr_queue_maxsize_local: 256
+  asr_queue_maxsize_remote: 256
   llm_queue_maxsize_local: 24
   llm_queue_maxsize_remote: 24
   tts_queue_maxsize_local: 16
