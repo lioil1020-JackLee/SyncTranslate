@@ -476,6 +476,8 @@ def run_streaming_sim(
     # Estimate: total chunks × speed gives a safe upper bound.
     total_chunks = max(1, len(audio) // max(1, int(sample_rate * chunk_ms / 1000)))
     sim_queue_maxsize = max(512, int(total_chunks * max(1.0, speed_multiplier / 2.0)))
+    if worker_overrides and "queue_maxsize" in worker_overrides:
+        sim_queue_maxsize = max(4, int(worker_overrides["queue_maxsize"]))
 
     # Create worker
     runtime = SourceRuntimeV2(
@@ -617,6 +619,7 @@ def run_streaming_sim(
             "pre_roll_ms": _resolved_timing["pre_roll_ms"],
             "min_partial_audio_ms": _resolved_timing["min_partial_audio_ms"],
             "enhancement_enabled": effective_enhancement_enabled,
+            "queue_maxsize": sim_queue_maxsize,
         },
     }
     return result

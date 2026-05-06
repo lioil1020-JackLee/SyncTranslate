@@ -63,6 +63,30 @@ def _scaled_finalize_thresholds(
     )
     speech_end_finalize_audio_ms = min(speech_end_finalize_audio_ms, soft_endpoint_finalize_audio_ms)
     return soft_endpoint_finalize_audio_ms, speech_end_finalize_audio_ms
+
+
+def _pressure_force_final_audio_ms(soft_final_audio_ms: int) -> int:
+    """Return the earliest audio length allowed for queue-pressure finals.
+
+    Queue pressure means the worker is already behind.  Very short pressure
+    finals make the worker spend more time in expensive final decoding exactly
+    when it needs to catch up, so keep this threshold near the normal soft-final
+    window while retaining a floor for low-latency profiles.
+    """
+    return max(3200, min(6000, int(soft_final_audio_ms)))
+
+
+def _drain_limit_for_backlog(backlog: int, queue_maxsize: int) -> int:
+    """Return how many extra queued chunks to coalesce before processing."""
+    size = max(1, int(queue_maxsize))
+    pressure = max(0.0, min(1.0, float(max(0, int(backlog))) / float(size)))
+    if pressure >= 0.75:
+        return 15
+    if pressure >= 0.45:
+        return 9
+    if pressure >= 0.20:
+        return 5
+    return 3
 _log = logging.getLogger(__name__)
 
 # 單一語音段落最大 chunk 數（60 秒 @ 16kHz 100ms/chunk）
@@ -196,7 +220,7 @@ class SourceRuntimeV2(_AdaptiveTunerMixin):
         self._pre_roll_sample_rate = 16000
         self._in_segment = False
         self._force_final_queue_size = max(8, self._queue.maxsize // 4)
-        self._force_final_audio_ms = 1500
+        self._force_final_audio_ms = _pressure_force_final_audio_ms(self._base_soft_final_audio_ms)
         self._prefer_conservative_finalize = False
         scaled_soft_ms, scaled_speech_end_ms = _scaled_finalize_thresholds(
             soft_final_audio_ms=self._base_soft_final_audio_ms,
@@ -353,8 +377,9 @@ class SourceRuntimeV2(_AdaptiveTunerMixin):
                 continue
 
             drained = 0
+            drain_limit = _drain_limit_for_backlog(self._queue.qsize(), self._queue.maxsize)
             pending_parts = [chunk]
-            while drained < 3:
+            while drained < drain_limit:
                 try:
                     extra_chunk, extra_rate = self._queue.get_nowait()
                 except Empty:
@@ -951,4 +976,11 @@ class SourceRuntimeV2(_AdaptiveTunerMixin):
             return method(audio, sample_rate)
 
 
-__all__ = ["V2RuntimeEvent", "SourceRuntimeV2", "SourceRuntimeV2Stats"]
+__all__ = [
+    "V2RuntimeEvent",
+    "SourceRuntimeV2",
+    "SourceRuntimeV2Stats",
+    "_scaled_finalize_thresholds",
+    "_pressure_force_final_audio_ms",
+    "_drain_limit_for_backlog",
+]

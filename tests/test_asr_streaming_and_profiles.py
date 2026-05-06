@@ -18,6 +18,8 @@ from app.infra.asr.endpoint_profiles import (
     list_profiles,
 )
 from app.infra.asr.worker_v2 import _scaled_finalize_thresholds
+from app.infra.asr.worker_v2 import _pressure_force_final_audio_ms
+from app.infra.asr.worker_v2 import _drain_limit_for_backlog
 from app.infra.asr.worker_v2 import SourceRuntimeV2
 
 
@@ -193,6 +195,17 @@ class TestStreamingPolicyFinalization:
         assert decision.emit_final is True
         assert decision.is_early_final is False
         assert "force_final" in decision.reason
+
+    def test_worker_uses_conservative_pressure_final_threshold(self):
+        assert _pressure_force_final_audio_ms(1800) == 3200
+        assert _pressure_force_final_audio_ms(4600) == 4600
+        assert _pressure_force_final_audio_ms(9000) == 6000
+
+    def test_worker_coalesces_more_chunks_under_queue_pressure(self):
+        assert _drain_limit_for_backlog(0, 256) == 3
+        assert _drain_limit_for_backlog(60, 256) == 5
+        assert _drain_limit_for_backlog(130, 256) == 9
+        assert _drain_limit_for_backlog(220, 256) == 15
 
     def test_adaptive_length_triggers_final(self):
         policy = StreamingPolicy()
