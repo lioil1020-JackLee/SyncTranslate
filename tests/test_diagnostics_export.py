@@ -150,5 +150,109 @@ class DiagnosticsExportTests(unittest.TestCase):
             self.assertEqual(len(report["recent_latency"]), 1)
 
 
+class DiagnosticsAsmStatsTests(unittest.TestCase):
+    """Section 5: stats effective fields — auto_language, final_priority in export."""
+
+    def _router_stats_with_asr(self, remote_asr: dict, local_asr: dict) -> dict:
+        base_asr = {
+            "queue_size": 0,
+            "partial_count": 0,
+            "final_count": 0,
+            "endpointing": {"speech_started_count": 0, "soft_endpoint_count": 0, "hard_endpoint_count": 0},
+            "endpoint_signal": {"pause_ms": 0},
+            "postprocessor": {"final": {"rejected_count": 0, "last_rejection_reason": ""}},
+        }
+        remote = {**base_asr, **remote_asr}
+        local = {**base_asr, **local_asr}
+        return {
+            "translation_overflow": {"local": 0, "remote": 0},
+            "asr": {"remote": remote, "local": local},
+            "latency": [],
+        }
+
+    def test_export_includes_asr_observation_with_auto_language_effective(self) -> None:
+        from app.infra.config.schema import AppConfig, AudioRouteConfig
+        from app.application.diagnostics_export import export_runtime_diagnostics
+        import contextlib, tempfile
+
+        cfg = AppConfig()
+        routes = AudioRouteConfig(
+            meeting_in="remote-in", microphone_in="local-in",
+            speaker_out="speaker-out", meeting_out="meeting-out",
+        )
+        router_stats = self._router_stats_with_asr(
+            remote_asr={
+                "auto_language": {
+                    "requested": "auto", "effective": "zh-TW",
+                    "detected": "zh", "family": "chinese", "pending_rebuild": False,
+                },
+                "final_priority_active": False,
+            },
+            local_asr={},
+        )
+
+        with tempfile.TemporaryDirectory() as tmp, contextlib.chdir(tmp):
+            path = export_runtime_diagnostics(
+                config_path="config.yaml",
+                config=cfg,
+                routes=routes,
+                runtime_stats_text="router: running=True",
+                recent_errors=[],
+                router_stats=router_stats,
+            )
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("asr_observation:", text)
+
+    def test_export_includes_asr_observation_with_final_priority_active(self) -> None:
+        from app.infra.config.schema import AppConfig, AudioRouteConfig
+        from app.application.diagnostics_export import export_runtime_diagnostics
+        import contextlib, tempfile
+
+        cfg = AppConfig()
+        routes = AudioRouteConfig(
+            meeting_in="remote-in", microphone_in="local-in",
+            speaker_out="speaker-out", meeting_out="meeting-out",
+        )
+        router_stats = self._router_stats_with_asr(
+            remote_asr={"final_priority_active": True},
+            local_asr={},
+        )
+
+        with tempfile.TemporaryDirectory() as tmp, contextlib.chdir(tmp):
+            path = export_runtime_diagnostics(
+                config_path="config.yaml",
+                config=cfg,
+                routes=routes,
+                runtime_stats_text="router: running=True",
+                recent_errors=[],
+                router_stats=router_stats,
+            )
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("asr_observation:", text)
+
+    def test_export_does_not_crash_with_empty_asr_stats(self) -> None:
+        from app.infra.config.schema import AppConfig, AudioRouteConfig
+        from app.application.diagnostics_export import export_runtime_diagnostics
+        import contextlib, tempfile
+
+        cfg = AppConfig()
+        routes = AudioRouteConfig(
+            meeting_in="remote-in", microphone_in="local-in",
+            speaker_out="speaker-out", meeting_out="meeting-out",
+        )
+        router_stats = {"translation_overflow": {}, "asr": {"remote": {}, "local": {}}, "latency": []}
+
+        with tempfile.TemporaryDirectory() as tmp, contextlib.chdir(tmp):
+            path = export_runtime_diagnostics(
+                config_path="config.yaml",
+                config=cfg,
+                routes=routes,
+                runtime_stats_text="",
+                recent_errors=[],
+                router_stats=router_stats,
+            )
+            self.assertTrue(path.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

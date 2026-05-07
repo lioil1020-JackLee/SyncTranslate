@@ -389,6 +389,86 @@ class TestEndpointProfiles:
         assert turn.soft_final_audio_ms < meeting.soft_final_audio_ms
 
 
+# ---------------------------------------------------------------------------
+# StreamingPolicy — final priority
+# ---------------------------------------------------------------------------
+
+class TestStreamingPolicyFinalPriority:
+    def test_queue_ratio_triggers_final_priority(self):
+        policy = StreamingPolicy(final_priority_queue_ratio=0.45)
+        ctx = _make_ctx(backlog=46, queue_maxsize=100)  # ratio=0.46
+        decision = policy.decide(ctx)
+        assert decision.final_priority_active is True
+        assert "queue_ratio" in decision.final_priority_reason
+
+    def test_below_queue_ratio_does_not_trigger(self):
+        policy = StreamingPolicy(final_priority_queue_ratio=0.45)
+        ctx = _make_ctx(backlog=44, queue_maxsize=100)  # ratio=0.44
+        decision = policy.decide(ctx)
+        assert decision.final_priority_active is False
+
+    def test_final_priority_suppresses_partial(self):
+        policy = StreamingPolicy(final_priority_queue_ratio=0.45)
+        ctx = _make_ctx(backlog=46, queue_maxsize=100, last_partial_emit_ms=9000)
+        decision = policy.decide(ctx)
+        assert decision.final_priority_active is True
+        assert decision.emit_partial is False
+        assert decision.reason == "final_priority:suppress_partial"
+
+    def test_final_priority_still_emits_final_on_hard_endpoint(self):
+        policy = StreamingPolicy(final_priority_queue_ratio=0.45)
+        ctx = _make_ctx(
+            backlog=46,
+            queue_maxsize=100,
+            signal=_make_signal(speech_active=True, speech_ended=True, hard_endpoint=True),
+            segment_audio_ms=1200,
+        )
+        decision = policy.decide(ctx)
+        assert decision.final_priority_active is True
+        assert decision.emit_final is True
+
+    def test_final_priority_recovers_when_queue_clears(self):
+        policy = StreamingPolicy(
+            final_priority_queue_ratio=0.45,
+            final_priority_recover_queue_ratio=0.15,
+            final_priority_recover_after_ms=8000,
+        )
+        # Trigger FP at t=1000ms
+        policy.decide(_make_ctx(backlog=46, queue_maxsize=100, now_ms=1000))
+        assert policy.final_priority_active is True
+        # Queue clears but not enough time yet (only 3s elapsed, need >= 2s min + 8s recover)
+        policy.decide(_make_ctx(backlog=10, queue_maxsize=100, now_ms=4000))
+        assert policy.final_priority_active is True
+        # Now enough time has passed — queue low and 8s recover met
+        decision = policy.decide(_make_ctx(backlog=10, queue_maxsize=100, now_ms=12000))
+        assert decision.final_priority_active is False
+
+    def test_final_priority_disabled_by_config(self):
+        policy = StreamingPolicy(final_priority_enabled=False)
+        ctx = _make_ctx(backlog=90, queue_maxsize=100)
+        decision = policy.decide(ctx)
+        assert decision.final_priority_active is False
+
+    def test_high_final_latency_triggers_final_priority(self):
+        policy = StreamingPolicy(final_priority_latency_ms=1800)
+        ctx = _make_ctx(backlog=0, queue_maxsize=100, recent_final_latency_ms=2000)
+        decision = policy.decide(ctx)
+        assert decision.final_priority_active is True
+        assert "final_latency" in decision.final_priority_reason
+
+    def test_degraded_plus_drops_triggers_final_priority(self):
+        policy = StreamingPolicy(final_priority_queue_ratio=0.45)
+        # backlog=7/8 → DEGRADED, plus drops → should enter FP via degraded+drops path
+        ctx = _make_ctx(
+            backlog=7,
+            force_final_queue_size=8,
+            queue_maxsize=100,
+            dropped_chunks_total=5,
+        )
+        decision = policy.decide(ctx)
+        assert decision.final_priority_active is True
+
+
 class TestWorkerFinalizeThresholds:
     def test_thresholds_scale_with_soft_final_window(self):
         soft_ms, speech_end_ms = _scaled_finalize_thresholds(

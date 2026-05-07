@@ -749,7 +749,95 @@ class LocalAiPageUiTests(_QtTestCase):
         self.assertTrue(hasattr(page, "show_advanced_check"))
 
 
-class MainWindowScheduleLiveApplyTests(_QtTestCase):
+class ASRObservationFragmentTests(_QtTestCase):
+    """Tests for _build_asr_observation_fragment — effective params display (Section 5)."""
+
+    def _asr(self, **overrides) -> dict:
+        base: dict = {
+            "queue_size": 0,
+            "queue_maxsize": 256,
+            "dropped_chunks": 0,
+            "partial_count": 0,
+            "final_count": 0,
+            "degradation_level": "normal",
+            "configured_model": "large-v3-turbo",
+            "endpoint_profile": "meeting_room",
+            "frontend_enhancement_enabled": False,
+            "endpoint_signal": {"pause_ms": 0},
+            "endpointing": {"speech_started_count": 0, "soft_endpoint_count": 0, "hard_endpoint_count": 0},
+            "postprocessor": {"final": {"rejected_count": 0, "last_rejection_reason": ""}},
+            "final_priority_active": False,
+            "auto_language": {"requested": "", "effective": "", "detected": "", "family": "auto", "pending_rebuild": False},
+        }
+        base.update(overrides)
+        return base
+
+    def test_stats_includes_model_and_profile(self) -> None:
+        asr = self._asr(configured_model="large-v3-turbo", endpoint_profile="meeting_room")
+        fragment = MainWindow._build_asr_observation_fragment(asr)
+        self.assertIn("model=large-v3-turbo", fragment)
+        self.assertIn("profile=meeting_room", fragment)
+
+    def test_stats_includes_queue_and_degradation(self) -> None:
+        asr = self._asr(queue_size=12, queue_maxsize=256, degradation_level="congested")
+        fragment = MainWindow._build_asr_observation_fragment(asr)
+        self.assertIn("q=12/256", fragment)
+        self.assertIn("deg=congested", fragment)
+
+    def test_final_priority_active_shows_fp_on(self) -> None:
+        asr = self._asr(final_priority_active=True)
+        fragment = MainWindow._build_asr_observation_fragment(asr)
+        self.assertIn("fp=on", fragment)
+
+    def test_final_priority_inactive_no_fp_tag(self) -> None:
+        asr = self._asr(final_priority_active=False)
+        fragment = MainWindow._build_asr_observation_fragment(asr)
+        self.assertNotIn("fp=", fragment)
+
+    def test_auto_language_effective_shown_after_switch(self) -> None:
+        asr = self._asr(
+            auto_language={"requested": "auto", "effective": "zh-TW", "detected": "zh", "family": "chinese", "pending_rebuild": False}
+        )
+        fragment = MainWindow._build_asr_observation_fragment(asr)
+        self.assertIn("lang=auto→zh-TW", fragment)
+
+    def test_auto_language_pending_rebuild_shows_tag(self) -> None:
+        asr = self._asr(
+            auto_language={"requested": "auto", "effective": "zh-TW", "detected": "zh", "family": "chinese", "pending_rebuild": True}
+        )
+        fragment = MainWindow._build_asr_observation_fragment(asr)
+        self.assertIn("lang=auto→zh-TW(pending)", fragment)
+
+    def test_auto_language_no_effective_shows_auto_only(self) -> None:
+        asr = self._asr(
+            auto_language={"requested": "auto", "effective": "", "detected": "", "family": "auto", "pending_rebuild": False}
+        )
+        fragment = MainWindow._build_asr_observation_fragment(asr)
+        self.assertIn("lang=auto", fragment)
+        self.assertNotIn("→", fragment)
+
+    def test_non_auto_requested_language_hides_lang_tag(self) -> None:
+        asr = self._asr(
+            auto_language={"requested": "zh-TW", "effective": "zh-TW", "detected": "zh", "family": "chinese", "pending_rebuild": False}
+        )
+        fragment = MainWindow._build_asr_observation_fragment(asr)
+        self.assertNotIn("lang=", fragment)
+
+    def test_disabled_asr_empty_stats_does_not_crash(self) -> None:
+        fragment = MainWindow._build_asr_observation_fragment({})
+        self.assertIsInstance(fragment, str)
+
+    def test_fp_and_auto_language_can_coexist(self) -> None:
+        asr = self._asr(
+            final_priority_active=True,
+            auto_language={"requested": "auto", "effective": "zh-TW", "detected": "zh", "family": "chinese", "pending_rebuild": False},
+        )
+        fragment = MainWindow._build_asr_observation_fragment(asr)
+        self.assertIn("fp=on", fragment)
+        self.assertIn("lang=auto→zh-TW", fragment)
+
+
+
     """Tests that verify _schedule_live_apply and _apply_live_config_now behavior."""
 
     def test_schedule_live_apply_sets_pending_when_session_running(self) -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 from threading import Event, Lock
 from typing import Callable
@@ -7,6 +8,7 @@ from uuid import uuid4
 
 import numpy as np
 
+from app.infra.asr.auto_language_state import AutoLanguageState, observe_final_language
 from app.infra.asr.backend_resolution import resolve_backend_for_language
 from app.domain.models import ErrorEvent
 from app.infra.asr.backend_v2 import build_backend_pair
@@ -19,6 +21,14 @@ from app.infra.asr.profile_selection import asr_profile_for_language, requested_
 from app.infra.asr.worker_v2 import SourceRuntimeV2, V2RuntimeEvent
 from app.infra.config.schema import AppConfig, RuntimeConfig
 from app.domain.constants import ASR_DEFAULT_FRONTEND_HIGHPASS_ALPHA
+
+
+_log = logging.getLogger(__name__)
+
+# After this many milliseconds with a pending language-switch rebuild, force the
+# rebuild even if the source is still inside a speech segment.  This prevents
+# an indefinitely-long utterance from blocking the profile switch forever.
+_REBUILD_FORCE_AFTER_MS = 30_000
 
 
 class ASRManagerV2:
@@ -54,6 +64,16 @@ class ASRManagerV2:
         self._lock = Lock()
         self._active_utterance: dict[str, str | None] = {"local": None, "remote": None}
         self._revision: dict[str, int] = {"local": 0, "remote": 0}
+        self._auto_language_states: dict[str, AutoLanguageState] = {
+            "local": AutoLanguageState(
+                requested_language=requested_asr_language_for_source(config, "local"),
+            ),
+            "remote": AutoLanguageState(
+                requested_language=requested_asr_language_for_source(config, "remote"),
+            ),
+        }
+        self._pending_rebuild: dict[str, bool] = {"local": False, "remote": False}
+        self._pending_rebuild_since_ms: dict[str, int] = {"local": 0, "remote": 0}
         self._runtime_fingerprint = self._build_runtime_fingerprint()
         self._warmup_lock = Lock()
 
@@ -64,6 +84,14 @@ class ASRManagerV2:
         self._runtime_fingerprint = self._build_runtime_fingerprint()
         previous_callbacks = dict(self._user_callbacks)
         self.stop_all()
+        self._auto_language_states = {
+            "local": AutoLanguageState(
+                requested_language=requested_asr_language_for_source(config, "local"),
+            ),
+            "remote": AutoLanguageState(
+                requested_language=requested_asr_language_for_source(config, "remote"),
+            ),
+        }
         self._user_callbacks = previous_callbacks
         self._callbacks = previous_callbacks
         for source, callback in previous_callbacks.items():
@@ -124,6 +152,7 @@ class ASRManagerV2:
                 with self._lock:
                     self._active_utterance[key] = None
                     self._revision[key] = 0
+                self._observe_detected_language(key, event)
 
         self._callbacks[key] = _wrapped
         if resolve_backend_for_language(self._asr_language_for_source(key)).disabled:
@@ -149,6 +178,11 @@ class ASRManagerV2:
             with self._lock:
                 self._active_utterance[key] = None
                 self._revision[key] = 0
+                self._pending_rebuild[key] = False
+                self._pending_rebuild_since_ms[key] = 0
+                self._auto_language_states[key] = AutoLanguageState(
+                    requested_language=requested_asr_language_for_source(self._config, key),
+                )
 
     def stop_all(self) -> None:
         with self._warmup_lock:
@@ -161,6 +195,8 @@ class ASRManagerV2:
             with self._lock:
                 self._active_utterance = {"local": None, "remote": None}
                 self._revision = {"local": 0, "remote": 0}
+                self._pending_rebuild = {"local": False, "remote": False}
+                self._pending_rebuild_since_ms = {"local": 0, "remote": 0}
 
     def submit(self, source: str, chunk: np.ndarray, sample_rate: float) -> None:
         key = source if source in {"local", "remote"} else "local"
@@ -168,6 +204,7 @@ class ASRManagerV2:
         # on every audio chunk (25-100 ms interval).
         if not self._enabled_events[key].is_set():
             return
+        self._maybe_rebuild_runtime_for_language_switch(key)
         runtime = self._stream_of(key)
         runtime.submit_chunk(self._collapse_stereo_for_asr(chunk), sample_rate)
 
@@ -232,6 +269,15 @@ class ASRManagerV2:
                 "postprocessor": backend_runtime.get("postprocessor", {}),
                 "frontend": stats.frontend,
                 "endpointing": stats.endpointing,
+                "final_priority_active": stats.final_priority_active,
+                "final_priority_reason": stats.final_priority_reason,
+                "auto_language": {
+                    "requested": str(self._auto_language_states[source].requested_language),
+                    "effective": str(self._auto_language_states[source].effective_language),
+                    "detected": str(self._auto_language_states[source].last_detected_language),
+                    "family": str(self._auto_language_states[source].stable_family),
+                    "pending_rebuild": bool(self._pending_rebuild.get(source, False)),
+                },
                 "endpoint_signal": {
                     "speech_active": signal.speech_active,
                     "speech_started": signal.speech_started,
@@ -338,6 +384,11 @@ class ASRManagerV2:
                 getattr(self._config.runtime, "asr_enhancement_noise_adapt_rate", 0.18)
             ),
             enhancement_music_suppress_strength=music_suppress_strength,
+            final_priority_enabled=bool(getattr(self._config.runtime, "asr_final_priority_enabled", True)),
+            final_priority_queue_ratio=float(getattr(self._config.runtime, "asr_final_priority_queue_ratio", 0.45)),
+            final_priority_latency_ms=int(getattr(self._config.runtime, "asr_final_priority_latency_ms", 1800)),
+            final_priority_recover_queue_ratio=float(getattr(self._config.runtime, "asr_final_priority_recover_queue_ratio", 0.15)),
+            final_priority_recover_after_ms=int(getattr(self._config.runtime, "asr_final_priority_recover_after_ms", 8000)),
             on_debug=self._on_error,
         )
         self._runtimes[source] = runtime
@@ -409,8 +460,93 @@ class ASRManagerV2:
     def _asr_queue_maxsize_for_source(self, source: str) -> int:
         return self._queue_maxsize_for_source(source)
 
-    def _asr_language_for_source(self, source: str) -> str:
+    def _requested_language_for_source(self, source: str) -> str:
+        """Return the language the user explicitly configured for *source*."""
         return requested_asr_language_for_source(self._config, source)
+
+    def _effective_language_for_source(self, source: str) -> str:
+        """Return the runtime-effective language for *source*.
+
+        For non-auto sources this equals the requested language.
+        For auto sources this may differ after dynamic profile switching.
+        """
+        state = self._auto_language_states.get(source)
+        if state is None:
+            return self._requested_language_for_source(source)
+        requested = str(state.requested_language or "").strip().lower()
+        if requested and requested != "auto":
+            return self._requested_language_for_source(source)
+        return state.effective_language
+
+    def _asr_language_for_source(self, source: str) -> str:
+        """Return the effective ASR language for *source* (delegates to effective layer)."""
+        return self._effective_language_for_source(source)
+
+    def _observe_detected_language(self, source: str, event: V2RuntimeEvent) -> None:
+        """Called after each final event to update auto-language state.
+
+        Safe to call from any thread — uses _lock for state mutation.
+        """
+        state = self._auto_language_states.get(source)
+        if state is None:
+            return
+        now_ms = int(time.monotonic() * 1000)
+        with self._lock:
+            new_lang = observe_final_language(
+                state,
+                detected_language=event.detected_language,
+                text=event.text,
+                now_ms=now_ms,
+            )
+            if new_lang is not None:
+                self._pending_rebuild[source] = True
+                if self._pending_rebuild_since_ms[source] == 0:
+                    self._pending_rebuild_since_ms[source] = now_ms
+                _log.info(
+                    "asr auto-lang switch queued source=%s new_lang=%s",
+                    source, new_lang,
+                )
+
+    def _maybe_rebuild_runtime_for_language_switch(self, source: str) -> None:
+        """Rebuild the source runtime when a deferred language switch is pending.
+
+        Only rebuilds between speech segments to avoid losing in-flight audio.
+        Called from submit() on the audio ingestion thread — never from the
+        ASR worker thread, so it is safe to stop/join the old thread here.
+        """
+        with self._lock:
+            pending = self._pending_rebuild.get(source, False)
+        if not pending:
+            return
+        existing = self._runtimes.get(source)
+        if existing is not None:
+            if existing.in_segment:
+                since_ms = self._pending_rebuild_since_ms.get(source, 0)
+                now_ms = int(time.monotonic() * 1000)
+                if since_ms == 0 or (now_ms - since_ms) < _REBUILD_FORCE_AFTER_MS:
+                    return
+                _log.warning(
+                    "asr lang-switch forced rebuild after %.1fs source=%s (segment still active)",
+                    (now_ms - since_ms) / 1000.0,
+                    source,
+                )
+            elif existing.stats().queue_size > 0:
+                return
+        with self._lock:
+            self._pending_rebuild[source] = False
+            self._pending_rebuild_since_ms[source] = 0
+        # Stop the old runtime outside the lock to allow worker thread cleanup.
+        if existing is not None:
+            self._runtimes.pop(source, None)
+            existing.stop()
+        callback = self._callbacks.get(source)
+        if callback is not None:
+            _log.info(
+                "asr lang-switch rebuild source=%s new_lang=%s",
+                source, self._asr_language_for_source(source),
+            )
+            runtime = self._runtime_of(source)
+            runtime.start(callback)
 
     def _speaker_diarizer_for_source(self, source: str):
         return None
@@ -517,6 +653,15 @@ class ASRManagerV2:
             "postprocessor": {},
             "frontend": {},
             "endpointing": {},
+            "final_priority_active": False,
+            "final_priority_reason": "",
+            "auto_language": {
+                "requested": str(self._auto_language_states[source].requested_language),
+                "effective": str(self._auto_language_states[source].effective_language),
+                "detected": str(self._auto_language_states[source].last_detected_language),
+                "family": str(self._auto_language_states[source].stable_family),
+                "pending_rebuild": bool(self._pending_rebuild.get(source, False)),
+            },
             "endpoint_signal": {
                 "speech_active": False,
                 "speech_started": False,

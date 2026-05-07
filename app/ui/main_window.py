@@ -610,9 +610,10 @@ class MainWindow(QMainWindow):
         remote_translated_items = self.transcript_buffer.latest("meeting_translated", limit=2000)
         local_original_items = self.transcript_buffer.latest("local_original", limit=2000)
         local_translated_items = self.transcript_buffer.latest("local_translated", limit=2000)
-        remote_original_lines = self._build_transcript_lines(remote_original_items)
+        dp_enabled = bool(getattr(self.config.runtime, "asr_display_punctuation_enabled", False))
+        remote_original_lines = self._build_transcript_lines(remote_original_items, display_punctuation=dp_enabled)
         remote_translated_lines = self._build_transcript_lines(remote_translated_items, include_state=False)
-        local_original_lines = self._build_transcript_lines(local_original_items)
+        local_original_lines = self._build_transcript_lines(local_original_items, display_punctuation=dp_enabled)
         local_translated_lines = self._build_transcript_lines(local_translated_items, include_state=False)
 
         if remote_original_lines != self._remote_line_cache:
@@ -688,6 +689,11 @@ class MainWindow(QMainWindow):
         soft_count = int(endpointing.get("soft_endpoint_count", 0) or 0)
         hard_count = int(endpointing.get("hard_endpoint_count", 0) or 0)
         speech_started = int(endpointing.get("speech_started_count", 0) or 0)
+        auto_lang = asr.get("auto_language") or {}
+        req_lang = str(auto_lang.get("requested", "") or "").strip().lower()
+        eff_lang = str(auto_lang.get("effective", "") or "").strip()
+        pending_rebuild = bool(auto_lang.get("pending_rebuild", False))
+        fp_active = bool(asr.get("final_priority_active", False))
         fragment = (
             f"q={queue}/{queue_max or '-'} drop={dropped} p={partials} f={finals} "
             f"pause={pause_ms} ep={speech_started}/{soft_count}/{hard_count} "
@@ -695,6 +701,13 @@ class MainWindow(QMainWindow):
         )
         if last_reason:
             fragment += f"({last_reason})"
+        if fp_active:
+            fragment += " fp=on"
+        if req_lang == "auto":
+            lang_tag = f"auto→{eff_lang}" if eff_lang else "auto"
+            if pending_rebuild:
+                lang_tag += "(pending)"
+            fragment += f" lang={lang_tag}"
         return fragment
 
     @staticmethod
@@ -871,12 +884,22 @@ class MainWindow(QMainWindow):
         self._apply_output_switches_to_router()
 
     @staticmethod
-    def _format_transcript_line(text: str, is_final: bool, speaker_label: str = "", *, include_state: bool = True) -> str:
+    def _format_transcript_line(
+        text: str,
+        is_final: bool,
+        speaker_label: str = "",
+        *,
+        include_state: bool = True,
+        display_punctuation: bool = False,
+    ) -> str:
         if _S2T_CONVERTER is not None:
             try:
                 text = _S2T_CONVERTER.convert(text)
             except Exception:
                 pass
+        if display_punctuation and is_final:
+            from app.application.display_punctuation import apply_display_punctuation
+            text = apply_display_punctuation(text, is_final=True, enabled=True)
         speaker_prefix = f"{speaker_label}: " if speaker_label else ""
         if not include_state:
             return f"{speaker_prefix}{text}"
@@ -884,7 +907,9 @@ class MainWindow(QMainWindow):
         return f"[{state}] {speaker_prefix}{text}"
 
     @classmethod
-    def _build_transcript_lines(cls, items, *, include_state: bool = True) -> list[str]:
+    def _build_transcript_lines(
+        cls, items, *, include_state: bool = True, display_punctuation: bool = False
+    ) -> list[str]:
         # newest first: 讓最新字幕顯示在畫面最上方
         return [
             cls._format_transcript_line(
@@ -892,6 +917,7 @@ class MainWindow(QMainWindow):
                 item.is_final,
                 getattr(item, "speaker_label", ""),
                 include_state=include_state,
+                display_punctuation=display_punctuation,
             )
             for item in reversed(items)
         ]

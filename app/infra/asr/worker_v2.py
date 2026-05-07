@@ -121,6 +121,8 @@ class SourceRuntimeV2Stats:
     last_signal: EndpointSignal
     frontend: dict[str, object]
     degradation_level: str = DEGRADATION_NORMAL
+    final_priority_active: bool = False
+    final_priority_reason: str = ""
 
 
 @dataclass(slots=True)
@@ -167,6 +169,11 @@ class SourceRuntimeV2(_AdaptiveTunerMixin):
         enhancement_noise_reduce_strength: float = 0.42,
         enhancement_noise_adapt_rate: float = 0.18,
         enhancement_music_suppress_strength: float = 0.2,
+        final_priority_enabled: bool = True,
+        final_priority_queue_ratio: float = 0.45,
+        final_priority_latency_ms: int = 1800,
+        final_priority_recover_queue_ratio: float = 0.15,
+        final_priority_recover_after_ms: int = 8000,
         on_event: Callable[[V2RuntimeEvent], None] | None = None,
         on_debug: Callable[[str], None] | None = None,
     ) -> None:
@@ -254,7 +261,14 @@ class SourceRuntimeV2(_AdaptiveTunerMixin):
         self._last_debug = ""
         self._last_degradation_level: str = DEGRADATION_NORMAL
         self._stats_lock = Lock()
-        self._streaming_policy = StreamingPolicy(degradation_enabled=bool(degradation_enabled))
+        self._streaming_policy = StreamingPolicy(
+            degradation_enabled=bool(degradation_enabled),
+            final_priority_enabled=bool(final_priority_enabled),
+            final_priority_queue_ratio=float(final_priority_queue_ratio),
+            final_priority_latency_ms=int(final_priority_latency_ms),
+            final_priority_recover_queue_ratio=float(final_priority_recover_queue_ratio),
+            final_priority_recover_after_ms=int(final_priority_recover_after_ms),
+        )
 
     def start(self, on_event: Callable[[V2RuntimeEvent], None]) -> None:
         self.stop()
@@ -302,6 +316,11 @@ class SourceRuntimeV2(_AdaptiveTunerMixin):
                 self._queue.get_nowait()
             except Empty:
                 break
+
+    @property
+    def in_segment(self) -> bool:
+        """True while the worker is actively accumulating a speech segment."""
+        return self._in_segment
 
     def submit_chunk(self, chunk: np.ndarray, sample_rate: float) -> None:
         backlog = self._queue.qsize()
@@ -353,6 +372,8 @@ class SourceRuntimeV2(_AdaptiveTunerMixin):
                 last_signal=self._last_signal,
                 frontend=self._frontend.stats(),
                 degradation_level=self._last_degradation_level,
+                final_priority_active=self._streaming_policy.final_priority_active,
+                final_priority_reason=self._streaming_policy.final_priority_reason,
             )
 
     def _run(self) -> None:
@@ -455,6 +476,8 @@ class SourceRuntimeV2(_AdaptiveTunerMixin):
                 adaptive_length_ceiling_ms=self._adaptive_length_ceiling_ms,
                 force_final_queue_size=self._force_final_queue_size,
                 force_final_audio_ms=self._force_final_audio_ms,
+                queue_maxsize=self._queue.maxsize,
+                recent_final_latency_ms=max(self._adaptive_final_latencies, default=0),
             )
             decision = self._streaming_policy.decide(ctx)
             self._last_degradation_level = decision.degradation_level
@@ -624,6 +647,17 @@ class SourceRuntimeV2(_AdaptiveTunerMixin):
         if drop_reason:
             self._debug(f"v2 final dropped reason={drop_reason} text={text!r}")
             return
+        # Confidence filter: high no_speech_prob on short text → suppress noise finals.
+        if not used_partial_fallback and self._should_suppress_by_no_speech(result, text):
+            self._debug(
+                f"v2 final suppressed no_speech_prob={result.max_no_speech_prob:.3f} text={text!r}"
+            )
+            return
+        # Loop risk detection via compression ratio – log as diagnostic, do not suppress.
+        if not used_partial_fallback and self._has_compression_loop_risk(result):
+            self._debug(
+                f"v2 final loop_risk compression_ratio={result.max_compression_ratio:.2f} text={text!r}"
+            )
         self._adaptive_recent_audio_ms.append(max(0, audio_ms))
         self._adaptive_final_latencies.append(max(0, latency_ms))
         self._on_event(
@@ -736,6 +770,32 @@ class SourceRuntimeV2(_AdaptiveTunerMixin):
         if len(words) < 3 and len(compact) < 12:
             return False
         return True
+
+    @staticmethod
+    def _should_suppress_by_no_speech(result: object, text: str) -> bool:
+        """Return True when metadata strongly indicates this is a non-speech segment.
+
+        Suppresses only when max_no_speech_prob > 0.75 AND the text is short
+        enough to plausibly be a noise artifact.  Substantive CJK output (≥4
+        characters) is never suppressed to avoid losing legitimate short turns.
+        """
+        nsp = getattr(result, "max_no_speech_prob", None)
+        if nsp is None or nsp <= 0.75:
+            return False
+        compact = "".join(text.split())
+        cjk_count = sum(1 for c in compact if "\u4e00" <= c <= "\u9fff")
+        # Protect substantive Chinese text – short fillers like「好」may be noise.
+        if cjk_count >= 4:
+            return False
+        # Non-CJK: suppress if fewer than 3 words or < 12 chars.
+        words = [t for t in text.split() if t]
+        return cjk_count == 0 and (len(words) < 3 or len(compact) < 12)
+
+    @staticmethod
+    def _has_compression_loop_risk(result: object) -> bool:
+        """Return True when compression_ratio suggests a repetitive loop."""
+        cr = getattr(result, "max_compression_ratio", None)
+        return cr is not None and cr > 2.6
 
     @staticmethod
     def _reason_partial_clearly_contains_final(

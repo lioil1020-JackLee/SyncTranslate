@@ -303,9 +303,14 @@ class FasterWhisperEngine:
                 detected_language = str(info.get("language", "")).strip()
             else:
                 detected_language = str(getattr(info, "language", "")).strip()
+            seg_metas, agg_logprob, max_nsp, max_cr = _collect_segment_metadata(segments)
             return TranscribeResult(
-                text="".join(str(getattr(seg, "text", "")) for seg in segments).strip(),
+                text="".join(m.text for m in seg_metas).strip(),
                 detected_language=_normalize_lang(detected_language),
+                segments=tuple(seg_metas),
+                avg_logprob=agg_logprob,
+                max_no_speech_prob=max_nsp,
+                max_compression_ratio=max_cr,
             )
         except RuntimeError as exc:
             if self._should_fallback_to_cpu(exc):
@@ -457,6 +462,70 @@ def _clear_model_cache_for_tests() -> None:
         _MODEL_CACHE.clear()
 
 
+def _safe_float(value: object) -> float | None:
+    """Convert *value* to float, returning None on failure."""
+    if value is None:
+        return None
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _collect_segment_metadata(
+    segments: object,
+) -> tuple[list[SegmentMetadata], float | None, float | None, float | None]:
+    """Materialise faster-whisper segment generator and compute aggregate metadata.
+
+    Returns ``(seg_metas, avg_logprob, max_no_speech_prob, max_compression_ratio)``.
+    ``avg_logprob`` is weighted by segment duration; the others are simple max.
+    Fields missing from the segment object are silently skipped.
+    """
+    seg_metas: list[SegmentMetadata] = []
+    total_duration = 0.0
+    weighted_logprob = 0.0
+    has_logprob = False
+    max_nsp: float | None = None
+    max_cr: float | None = None
+
+    for seg in segments:
+        text = str(getattr(seg, "text", ""))
+        start = float(getattr(seg, "start", 0.0) or 0.0)
+        end = float(getattr(seg, "end", 0.0) or 0.0)
+        lp = _safe_float(getattr(seg, "avg_logprob", None))
+        nsp = _safe_float(getattr(seg, "no_speech_prob", None))
+        cr = _safe_float(getattr(seg, "compression_ratio", None))
+
+        seg_metas.append(SegmentMetadata(
+            text=text,
+            start=start,
+            end=end,
+            avg_logprob=lp,
+            no_speech_prob=nsp,
+            compression_ratio=cr,
+        ))
+
+        duration = max(0.0, end - start)
+        if lp is not None:
+            weighted_logprob += lp * duration
+            total_duration += duration
+            has_logprob = True
+        if nsp is not None:
+            max_nsp = nsp if max_nsp is None else max(max_nsp, nsp)
+        if cr is not None:
+            max_cr = cr if max_cr is None else max(max_cr, cr)
+
+    agg_logprob: float | None = None
+    if has_logprob and total_duration > 0.0:
+        agg_logprob = weighted_logprob / total_duration
+    elif has_logprob and seg_metas:
+        # All zero-duration segments – fall back to simple mean.
+        valid = [m.avg_logprob for m in seg_metas if m.avg_logprob is not None]
+        agg_logprob = sum(valid) / len(valid) if valid else None
+
+    return seg_metas, agg_logprob, max_nsp, max_cr
+
+
 def _normalize_lang(language: str) -> str:
     text = (language or "").strip().lower()
     if not text:
@@ -467,9 +536,24 @@ def _normalize_lang(language: str) -> str:
 
 
 @dataclass(slots=True)
+class SegmentMetadata:
+    """Per-segment metadata from a faster-whisper decode pass."""
+    text: str
+    start: float
+    end: float
+    avg_logprob: float | None = None
+    no_speech_prob: float | None = None
+    compression_ratio: float | None = None
+
+
+@dataclass(slots=True)
 class TranscribeResult:
     text: str
     detected_language: str
+    segments: tuple[SegmentMetadata, ...] = ()
+    avg_logprob: float | None = None
+    max_no_speech_prob: float | None = None
+    max_compression_ratio: float | None = None
 
 
 def _parse_temperature_fallback(raw: str) -> list[float]:

@@ -343,6 +343,16 @@ class RuntimeConfig:
     asr_profile_remote: str = "meeting_room"
     # --- Phase 2: Degradation policy ---
     degradation_policy_enabled: bool = True
+    # --- Phase 2: Final priority load control ---
+    asr_final_priority_enabled: bool = True
+    asr_final_priority_queue_ratio: float = 0.45
+    asr_final_priority_latency_ms: int = 1800
+    asr_final_priority_recover_queue_ratio: float = 0.15
+    asr_final_priority_recover_after_ms: int = 8000
+    # --- Phase 3: Display punctuation ---
+    asr_display_punctuation_enabled: bool = False
+    asr_display_punctuation_languages: str = "zh"
+    asr_display_punctuation_mode: str = "lightweight"
 
 
 @dataclass(slots=True)
