@@ -309,6 +309,14 @@ class TestStreamingPolicyDegradation:
         assert decision.degradation_level == DEGRADATION_CONGESTED
         assert decision.emit_partial is False
 
+    def test_congested_suppresses_partial_at_high_backlog(self):
+        policy = StreamingPolicy()
+        ctx = _make_ctx(backlog=5, force_final_queue_size=8)
+        decision = policy.decide(ctx)
+        assert decision.degradation_level == DEGRADATION_CONGESTED
+        assert decision.suppress_partial is True
+        assert decision.reason == "congested:suppress_partial"
+
     def test_degradation_disabled(self):
         policy = StreamingPolicy(degradation_enabled=False)
         ctx = _make_ctx(backlog=7, force_final_queue_size=8)

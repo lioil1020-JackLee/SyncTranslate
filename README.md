@@ -10,12 +10,13 @@ SyncTranslate 是一個 Windows 本地即時字幕、ASR、翻譯與 TTS runtime
 
 - 雙路字幕：`remote` 對應會議/遠端音訊，`local` 對應本地麥克風或本機播放路由。
 - ASR v2：`SourceRuntimeV2` 管理音訊前端、VAD endpoint、partial/final decode、queue 背壓與 hallucination 過濾。
-- 語言路由：中文 ASR 預設走 `asr_channels.local` 的 `belle-zh-ct2`；非中文與 `auto` 預設走 `asr_channels.remote` 的 `large-v3-turbo`。
+- 語言路由：中文 ASR 預設走 `asr_channels.local` 的 `large-v3-turbo`，`belle-zh-ct2` 保留為設定 UI 可選備用；非中文與 `auto` 預設走 `asr_channels.remote` 的 `large-v3-turbo`。
 - 中文 ASR 前端：保留 AGC/high-pass，但中文 profile 會停用頻譜增強器，降低 belle-zh-ct2 對降噪失真的誤識別。
 - 翻譯：本地 `hy-mt1.5-7b.gguf` 透過 `llama-cpp-python` in-process provider 執行。
 - 字幕緩衝：ASR final 會先去除相鄰 final 的重疊前綴，再進入翻譯，翻譯字幕不顯示 `[final]` 標記。
-- 背壓保護：ASR queue 預設 local/remote 為 `256`，worker 在 queue 壓力下會合併更多 chunk，並延後昂貴的 forced final decode，避免越忙越掉音訊。
-- 診斷：可輸出 session report、healthcheck、runtime smoke 與 ASR benchmark 結果。
+- 背壓保護：ASR queue 預設 local/remote 為 `256`，worker 在 queue 壓力下會合併更多 chunk、暫停 partial、並延後昂貴的 forced final decode，避免越忙越掉音訊。
+- 診斷：UI 會顯示 ASR queue、dropped chunks、實際模型/profile/enhancement 與 local/remote capture 疑似同源狀態；也可輸出 session report、healthcheck、runtime smoke 與 ASR benchmark 結果。
+- 中文 benchmark：`tools/asr_benchmark/run_zh_preset_matrix.py` 可比較 `meeting/dialogue × belle/turbo`，目前壓力測試顯示 `large-v3-turbo` 平均準確率較高且 dropped chunks 較穩定。
 
 ## 專案結構
 
@@ -128,6 +129,12 @@ runtime smoke：
 
 ```powershell
 uv run python .\tools\runtime_smoke\run_runtime_smoke.py --config config.yaml
+```
+
+onedir 打包後 smoke：
+
+```powershell
+uv run python .\tools\runtime_smoke\run_runtime_smoke.py --config config.yaml --packaged-onedir .\dist\SyncTranslate-onedir
 ```
 
 ASR benchmark：

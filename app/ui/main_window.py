@@ -661,6 +661,10 @@ class MainWindow(QMainWindow):
         for label, source in (("meeting", "remote"), ("local", "local")):
             asr = router_stats.asr.get(source) or {}
             parts.append(f"{label}:{MainWindow._build_asr_observation_fragment(asr)}")
+        capture = getattr(router_stats, "capture", {}) or {}
+        capture_fragment = MainWindow._build_capture_observation_fragment(capture)
+        if capture_fragment:
+            parts.append(capture_fragment)
         return " ; ".join(parts)
 
     @staticmethod
@@ -670,9 +674,14 @@ class MainWindow(QMainWindow):
         rejected = int(final_post.get("rejected_count", 0) or 0)
         last_reason = str(final_post.get("last_rejection_reason", "") or "")
         queue = int(asr.get("queue_size", 0) or 0)
+        queue_max = int(asr.get("queue_maxsize", 0) or 0)
+        dropped = int(asr.get("dropped_chunks", 0) or 0)
         partials = int(asr.get("partial_count", 0) or 0)
         finals = int(asr.get("final_count", 0) or 0)
         degradation = str(asr.get("degradation_level", "") or "").strip() or "-"
+        model = MainWindow._short_asr_model_label(str(asr.get("configured_model", "") or ""))
+        profile = str(asr.get("endpoint_profile", "") or "").strip() or "-"
+        enhancement = "on" if bool(asr.get("frontend_enhancement_enabled", False)) else "off"
         signal = asr.get("endpoint_signal") or {}
         pause_ms = int(signal.get("pause_ms", 0) or 0)
         endpointing = asr.get("endpointing") or {}
@@ -680,13 +689,50 @@ class MainWindow(QMainWindow):
         hard_count = int(endpointing.get("hard_endpoint_count", 0) or 0)
         speech_started = int(endpointing.get("speech_started_count", 0) or 0)
         fragment = (
-            f"q={queue} p={partials} f={finals} "
+            f"q={queue}/{queue_max or '-'} drop={dropped} p={partials} f={finals} "
             f"pause={pause_ms} ep={speech_started}/{soft_count}/{hard_count} "
-            f"deg={degradation} rej={rejected}"
+            f"deg={degradation} model={model} profile={profile} enh={enhancement} rej={rejected}"
         )
         if last_reason:
             fragment += f"({last_reason})"
         return fragment
+
+    @staticmethod
+    def _short_asr_model_label(model: str) -> str:
+        value = str(model or "").replace("\\", "/").strip()
+        if not value:
+            return "-"
+        return value.rstrip("/").split("/")[-1]
+
+    @staticmethod
+    def _build_capture_observation_fragment(capture: dict[str, dict[str, object]]) -> str:
+        local = capture.get("local") or {}
+        remote = capture.get("remote") or {}
+        if not local or not remote:
+            return ""
+        local_running = bool(local.get("running", False))
+        remote_running = bool(remote.get("running", False))
+        local_frames = int(local.get("frame_count", 0) or 0)
+        remote_frames = int(remote.get("frame_count", 0) or 0)
+        local_level = float(local.get("level", 0.0) or 0.0)
+        remote_level = float(remote.get("level", 0.0) or 0.0)
+        same_source = False
+        if local_running and remote_running and local_frames > 0 and remote_frames > 0:
+            frame_delta = abs(local_frames - remote_frames)
+            frame_base = max(local_frames, remote_frames, 1)
+            level_delta = abs(local_level - remote_level)
+            level_base = max(local_level, remote_level, 1e-6)
+            same_source = (
+                frame_delta / frame_base <= 0.03
+                and level_base >= 0.001
+                and level_delta / level_base <= 0.18
+            )
+        status = "possible-same-source" if same_source else "separate-or-idle"
+        return (
+            f"capture={status} "
+            f"local={int(local_running)}/{local_frames}/{local_level:.4f} "
+            f"remote={int(remote_running)}/{remote_frames}/{remote_level:.4f}"
+        )
 
     @staticmethod
     def _build_llm_diagnostics_summary(router_stats) -> str:

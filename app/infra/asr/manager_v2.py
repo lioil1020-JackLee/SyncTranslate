@@ -196,11 +196,17 @@ class ASRManagerV2:
             signal = stats.last_signal
             resolution = self._source_resolution.get(source, {})
             backend_runtime = stats.backend_runtime
+            language = self._asr_language_for_source(source)
+            language_profile = self._effective_language_profile_for_source(source)
+            endpoint_profile = self._endpoint_profile_name_for_source(source, language_profile=language_profile)
+            enhancement_enabled, _, _ = self._frontend_enhancement_settings(language, source=source)
             result[source] = {
                 "queue_size": stats.queue_size,
+                "queue_maxsize": stats.queue_maxsize,
                 "dropped_chunks": stats.dropped_chunks,
                 "partial_count": stats.partial_count,
                 "final_count": stats.final_count,
+                "degradation_level": stats.degradation_level,
                 "last_debug": stats.last_debug,
                 "vad_rms": float(stats.endpointing.get("rms", 0.0)),
                 "vad_threshold": float(self._threshold_for_source(source)),
@@ -217,6 +223,9 @@ class ASRManagerV2:
                 "resolved_language_family": str(resolution.get("language_family", "")),
                 "backend_resolution_reason": str(resolution.get("reason", "")),
                 "requested_asr_language": str(resolution.get("requested_language", "")),
+                "configured_model": str(getattr(language_profile.asr, "model", "")),
+                "endpoint_profile": endpoint_profile,
+                "frontend_enhancement_enabled": bool(enhancement_enabled),
                 "device_effective": str(backend_runtime.get("device_effective", "")),
                 "model_init_mode": str(backend_runtime.get("model_init_mode", "lazy")),
                 "init_failure": str(backend_runtime.get("init_failure", "")),
@@ -475,9 +484,11 @@ class ASRManagerV2:
         resolution = resolve_backend_for_language(language)
         return {
             "queue_size": 0,
+            "queue_maxsize": self._queue_maxsize_for_source(source),
             "dropped_chunks": 0,
             "partial_count": 0,
             "final_count": 0,
+            "degradation_level": "normal",
             "last_debug": "",
             "vad_rms": 0.0,
             "vad_threshold": 0.0,
@@ -494,6 +505,12 @@ class ASRManagerV2:
             "resolved_language_family": resolution.language_family,
             "backend_resolution_reason": resolution.reason,
             "requested_asr_language": resolution.requested_language,
+            "configured_model": str(getattr(self._profile_for_language(language), "model", "")),
+            "endpoint_profile": self._endpoint_profile_name_for_source(
+                source,
+                language_profile=resolve_language_asr_profile(self._profile_for_language(language), language=language),
+            ),
+            "frontend_enhancement_enabled": self._frontend_enhancement_settings(language, source=source)[0],
             "device_effective": "",
             "model_init_mode": "lazy",
             "init_failure": "",

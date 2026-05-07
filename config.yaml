@@ -244,11 +244,11 @@ runtime:
 asr_profiles:
   chinese:
     engine: faster_whisper
-    model: .\runtimes\models\belle-zh-ct2
+    model: large-v3-turbo
     device: cuda
     compute_type: float16
-    beam_size: 2
-    final_beam_size: 5
+    beam_size: 1
+    final_beam_size: 4
     condition_on_previous_text: false
     final_condition_on_previous_text: false
     initial_prompt: 以下是繁體中文口語敘事逐字稿。

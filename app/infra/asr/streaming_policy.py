@@ -165,6 +165,10 @@ class StreamingPolicy:
         effective_interval = ctx.partial_interval_ms
         if degradation == DEGRADATION_CONGESTED:
             effective_interval = int(ctx.partial_interval_ms * self._congested_multiplier)
+            if ctx.backlog >= max(2, ctx.force_final_queue_size // 2):
+                decision.suppress_partial = True
+                decision.reason = "congested:suppress_partial"
+                return decision
 
         can_emit_partial = (
             ctx.signal.speech_active

@@ -47,9 +47,14 @@ class LiveCaptionPageUiTests(_QtTestCase):
             asr={
                 "remote": {
                     "queue_size": 0,
+                    "queue_maxsize": 256,
+                    "dropped_chunks": 0,
                     "partial_count": 4,
                     "final_count": 5,
                     "degradation_level": "normal",
+                    "configured_model": "large-v3-turbo",
+                    "endpoint_profile": "meeting_room",
+                    "frontend_enhancement_enabled": True,
                     "endpoint_signal": {"pause_ms": 260},
                     "endpointing": {
                         "speech_started_count": 3,
@@ -62,9 +67,14 @@ class LiveCaptionPageUiTests(_QtTestCase):
                 },
                 "local": {
                     "queue_size": 1,
+                    "queue_maxsize": 256,
+                    "dropped_chunks": 2,
                     "partial_count": 2,
                     "final_count": 3,
                     "degradation_level": "congested",
+                    "configured_model": r".\runtimes\models\belle-zh-ct2",
+                    "endpoint_profile": "turn_taking",
+                    "frontend_enhancement_enabled": False,
                     "endpoint_signal": {"pause_ms": 80},
                     "endpointing": {
                         "speech_started_count": 2,
@@ -76,6 +86,10 @@ class LiveCaptionPageUiTests(_QtTestCase):
                     },
                 },
             },
+            capture={
+                "local": {"running": True, "frame_count": 1200, "level": 0.015},
+                "remote": {"running": True, "frame_count": 1195, "level": 0.014},
+            },
             translation_overflow={"local": 0, "remote": 0},
             latency=[],
             tts={},
@@ -83,8 +97,9 @@ class LiveCaptionPageUiTests(_QtTestCase):
 
         text = MainWindow._build_asr_diagnostics_summary(router_stats)
 
-        self.assertIn("meeting:q=0 p=4 f=5 pause=260 ep=3/4/1 deg=normal rej=2(markup-leak)", text)
-        self.assertIn("local:q=1 p=2 f=3 pause=80 ep=2/1/0 deg=congested rej=0", text)
+        self.assertIn("meeting:q=0/256 drop=0 p=4 f=5 pause=260 ep=3/4/1 deg=normal model=large-v3-turbo profile=meeting_room enh=on rej=2(markup-leak)", text)
+        self.assertIn("local:q=1/256 drop=2 p=2 f=3 pause=80 ep=2/1/0 deg=congested model=belle-zh-ct2 profile=turn_taking enh=off rej=0", text)
+        self.assertIn("capture=possible-same-source", text)
 
     def test_main_window_panel_status_waits_for_asr_model_readiness(self) -> None:
         captured: dict[str, str] = {}
@@ -523,8 +538,10 @@ class LocalAiPageUiTests(_QtTestCase):
     def test_local_ai_page_uses_built_in_optimized_defaults(self) -> None:
         page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
 
-        self.assertEqual(page.asr_model_combo.currentData(), r".\runtimes\models\belle-zh-ct2")
+        self.assertEqual(page.asr_model_combo.currentData(), "large-v3-turbo")
         self.assertEqual(page.remote_asr_model_combo.currentData(), "large-v3-turbo")
+        self.assertTrue(page.asr_model_combo.isEnabled())
+        self.assertTrue(page.remote_asr_model_combo.isEnabled())
         self.assertEqual(page.llm_model_label.text(), "hy-mt1.5-7b")
         self.assertEqual(page.remote_llm_model_label.text(), "hy-mt1.5-7b")
         self.assertEqual(page.asr_beam_spin.value(), 1)
@@ -547,6 +564,8 @@ class LocalAiPageUiTests(_QtTestCase):
         self.assertFalse(page.runtime_early_final_check.isChecked())
         self.assertEqual(page.runtime_tts_max_wait_spin.value(), 2200)
         self.assertEqual(page.runtime_tts_cancel_policy_combo.currentData(), "older_only")
+        self.assertEqual(page.asr_queue_local_spin.value(), 256)
+        self.assertEqual(page.asr_queue_remote_spin.value(), 256)
 
         updated = AppConfig()
         page.update_config(updated)
@@ -555,14 +574,15 @@ class LocalAiPageUiTests(_QtTestCase):
         self.assertEqual(updated.tts.style_preset, "broadcast_clear")
         self.assertEqual(updated.llm.caption_profile, "live_caption_fast")
         self.assertEqual(updated.llm.speech_profile, "speech_output_natural")
-        self.assertEqual(updated.asr_channels.local.final_beam_size, 5)
+        self.assertEqual(updated.asr_channels.local.final_beam_size, 4)
         self.assertEqual(updated.asr_channels.remote.final_beam_size, 5)
         self.assertEqual(updated.runtime.asr_profile_local, "meeting_room")
         self.assertEqual(updated.runtime.asr_profile_remote, "meeting_room")
         self.assertIn("會議模式（穩定切段）", page._current_asr_runtime_hint_text())
 
-    def test_local_ai_page_uses_fixed_asr_model_routing(self) -> None:
+    def test_local_ai_page_exports_selected_asr_model_routing(self) -> None:
         page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
+        page._select_asr_model(page.asr_model_combo, r".\runtimes\models\belle-zh-ct2")
 
         updated = AppConfig()
         page.update_config(updated)
@@ -672,6 +692,7 @@ class LocalAiPageUiTests(_QtTestCase):
 
     def test_fixed_belle_model_gets_more_conservative_runtime_tuning(self) -> None:
         page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
+        page._select_asr_model(page.asr_model_combo, r".\runtimes\models\belle-zh-ct2")
 
         updated = AppConfig()
         page.update_config(updated)
@@ -696,6 +717,8 @@ class LocalAiPageUiTests(_QtTestCase):
         self.assertEqual(page.llm_caption_profile_combo.currentData(), "dialogue_fast")
         self.assertEqual(page.runtime_latency_mode_combo.currentData(), "low_latency")
         self.assertTrue(page.runtime_early_final_check.isChecked())
+        self.assertEqual(page.asr_queue_local_spin.value(), 256)
+        self.assertEqual(page.asr_queue_remote_spin.value(), 256)
         self.assertIn("對話模式（低延遲）", page._current_asr_runtime_hint_text())
 
     def test_llm_model_is_fixed_for_both_directions(self) -> None:

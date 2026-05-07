@@ -265,14 +265,14 @@ class RuntimeConfig:
     tts_accept_stable_partial: bool = False
     tts_partial_min_chars: int = TTS_DEFAULT_PARTIAL_MIN_CHARS
     tts_use_speech_profile: bool = False
-    asr_queue_maxsize_local: int = 128
-    asr_queue_maxsize_remote: int = 128
+    asr_queue_maxsize_local: int = 256
+    asr_queue_maxsize_remote: int = 256
     llm_queue_maxsize_local: int = 32
     llm_queue_maxsize_remote: int = 32
     tts_queue_maxsize_local: int = TTS_DEFAULT_QUEUE_MAXSIZE
     tts_queue_maxsize_remote: int = TTS_DEFAULT_QUEUE_MAXSIZE
     # Legacy shared queue settings kept for backward compatibility.
-    asr_queue_maxsize: int = 128
+    asr_queue_maxsize: int = 256
     llm_queue_maxsize: int = 32
     tts_queue_maxsize: int = TTS_DEFAULT_QUEUE_MAXSIZE
     translation_exact_cache_size: int = 256

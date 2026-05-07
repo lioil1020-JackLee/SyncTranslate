@@ -107,6 +107,7 @@ class V2RuntimeEvent:
 @dataclass(slots=True)
 class SourceRuntimeV2Stats:
     queue_size: int
+    queue_maxsize: int
     dropped_chunks: int
     partial_count: int
     final_count: int
@@ -303,6 +304,13 @@ class SourceRuntimeV2(_AdaptiveTunerMixin):
                 break
 
     def submit_chunk(self, chunk: np.ndarray, sample_rate: float) -> None:
+        backlog = self._queue.qsize()
+        if backlog >= max(2, int(self._queue.maxsize * 0.70)):
+            now_ms = int(time.monotonic() * 1000)
+            self._drop_partial_until_final = True
+            self._partial_cooldown_until_ms = max(self._partial_cooldown_until_ms, now_ms + 4000)
+            if self._last_degradation_level == DEGRADATION_NORMAL:
+                self._last_degradation_level = DEGRADATION_CONGESTED
         try:
             self._queue.put_nowait((chunk.copy(), sample_rate))
         except Full:
@@ -331,6 +339,7 @@ class SourceRuntimeV2(_AdaptiveTunerMixin):
         with self._stats_lock:
             return SourceRuntimeV2Stats(
                 queue_size=self._queue.qsize(),
+                queue_maxsize=self._queue.maxsize,
                 dropped_chunks=self._dropped_chunks,
                 partial_count=self._partial_count,
                 final_count=self._final_count,

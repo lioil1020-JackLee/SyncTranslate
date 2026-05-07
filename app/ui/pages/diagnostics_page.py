@@ -23,7 +23,7 @@ class DiagnosticsPage(QWidget):
         self.diagnostics_details.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.diagnostics_details.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         metrics = QFontMetrics(self.diagnostics_details.font())
-        self.diagnostics_details.setFixedHeight((metrics.lineSpacing() * 3) + 14)
+        self.diagnostics_details.setFixedHeight((metrics.lineSpacing() * 6) + 14)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
