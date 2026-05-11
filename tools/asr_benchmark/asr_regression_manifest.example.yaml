@@ -1,0 +1,79 @@
+schema_version: 1
+description: >
+  Copy this file to downloads/asr_regression/manifest.yaml and replace the
+  sample paths with local audio/reference files. Audio files are intentionally
+  not committed because many corpus sources are large or copyright restricted.
+  For the standard 35-sample public corpus, run:
+  uv run --with datasets==2.18.0 --with librosa --with soundfile --with numpy
+  python tools/asr_benchmark/prepare_regression_corpus.py --force
+samples:
+  - id: zh_news_001
+    language: zh-TW
+    category: news
+    audio: audio/zh_news_001.wav
+    reference: refs/zh_news_001.txt
+    description: Taiwanese Mandarin news broadcast with long sentences.
+    duration_sec: 120
+    speaker_count: 1
+    gender: mixed
+    noise_level: low
+    speech_rate: normal
+    has_music: false
+    reference_quality: human_verified
+    notes: Use human-corrected transcript; avoid raw auto subtitles as ground truth.
+    min_accuracy:
+      news_turbo: 0.88
+      news_belle: 0.86
+    max_dropped_chunks: 0
+    max_repetition_ratio: 0.02
+    max_missing_sentence_rate: 0.10
+    max_duplicate_rate: 0.02
+    max_hallucination_rate: 0.02
+    max_average_final_latency_ms: 3500
+
+  - id: zh_dialogue_001
+    language: zh-TW
+    category: dialogue
+    audio: audio/zh_dialogue_001.wav
+    reference: refs/zh_dialogue_001.txt
+    description: Two-speaker short-turn dialogue with colloquial particles.
+    duration_sec: 90
+    speaker_count: 2
+    gender: mixed
+    noise_level: medium
+    speech_rate: fast
+    has_music: false
+    reference_quality: human_verified
+    notes: Useful for testing short finals, missed turns, and duplicate suppression.
+    min_accuracy:
+      dialogue_turbo: 0.84
+      dialogue_belle: 0.84
+    max_dropped_chunks: 0
+    max_repetition_ratio: 0.03
+    max_missing_sentence_rate: 0.16
+    max_duplicate_rate: 0.03
+    max_hallucination_rate: 0.02
+    max_average_final_latency_ms: 3500
+
+  - id: en_meeting_001
+    language: en
+    category: meeting
+    audio: audio/en_meeting_001.wav
+    reference: refs/en_meeting_001.txt
+    description: English meeting discussion with natural pauses.
+    duration_sec: 120
+    speaker_count: 3
+    gender: mixed
+    noise_level: low
+    speech_rate: normal
+    has_music: false
+    reference_quality: human_verified
+    notes: Use WER and punctuation-insensitive checks for English.
+    min_accuracy:
+      meeting_turbo: 0.87
+    max_dropped_chunks: 0
+    max_repetition_ratio: 0.02
+    max_missing_sentence_rate: 0.12
+    max_duplicate_rate: 0.02
+    max_hallucination_rate: 0.02
+    max_average_final_latency_ms: 3000

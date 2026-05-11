@@ -47,6 +47,66 @@ class TestCerWer:
         assert result >= 0.0
 
 
+class TestStreamingMetrics:
+    def setup_method(self):
+        from tools.asr_benchmark.streaming_sim import (
+            _duplicate_rate,
+            _hallucination_rate,
+            _missing_sentence_rate,
+            _split_reference_units,
+            _unit_is_present,
+        )
+        self._duplicate_rate = _duplicate_rate
+        self._hallucination_rate = _hallucination_rate
+        self._missing_sentence_rate = _missing_sentence_rate
+        self._split_reference_units = _split_reference_units
+        self._unit_is_present = _unit_is_present
+
+    def test_split_reference_units_uses_lines_first(self):
+        units = self._split_reference_units("這是第一句\n這是第二句", lang="zh-TW")
+        assert units == ["這是第一句", "這是第二句"]
+
+    def test_missing_sentence_rate_detects_absent_unit(self):
+        rate = self._missing_sentence_rate("這是第一句", "這是第一句\n完全不同內容", lang="zh-TW")
+        assert rate == pytest.approx(0.5)
+
+    def test_missing_sentence_rate_allows_fuzzy_cjk_match(self):
+        rate = self._missing_sentence_rate(
+            "鈣鉀等元素屬於金屬銀和金等元素也是金屬",
+            "鈣鉀等元素屬於金屬銀和金等元素當然也是金屬",
+            lang="zh-TW",
+        )
+        assert rate == pytest.approx(0.0)
+
+    def test_unit_is_present_allows_fuzzy_english_match(self):
+        assert self._unit_is_present(
+            "the romantic and fascinating town of sintra",
+            "the romantic fascinating town of sintra",
+            lang="en",
+        )
+
+    def test_duplicate_rate_detects_repeated_cjk_text(self):
+        rate = self._duplicate_rate("測試測試測試測試測試測試", lang="zh-TW")
+        assert rate > 0.0
+
+    def test_hallucination_rate_counts_known_overlay(self):
+        rate = self._hallucination_rate(["字幕志願者 李宗盛", "正常內容"], lang="zh-TW")
+        assert rate == pytest.approx(0.5)
+
+
+def test_streaming_parser_mode_does_not_override_model():
+    from tools.asr_benchmark.streaming_sim import _build_parser
+
+    args = _build_parser().parse_args([
+        "--audio", "a.wav",
+        "--language", "en",
+        "--mode", "meeting_room",
+        "--model", "large-v3-turbo",
+    ])
+    assert args.endpoint_profile == "meeting_room"
+    assert args.model == "large-v3-turbo"
+
+
 # ---------------------------------------------------------------------------
 # tools/asr_benchmark/report.py — report functions
 # ---------------------------------------------------------------------------

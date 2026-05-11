@@ -353,6 +353,16 @@ class RuntimeConfig:
     asr_display_punctuation_enabled: bool = False
     asr_display_punctuation_languages: str = "zh"
     asr_display_punctuation_mode: str = "lightweight"
+    # --- ASR v3: confidence-gated final rescue ---
+    asr_accuracy_mode: str = "balanced"
+    asr_final_rescue_enabled: bool = True
+    asr_final_rescue_max_attempts: int = 1
+    asr_final_rescue_min_avg_logprob: float = -1.0
+    asr_final_rescue_max_no_speech_prob: float = 0.65
+    asr_final_rescue_max_compression_ratio: float = 2.4
+    asr_final_rescue_min_chars: int = 4
+    asr_chinese_fallback_enabled: bool = True
+    asr_chinese_fallback_model: str = r".\runtimes\models\belle-zh-ct2"
 
 
 @dataclass(slots=True)

@@ -681,7 +681,13 @@ class MainWindow(QMainWindow):
         finals = int(asr.get("final_count", 0) or 0)
         degradation = str(asr.get("degradation_level", "") or "").strip() or "-"
         model = MainWindow._short_asr_model_label(str(asr.get("configured_model", "") or ""))
+        fallback_model = MainWindow._short_asr_model_label(str(asr.get("fallback_model", "") or ""))
+        if fallback_model == "-":
+            fallback_model = ""
         profile = str(asr.get("endpoint_profile", "") or "").strip() or "-"
+        beam = int(asr.get("configured_beam_size", 0) or 0)
+        final_beam = int(asr.get("configured_final_beam_size", 0) or 0)
+        final_history = int(asr.get("configured_final_history_seconds", 0) or 0)
         enhancement = "on" if bool(asr.get("frontend_enhancement_enabled", False)) else "off"
         signal = asr.get("endpoint_signal") or {}
         pause_ms = int(signal.get("pause_ms", 0) or 0)
@@ -694,15 +700,29 @@ class MainWindow(QMainWindow):
         eff_lang = str(auto_lang.get("effective", "") or "").strip()
         pending_rebuild = bool(auto_lang.get("pending_rebuild", False))
         fp_active = bool(asr.get("final_priority_active", False))
+        rescue_count = int(asr.get("final_rescue_count", 0) or 0)
+        fallback_count = int(asr.get("final_fallback_count", 0) or 0)
+        rescue_reason = str(asr.get("last_final_rescue_reason", "") or "").strip()
         fragment = (
             f"q={queue}/{queue_max or '-'} drop={dropped} p={partials} f={finals} "
             f"pause={pause_ms} ep={speech_started}/{soft_count}/{hard_count} "
-            f"deg={degradation} model={model} profile={profile} enh={enhancement} rej={rejected}"
+            f"deg={degradation} model={model} "
         )
+        if beam or final_beam:
+            fragment += f"beam={beam}/{final_beam} "
+        if final_history:
+            fragment += f"hist={final_history}s "
+        fragment += f"profile={profile} enh={enhancement} rej={rejected}"
         if last_reason:
             fragment += f"({last_reason})"
+        if fallback_model:
+            fragment += f" fb={fallback_model}"
         if fp_active:
             fragment += " fp=on"
+        if rescue_count or fallback_count:
+            fragment += f" rescue={rescue_count}/{fallback_count}"
+            if rescue_reason:
+                fragment += f"({rescue_reason})"
         if req_lang == "auto":
             lang_tag = f"auto→{eff_lang}" if eff_lang else "auto"
             if pending_rebuild:

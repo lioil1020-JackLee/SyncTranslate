@@ -190,6 +190,19 @@ def parse_app_config(raw: dict[str, Any]) -> AppConfig:  # noqa: PLR0912,PLR0915
     valid_display_partial = {"all", "none", "stable_only"}
     if runtime.display_partial_strategy not in valid_display_partial:
         runtime.display_partial_strategy = "stable_only"
+    valid_asr_accuracy_modes = {"low_latency", "balanced", "high_accuracy"}
+    if runtime.asr_accuracy_mode not in valid_asr_accuracy_modes:
+        runtime.asr_accuracy_mode = "balanced"
+    runtime.asr_final_rescue_max_attempts = max(0, min(3, int(runtime.asr_final_rescue_max_attempts)))
+    runtime.asr_final_rescue_max_no_speech_prob = max(
+        0.0,
+        min(1.0, float(runtime.asr_final_rescue_max_no_speech_prob)),
+    )
+    runtime.asr_final_rescue_max_compression_ratio = max(
+        1.0,
+        float(runtime.asr_final_rescue_max_compression_ratio),
+    )
+    runtime.asr_final_rescue_min_chars = max(0, int(runtime.asr_final_rescue_min_chars))
 
     return AppConfig(
         audio=audio,

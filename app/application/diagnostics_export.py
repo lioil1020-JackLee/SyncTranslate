@@ -38,6 +38,22 @@ def export_runtime_diagnostics(
             f"p={int(asr_stats.get('partial_count', 0) or 0)} "
             f"f={int(asr_stats.get('final_count', 0) or 0)} "
             f"pause_ms={int(endpoint_signal.get('pause_ms', 0) or 0)} "
+            f"qmax={int(asr_stats.get('queue_maxsize', 0) or 0)} "
+            f"drop={int(asr_stats.get('dropped_chunks', 0) or 0)} "
+            f"model={str(asr_stats.get('configured_model', '') or '-')} "
+            f"fallback={str(asr_stats.get('fallback_model', '') or '-')} "
+            f"profile={str(asr_stats.get('endpoint_profile', '') or '-')} "
+            f"beam={int(asr_stats.get('configured_beam_size', 0) or 0)}/"
+            f"{int(asr_stats.get('configured_final_beam_size', 0) or 0)} "
+            f"partial_ms={int(asr_stats.get('configured_partial_interval_ms', 0) or 0)} "
+            f"final_hist={int(asr_stats.get('configured_final_history_seconds', 0) or 0)} "
+            f"vad={int(asr_stats.get('configured_vad_min_speech_ms', 0) or 0)}/"
+            f"{int(asr_stats.get('configured_vad_min_silence_ms', 0) or 0)}/"
+            f"{int(asr_stats.get('configured_vad_speech_pad_ms', 0) or 0)} "
+            f"enh={bool(asr_stats.get('frontend_enhancement_enabled', False))} "
+            f"fp={bool(asr_stats.get('final_priority_active', False))} "
+            f"rescue={int(asr_stats.get('final_rescue_count', 0) or 0)}/"
+            f"{int(asr_stats.get('final_fallback_count', 0) or 0)} "
             f"speech_started={int(endpointing.get('speech_started_count', 0) or 0)} "
             f"soft={int(endpointing.get('soft_endpoint_count', 0) or 0)} "
             f"hard={int(endpointing.get('hard_endpoint_count', 0) or 0)} "
@@ -81,6 +97,9 @@ def export_runtime_diagnostics(
             f"display_partial_strategy: {config.runtime.display_partial_strategy}",
             f"llm_queue_maxsize_local: {config.runtime.llm_queue_maxsize_local}",
             f"llm_queue_maxsize_remote: {config.runtime.llm_queue_maxsize_remote}",
+            f"asr_accuracy_mode: {str(getattr(config.runtime, 'asr_accuracy_mode', 'balanced') or 'balanced')}",
+            f"asr_final_rescue_enabled: {bool(getattr(config.runtime, 'asr_final_rescue_enabled', True))}",
+            f"asr_chinese_fallback_enabled: {bool(getattr(config.runtime, 'asr_chinese_fallback_enabled', True))}",
             f"translation_overflow_local: {overflow.get('local', 0)}",
             f"translation_overflow_remote: {overflow.get('remote', 0)}",
             "asr_observation:",
@@ -154,6 +173,9 @@ def export_session_report(
             "asr_queue_maxsize": config.runtime.asr_queue_maxsize,
             "llm_queue_maxsize": config.runtime.llm_queue_maxsize,
             "tts_queue_maxsize": config.runtime.tts_queue_maxsize,
+            "asr_accuracy_mode": str(getattr(config.runtime, "asr_accuracy_mode", "balanced") or "balanced"),
+            "asr_final_rescue_enabled": bool(getattr(config.runtime, "asr_final_rescue_enabled", True)),
+            "asr_chinese_fallback_enabled": bool(getattr(config.runtime, "asr_chinese_fallback_enabled", True)),
         },
         "stats": payload.get("stats_before_stop", {}),
         "translation_overflow": (payload.get("stats_before_stop") or {}).get("translation_overflow", {}),

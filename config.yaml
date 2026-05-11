@@ -241,6 +241,15 @@ runtime:
   asr_profile_local: meeting_room
   asr_profile_remote: meeting_room
   degradation_policy_enabled: true
+  asr_accuracy_mode: balanced
+  asr_final_rescue_enabled: true
+  asr_final_rescue_max_attempts: 1
+  asr_final_rescue_min_avg_logprob: -1.0
+  asr_final_rescue_max_no_speech_prob: 0.65
+  asr_final_rescue_max_compression_ratio: 2.4
+  asr_final_rescue_min_chars: 4
+  asr_chinese_fallback_enabled: true
+  asr_chinese_fallback_model: .\runtimes\models\belle-zh-ct2
 asr_profiles:
   chinese:
     engine: faster_whisper

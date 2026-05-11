@@ -96,6 +96,25 @@ onedir runtime 直接執行原始入口：
 - `runtime.asr_enhancement_enabled`
 - `runtime.display_partial_strategy`
 - `runtime.max_pipeline_latency_ms`
+- `runtime.asr_accuracy_mode`
+- `runtime.asr_final_rescue_enabled`
+- `runtime.asr_chinese_fallback_enabled`
+
+ASR v3 準確度控制採用「partial 快速顯示、final 低信心才救援」策略：
+- `low_latency`：關閉 final rescue 與中文 fallback，優先降低延遲。
+- `balanced`：低信心 final 才重辨識，為預設模式。
+- `high_accuracy`：允許更積極的 final rescue 與中文 fallback。
+
+診斷摘要會顯示 queue、dropped chunks、實際模型、fallback 模型、final priority、rescue 次數與 fallback 次數。
+
+ASR regression corpus 優先使用本機 benchmark 素材建立：
+
+```powershell
+uv run --with datasets==2.18.0 --with librosa --with soundfile --with numpy python tools/asr_benchmark/prepare_local_benchmark_corpus.py --force
+uv run python tools/asr_benchmark/run_regression_corpus.py --manifest downloads/asr_regression_local/manifest.yaml --models turbo --modes meeting,dialogue --quick
+```
+
+此工具會建立 35 筆 curated stable baseline：20 筆中文、10 筆英文、5 筆中英混合。它保留雙模式穩定通過的本機 benchmark 段落，並補入已實測穩定的 FLEURS/ASCEND 樣本；音檔、字幕切片與報告位於 `downloads/asr_regression_local/` 與 `downloads/benchmark_results/`，不提交 Git；可提交的是工具、manifest 範本、測試與文件。
 
 常用 audio key：
 
@@ -141,6 +160,19 @@ ASR benchmark：
 
 ```powershell
 uv run python tools/asr_benchmark/run_multi_benchmark.py --only-lang zh --output-dir downloads/benchmark_results/manual_zh
+```
+
+ASR regression corpus baseline：
+
+```powershell
+uv run --with datasets==2.18.0 --with librosa --with soundfile --with numpy python tools/asr_benchmark/prepare_local_benchmark_corpus.py --force
+uv run python tools/asr_benchmark/run_regression_corpus.py --manifest downloads/asr_regression_local/manifest.yaml --models turbo --modes meeting,dialogue --speed 16 --quick --output-dir downloads/benchmark_results/asr_regression_local_baseline
+```
+
+公開資料集 fallback corpus：
+```powershell
+uv run --with datasets==2.18.0 --with librosa --with soundfile --with numpy python tools/asr_benchmark/prepare_regression_corpus.py --force
+uv run python tools/asr_benchmark/run_regression_corpus.py --manifest downloads/asr_regression/manifest.yaml --models turbo --modes meeting,dialogue --speed 16 --quick --output-dir downloads/benchmark_results/asr_regression_baseline
 ```
 
 完整說明見 [測試說明](docs/測試說明.md)。

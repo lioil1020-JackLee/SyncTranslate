@@ -12,10 +12,12 @@ from app.infra.asr.auto_language_state import AutoLanguageState, observe_final_l
 from app.infra.asr.backend_resolution import resolve_backend_for_language
 from app.domain.models import ErrorEvent
 from app.infra.asr.backend_v2 import build_backend_pair
+from app.infra.asr.confidence_gate import FinalRescuePolicy
 from app.infra.asr.contracts import ASREventWithSource, AsrManagerProtocol
 from app.infra.asr.endpoint_profiles import get_endpoint_profile
 from app.infra.asr.endpointing_v2 import EndpointSignal, build_endpointing_runtime
 from app.infra.asr.language_profiles import resolve_language_asr_profile
+from app.infra.asr.model_router import build_chinese_fallback_profile
 from app.infra.asr.pipeline_v2 import AsrV2PipelineSpec, build_v2_pipeline_spec
 from app.infra.asr.profile_selection import asr_profile_for_language, requested_asr_language_for_source
 from app.infra.asr.worker_v2 import SourceRuntimeV2, V2RuntimeEvent
@@ -261,6 +263,15 @@ class ASRManagerV2:
                 "backend_resolution_reason": str(resolution.get("reason", "")),
                 "requested_asr_language": str(resolution.get("requested_language", "")),
                 "configured_model": str(getattr(language_profile.asr, "model", "")),
+                "fallback_model": str(backend_runtime.get("fallback_model", "")),
+                "configured_beam_size": int(getattr(language_profile.asr, "beam_size", 0) or 0),
+                "configured_final_beam_size": int(getattr(language_profile.asr, "final_beam_size", 0) or 0),
+                "configured_partial_interval_ms": int(language_profile.asr.streaming.partial_interval_ms),
+                "configured_final_history_seconds": int(language_profile.asr.streaming.final_history_seconds),
+                "configured_vad_min_speech_ms": int(language_profile.asr.vad.min_speech_duration_ms),
+                "configured_vad_min_silence_ms": int(language_profile.asr.vad.min_silence_duration_ms),
+                "configured_vad_speech_pad_ms": int(language_profile.asr.vad.speech_pad_ms),
+                "asr_accuracy_mode": str(getattr(self._config.runtime, "asr_accuracy_mode", "balanced")),
                 "endpoint_profile": endpoint_profile,
                 "frontend_enhancement_enabled": bool(enhancement_enabled),
                 "device_effective": str(backend_runtime.get("device_effective", "")),
@@ -271,6 +282,10 @@ class ASRManagerV2:
                 "endpointing": stats.endpointing,
                 "final_priority_active": stats.final_priority_active,
                 "final_priority_reason": stats.final_priority_reason,
+                "final_rescue_enabled": stats.final_rescue_enabled,
+                "final_rescue_count": stats.final_rescue_count,
+                "final_fallback_count": stats.final_fallback_count,
+                "last_final_rescue_reason": stats.last_final_rescue_reason,
                 "auto_language": {
                     "requested": str(self._auto_language_states[source].requested_language),
                     "effective": str(self._auto_language_states[source].effective_language),
@@ -325,13 +340,31 @@ class ASRManagerV2:
             language=language,
             profile_override=language_profile.asr,
         )
-        if isinstance(build_result, tuple):
+        primary_build_is_legacy_tuple = isinstance(build_result, tuple)
+        if primary_build_is_legacy_tuple:
             partial_backend, final_backend = build_result
             resolution = resolve_backend_for_language(language)
         else:
             partial_backend = build_result.partial_backend
             final_backend = build_result.final_backend
             resolution = build_result.resolution
+        fallback_final_backend = None
+        fallback_profile = None if primary_build_is_legacy_tuple else build_chinese_fallback_profile(
+            self._config,
+            language_profile.asr,
+            language=language,
+        )
+        if fallback_profile is not None:
+            fallback_build = build_backend_pair(
+                self._config,
+                source=source,
+                language=language,
+                profile_override=fallback_profile,
+            )
+            if isinstance(fallback_build, tuple):
+                fallback_final_backend = fallback_build[1]
+            else:
+                fallback_final_backend = fallback_build.final_backend
         endpointing = build_endpointing_runtime(
             str(getattr(self._config.runtime, "asr_v2_endpointing", "neural_endpoint")),
             language_profile.asr.vad,
@@ -358,6 +391,7 @@ class ASRManagerV2:
             source=source,
             partial_backend=partial_backend,
             final_backend=final_backend,
+            fallback_final_backend=fallback_final_backend,
             endpointing=endpointing,
             partial_interval_ms=_ep_kwargs.get("partial_interval_ms", language_profile.asr.streaming.partial_interval_ms),
             partial_history_seconds=language_profile.asr.streaming.partial_history_seconds,
@@ -389,8 +423,11 @@ class ASRManagerV2:
             final_priority_latency_ms=int(getattr(self._config.runtime, "asr_final_priority_latency_ms", 1800)),
             final_priority_recover_queue_ratio=float(getattr(self._config.runtime, "asr_final_priority_recover_queue_ratio", 0.15)),
             final_priority_recover_after_ms=int(getattr(self._config.runtime, "asr_final_priority_recover_after_ms", 8000)),
+            final_rescue_policy=self._final_rescue_policy(),
             on_debug=self._on_error,
         )
+        if fallback_profile is not None:
+            setattr(runtime, "_fallback_model_label", str(getattr(fallback_profile, "model", "")))
         self._runtimes[source] = runtime
         return runtime
 
@@ -615,6 +652,22 @@ class ASRManagerV2:
     def _build_runtime_fingerprint(self) -> str:
         return f"v2:{self._pipeline_revision}:{self._spec.partial_backend.name}:{self._spec.endpointing.name}"
 
+    def _final_rescue_policy(self) -> FinalRescuePolicy:
+        runtime = self._config.runtime
+        mode = str(getattr(runtime, "asr_accuracy_mode", "balanced") or "balanced")
+        enabled = bool(getattr(runtime, "asr_final_rescue_enabled", True)) and mode != "low_latency"
+        max_attempts = int(getattr(runtime, "asr_final_rescue_max_attempts", 1))
+        if mode == "high_accuracy":
+            max_attempts = max(1, max_attempts)
+        return FinalRescuePolicy(
+            enabled=enabled,
+            max_attempts=max_attempts,
+            min_avg_logprob=float(getattr(runtime, "asr_final_rescue_min_avg_logprob", -1.0)),
+            max_no_speech_prob=float(getattr(runtime, "asr_final_rescue_max_no_speech_prob", 0.65)),
+            max_compression_ratio=float(getattr(runtime, "asr_final_rescue_max_compression_ratio", 2.4)),
+            min_chars=int(getattr(runtime, "asr_final_rescue_min_chars", 4)),
+        )
+
     def _empty_stats(self, source: str) -> dict[str, object]:
         language = self._asr_language_for_source(source)
         resolution = resolve_backend_for_language(language)
@@ -642,6 +695,15 @@ class ASRManagerV2:
             "backend_resolution_reason": resolution.reason,
             "requested_asr_language": resolution.requested_language,
             "configured_model": str(getattr(self._profile_for_language(language), "model", "")),
+            "fallback_model": "",
+            "configured_beam_size": int(getattr(self._profile_for_language(language), "beam_size", 0) or 0),
+            "configured_final_beam_size": int(getattr(self._profile_for_language(language), "final_beam_size", 0) or 0),
+            "configured_partial_interval_ms": 0,
+            "configured_final_history_seconds": 0,
+            "configured_vad_min_speech_ms": 0,
+            "configured_vad_min_silence_ms": 0,
+            "configured_vad_speech_pad_ms": 0,
+            "asr_accuracy_mode": str(getattr(self._config.runtime, "asr_accuracy_mode", "balanced")),
             "endpoint_profile": self._endpoint_profile_name_for_source(
                 source,
                 language_profile=resolve_language_asr_profile(self._profile_for_language(language), language=language),
@@ -655,6 +717,10 @@ class ASRManagerV2:
             "endpointing": {},
             "final_priority_active": False,
             "final_priority_reason": "",
+            "final_rescue_enabled": bool(self._final_rescue_policy().enabled),
+            "final_rescue_count": 0,
+            "final_fallback_count": 0,
+            "last_final_rescue_reason": "",
             "auto_language": {
                 "requested": str(self._auto_language_states[source].requested_language),
                 "effective": str(self._auto_language_states[source].effective_language),

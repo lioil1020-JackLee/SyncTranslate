@@ -32,6 +32,11 @@ class ConfigMigrationTests(unittest.TestCase):
                     "asr_queue_maxsize_remote": 2,
                     "tts_queue_maxsize_local": 0,
                     "tts_queue_maxsize_remote": 1,
+                    "asr_accuracy_mode": "turbo_overdrive",
+                    "asr_final_rescue_max_attempts": 99,
+                    "asr_final_rescue_max_no_speech_prob": 9.0,
+                    "asr_final_rescue_max_compression_ratio": 0.1,
+                    "asr_final_rescue_min_chars": -10,
                 }
             }
         )
@@ -45,6 +50,11 @@ class ConfigMigrationTests(unittest.TestCase):
         self.assertEqual(cfg.runtime.asr_queue_maxsize_remote, 8)
         self.assertEqual(cfg.runtime.tts_queue_maxsize_local, 4)
         self.assertEqual(cfg.runtime.tts_queue_maxsize_remote, 4)
+        self.assertEqual(cfg.runtime.asr_accuracy_mode, "balanced")
+        self.assertEqual(cfg.runtime.asr_final_rescue_max_attempts, 3)
+        self.assertEqual(cfg.runtime.asr_final_rescue_max_no_speech_prob, 1.0)
+        self.assertEqual(cfg.runtime.asr_final_rescue_max_compression_ratio, 1.0)
+        self.assertEqual(cfg.runtime.asr_final_rescue_min_chars, 0)
 
     def test_runtime_defaults_start_with_v2_stable_defaults(self) -> None:
         cfg = AppConfig()
@@ -57,6 +67,10 @@ class ConfigMigrationTests(unittest.TestCase):
         self.assertEqual(cfg.runtime.stable_partial_min_repeats, 3)
         self.assertEqual(cfg.runtime.partial_stability_max_delta_chars, 6)
         self.assertEqual(cfg.runtime.asr_partial_min_audio_ms, 360)
+        self.assertEqual(cfg.runtime.asr_accuracy_mode, "balanced")
+        self.assertTrue(cfg.runtime.asr_final_rescue_enabled)
+        self.assertEqual(cfg.runtime.asr_final_rescue_max_attempts, 1)
+        self.assertTrue(cfg.runtime.asr_chinese_fallback_enabled)
 
     def test_normalize_legacy_funasr_fields_to_new_defaults(self) -> None:
         raw = {

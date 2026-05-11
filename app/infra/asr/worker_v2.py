@@ -20,6 +20,11 @@ from app.infra.asr._hallucination_filter import (
 )
 from app.infra.asr.endpointing_v2 import EndpointSignal, EndpointingRuntime
 from app.infra.asr.frontend_v2 import AsrAudioFrontendV2
+from app.infra.asr.confidence_gate import (
+    FinalRescuePolicy,
+    choose_better_candidate,
+    confidence_failure_reasons,
+)
 from app.infra.asr.streaming_policy import (
     DEGRADATION_CONGESTED,
     DEGRADATION_DEGRADED,
@@ -123,6 +128,10 @@ class SourceRuntimeV2Stats:
     degradation_level: str = DEGRADATION_NORMAL
     final_priority_active: bool = False
     final_priority_reason: str = ""
+    final_rescue_enabled: bool = False
+    final_rescue_count: int = 0
+    final_fallback_count: int = 0
+    last_final_rescue_reason: str = ""
 
 
 @dataclass(slots=True)
@@ -147,6 +156,7 @@ class SourceRuntimeV2(_AdaptiveTunerMixin):
         source: str,
         partial_backend: object,
         final_backend: object,
+        fallback_final_backend: object | None = None,
         endpointing: EndpointingRuntime,
         partial_interval_ms: int,
         partial_history_seconds: int,
@@ -174,12 +184,14 @@ class SourceRuntimeV2(_AdaptiveTunerMixin):
         final_priority_latency_ms: int = 1800,
         final_priority_recover_queue_ratio: float = 0.15,
         final_priority_recover_after_ms: int = 8000,
+        final_rescue_policy: FinalRescuePolicy | None = None,
         on_event: Callable[[V2RuntimeEvent], None] | None = None,
         on_debug: Callable[[str], None] | None = None,
     ) -> None:
         self._source = source
         self._partial_backend = partial_backend
         self._final_backend = final_backend
+        self._fallback_final_backend = fallback_final_backend
         self._endpointing = endpointing
         self._frontend = AsrAudioFrontendV2(
             enabled=frontend_enabled,
@@ -257,6 +269,9 @@ class SourceRuntimeV2(_AdaptiveTunerMixin):
         self._adaptive_final_latencies: deque[int] = deque(maxlen=10)
         self._partial_count = 0
         self._final_count = 0
+        self._final_rescue_count = 0
+        self._final_fallback_count = 0
+        self._last_final_rescue_reason = ""
         self._dropped_chunks = 0
         self._last_debug = ""
         self._last_degradation_level: str = DEGRADATION_NORMAL
@@ -269,6 +284,7 @@ class SourceRuntimeV2(_AdaptiveTunerMixin):
             final_priority_recover_queue_ratio=float(final_priority_recover_queue_ratio),
             final_priority_recover_after_ms=int(final_priority_recover_after_ms),
         )
+        self._final_rescue_policy = final_rescue_policy or FinalRescuePolicy(enabled=False, max_attempts=0)
 
     def start(self, on_event: Callable[[V2RuntimeEvent], None]) -> None:
         self.stop()
@@ -294,6 +310,7 @@ class SourceRuntimeV2(_AdaptiveTunerMixin):
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=8.0)
         self._thread = None
+        self._flush_final_on_stop()
         self._endpointing.reset()
         self._frontend.reset()
         self._segment_chunks = []
@@ -316,6 +333,19 @@ class SourceRuntimeV2(_AdaptiveTunerMixin):
                 self._queue.get_nowait()
             except Empty:
                 break
+
+    def _flush_final_on_stop(self) -> None:
+        if not self._in_segment or not self._segment_chunks or self._on_event is None:
+            return
+        audio_ms = self._segment_audio_ms()
+        if audio_ms < max(240, int(self._min_partial_audio_ms)):
+            return
+        now_ms = int(time.monotonic() * 1000)
+        try:
+            self._debug(f"v2 stop flush final segment_ms={audio_ms}")
+            self._emit_final(now_ms=now_ms, is_early_final=False)
+        except Exception:
+            _log.exception("ASRWorkerV2 (%s) failed to flush final on stop", self._source)
 
     @property
     def in_segment(self) -> bool:
@@ -374,6 +404,10 @@ class SourceRuntimeV2(_AdaptiveTunerMixin):
                 degradation_level=self._last_degradation_level,
                 final_priority_active=self._streaming_policy.final_priority_active,
                 final_priority_reason=self._streaming_policy.final_priority_reason,
+                final_rescue_enabled=bool(self._final_rescue_policy.enabled),
+                final_rescue_count=self._final_rescue_count,
+                final_fallback_count=self._final_fallback_count,
+                last_final_rescue_reason=self._last_final_rescue_reason,
             )
 
     def _run(self) -> None:
@@ -610,6 +644,14 @@ class SourceRuntimeV2(_AdaptiveTunerMixin):
             audio=audio,
             sample_rate=self._segment_sample_rate,
         )
+        audio_ms = int(audio.shape[0] * 1000 / max(1, self._segment_sample_rate))
+        result = self._maybe_rescue_final(
+            result=result,
+            audio=audio,
+            sample_rate=self._segment_sample_rate,
+            audio_ms=audio_ms,
+            frontend_stats=frontend_stats,
+        )
         if not (result.text or "").strip() and getattr(result, "rejection_reason", ""):
             self._debug(f"v2 final rejected reason={result.rejection_reason}")
             return
@@ -638,7 +680,6 @@ class SourceRuntimeV2(_AdaptiveTunerMixin):
         if not text:
             return
         latency_ms = int((time.perf_counter() - start) * 1000)
-        audio_ms = int(audio.shape[0] * 1000 / max(1, self._segment_sample_rate))
         drop_reason = self._tail_hallucination_drop_reason(
             text,
             audio_ms=audio_ms,
@@ -673,6 +714,93 @@ class SourceRuntimeV2(_AdaptiveTunerMixin):
         )
         with self._stats_lock:
             self._final_count += 1
+
+    def _maybe_rescue_final(
+        self,
+        *,
+        result: object,
+        audio: np.ndarray,
+        sample_rate: int,
+        audio_ms: int,
+        frontend_stats: dict[str, object] | None,
+    ):
+        policy = self._final_rescue_policy
+        text = str(getattr(result, "text", "") or "").strip()
+        reasons = confidence_failure_reasons(
+            result,
+            text,
+            audio_ms=audio_ms,
+            policy=policy,
+        )
+        if not reasons:
+            return result
+        if self._queue.qsize() >= max(2, int(self._queue.maxsize * 0.45)):
+            self._last_final_rescue_reason = "skipped:queue_pressure"
+            self._debug(
+                "v2 final rescue skipped queue_pressure "
+                f"q={self._queue.qsize()}/{self._queue.maxsize} reasons={','.join(reasons)}"
+            )
+            return result
+
+        best = result
+        used_reason = ""
+        attempts = max(0, int(policy.max_attempts))
+        if attempts >= 1 and callable(getattr(self._final_backend, "transcribe_final_rescue", None)):
+            try:
+                rescued = self._transcribe_backend(
+                    self._final_backend,
+                    method_name="transcribe_final_rescue",
+                    audio=audio,
+                    sample_rate=sample_rate,
+                    frontend_stats=frontend_stats,
+                )
+                chosen = choose_better_candidate(best, rescued)
+                if chosen is rescued:
+                    best = rescued
+                    used_reason = "rescue"
+                with self._stats_lock:
+                    self._final_rescue_count += 1
+            except Exception as exc:
+                self._last_final_rescue_reason = f"rescue_error:{type(exc).__name__}"
+                self._debug(f"v2 final rescue error path=rescue error={exc}")
+
+        if (
+            attempts >= 1
+            and self._fallback_final_backend is not None
+            and callable(getattr(self._fallback_final_backend, "transcribe_final_rescue", None))
+        ):
+            try:
+                fallback = self._transcribe_backend(
+                    self._fallback_final_backend,
+                    method_name="transcribe_final_rescue",
+                    audio=audio,
+                    sample_rate=sample_rate,
+                    frontend_stats=frontend_stats,
+                )
+                chosen = choose_better_candidate(best, fallback)
+                if chosen is fallback:
+                    best = fallback
+                    used_reason = "fallback"
+                with self._stats_lock:
+                    self._final_fallback_count += 1
+            except Exception as exc:
+                self._last_final_rescue_reason = f"fallback_error:{type(exc).__name__}"
+                self._debug(f"v2 final rescue error path=fallback error={exc}")
+
+        reason_text = ",".join(reasons)
+        if best is not result:
+            setattr(best, "rescue_used", True)
+            setattr(best, "rescue_reason", used_reason or reason_text)
+            self._last_final_rescue_reason = f"{used_reason or 'rescue'}:{reason_text}"
+            self._debug(
+                "v2 final rescue selected "
+                f"path={used_reason or 'rescue'} reasons={reason_text} "
+                f"old={text!r} new={str(getattr(best, 'text', '') or '').strip()!r}"
+            )
+            return best
+        self._last_final_rescue_reason = f"kept_original:{reason_text}"
+        self._debug(f"v2 final rescue kept_original reasons={reason_text} text={text!r}")
+        return result
 
     def _retry_empty_final_with_shorter_tail(self, *, result, audio: np.ndarray, sample_rate: int):
         if (result.text or "").strip():
@@ -1006,6 +1134,7 @@ class SourceRuntimeV2(_AdaptiveTunerMixin):
             },
             "partial_backend_runtime": partial_info,
             "final_backend_runtime": final_info,
+            "fallback_model": str(getattr(self, "_fallback_model_label", "")),
         }
 
     @staticmethod

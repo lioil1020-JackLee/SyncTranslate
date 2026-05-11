@@ -16,11 +16,14 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+
+_ROOT = Path(__file__).resolve().parents[2]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
 try:
     import yaml  # PyYAML
@@ -40,9 +43,21 @@ class SampleConfig:
     audio: str
     reference: str
     description: str = ""
+    duration_sec: float = 0.0
+    speaker_count: int = 0
+    gender: str = ""
+    noise_level: str = "unknown"
+    speech_rate: str = "unknown"
+    has_music: bool = False
+    reference_quality: str = "unknown"
+    notes: str = ""
     min_accuracy: dict[str, float] = field(default_factory=dict)
     max_dropped_chunks: int = 0
     max_repetition_ratio: float = 0.05
+    max_missing_sentence_rate: float = 0.20
+    max_duplicate_rate: float = 0.05
+    max_hallucination_rate: float = 0.02
+    max_average_final_latency_ms: float = 0.0
 
 
 @dataclass
@@ -51,8 +66,14 @@ class SampleResult:
     model: str
     mode: str
     accuracy: float | None = None
+    accuracy_dedup: float | None = None
     dropped_chunks: int = 0
     repetition_ratio: float = 0.0
+    missing_sentence_rate: float = 0.0
+    duplicate_rate: float = 0.0
+    hallucination_rate: float = 0.0
+    average_final_latency_ms: float = 0.0
+    transcript: str = ""
     passed: bool = False
     failure_reasons: list[str] = field(default_factory=list)
     error: str = ""
@@ -111,12 +132,24 @@ def parse_samples(manifest: dict[str, Any]) -> list[SampleConfig]:
             audio=str(raw["audio"]),
             reference=str(raw["reference"]),
             description=str(raw.get("description", "")),
+            duration_sec=float(raw.get("duration_sec", 0.0) or 0.0),
+            speaker_count=int(raw.get("speaker_count", 0) or 0),
+            gender=str(raw.get("gender", "")),
+            noise_level=str(raw.get("noise_level", "unknown")),
+            speech_rate=str(raw.get("speech_rate", "unknown")),
+            has_music=bool(raw.get("has_music", False)),
+            reference_quality=str(raw.get("reference_quality", "unknown")),
+            notes=str(raw.get("notes", "")),
             min_accuracy={
                 k: float(v)
                 for k, v in (raw.get("min_accuracy") or {}).items()
             },
             max_dropped_chunks=int(raw.get("max_dropped_chunks", 0)),
             max_repetition_ratio=float(raw.get("max_repetition_ratio", 0.05)),
+            max_missing_sentence_rate=float(raw.get("max_missing_sentence_rate", 0.20)),
+            max_duplicate_rate=float(raw.get("max_duplicate_rate", 0.05)),
+            max_hallucination_rate=float(raw.get("max_hallucination_rate", 0.02)),
+            max_average_final_latency_ms=float(raw.get("max_average_final_latency_ms", 0.0)),
         ))
     return samples
 
@@ -163,6 +196,26 @@ def check_thresholds(
             f"repetition_ratio {result.repetition_ratio:.4f}"
             f" > max {sample.max_repetition_ratio:.4f}"
         )
+    if result.missing_sentence_rate > sample.max_missing_sentence_rate:
+        failures.append(
+            f"missing_sentence_rate {result.missing_sentence_rate:.4f}"
+            f" > max {sample.max_missing_sentence_rate:.4f}"
+        )
+    if result.duplicate_rate > sample.max_duplicate_rate:
+        failures.append(
+            f"duplicate_rate {result.duplicate_rate:.4f}"
+            f" > max {sample.max_duplicate_rate:.4f}"
+        )
+    if result.hallucination_rate > sample.max_hallucination_rate:
+        failures.append(
+            f"hallucination_rate {result.hallucination_rate:.4f}"
+            f" > max {sample.max_hallucination_rate:.4f}"
+        )
+    if sample.max_average_final_latency_ms > 0 and result.average_final_latency_ms > sample.max_average_final_latency_ms:
+        failures.append(
+            f"average_final_latency_ms {result.average_final_latency_ms:.0f}"
+            f" > max {sample.max_average_final_latency_ms:.0f}"
+        )
     return failures
 
 
@@ -198,8 +251,14 @@ def write_summary_json(summary: RunSummary, output_dir: Path) -> Path:
                 "model": r.model,
                 "mode": r.mode,
                 "accuracy": r.accuracy,
+                "accuracy_dedup": r.accuracy_dedup,
                 "dropped_chunks": r.dropped_chunks,
                 "repetition_ratio": r.repetition_ratio,
+                "missing_sentence_rate": r.missing_sentence_rate,
+                "duplicate_rate": r.duplicate_rate,
+                "hallucination_rate": r.hallucination_rate,
+                "average_final_latency_ms": r.average_final_latency_ms,
+                "transcript": _json_safe_text(r.transcript),
                 "passed": r.passed,
                 "failure_reasons": r.failure_reasons,
                 "error": r.error,
@@ -209,6 +268,14 @@ def write_summary_json(summary: RunSummary, output_dir: Path) -> Path:
     }
     out_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     return out_path
+
+
+def _json_safe_text(value: str) -> str:
+    text = str(value or "")
+    return "".join(
+        ch if ch in "\n\t" or ord(ch) >= 32 else " "
+        for ch in text
+    )
 
 
 def write_summary_md(summary: RunSummary, output_dir: Path) -> Path:
@@ -223,11 +290,12 @@ def write_summary_md(summary: RunSummary, output_dir: Path) -> Path:
         f"**Failed:** {summary.failed}  "
         f"**Errors:** {summary.errors}",
         "",
-        "| Sample | Model | Mode | Accuracy | Drop | RepRatio | Status |",
-        "|--------|-------|------|----------|------|----------|--------|",
+        "| Sample | Model | Mode | Accuracy | Dedup | Drop | RepRatio | Latency | Status |",
+        "|--------|-------|------|----------|-------|------|----------|---------|--------|",
     ]
     for r in summary.results:
         acc = f"{r.accuracy:.3f}" if r.accuracy is not None else "n/a"
+        acc_dedup = f"{r.accuracy_dedup:.3f}" if r.accuracy_dedup is not None else "n/a"
         if r.error:
             status = "ERR"
         elif r.passed:
@@ -235,8 +303,9 @@ def write_summary_md(summary: RunSummary, output_dir: Path) -> Path:
         else:
             status = "✗"
         lines.append(
-            f"| {r.sample_id} | {r.model} | {r.mode} | {acc} | "
-            f"{r.dropped_chunks} | {r.repetition_ratio:.4f} | {status} |"
+            f"| {r.sample_id} | {r.model} | {r.mode} | {acc} | {acc_dedup} | "
+            f"{r.dropped_chunks} | {r.repetition_ratio:.4f} | "
+            f"{r.average_final_latency_ms:.0f}ms | {status} |"
         )
     failures = [r for r in summary.results if not r.passed and not r.error and r.failure_reasons]
     if failures:
@@ -251,7 +320,7 @@ def write_summary_md(summary: RunSummary, output_dir: Path) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# ASR invocation (delegates to streaming_sim.py via subprocess)
+# ASR invocation
 # ---------------------------------------------------------------------------
 
 def _run_sample(
@@ -261,45 +330,102 @@ def _run_sample(
     speed: float,
     manifest_base: Path,
     quick: bool,
+    config_path: Path,
 ) -> SampleResult:
     """Run ASR on one sample and return a SampleResult."""
     result = SampleResult(sample_id=sample.id, model=model, mode=mode)
     audio_path = manifest_base / sample.audio
     ref_path = manifest_base / sample.reference
-    sim_script = Path(__file__).parent / "streaming_sim.py"
-    cmd = [
-        sys.executable, str(sim_script),
-        "--audio", str(audio_path),
-        "--reference", str(ref_path),
-        "--language", sample.language,
-        "--model", model,
-        "--mode", mode,
-        "--speed", str(speed),
-        "--output-format", "json",
-    ]
-    if quick:
-        cmd.append("--quick")
+    model_override = _model_override_for_cli(model)
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-        if proc.returncode != 0:
-            result.error = (
-                f"streaming_sim exited {proc.returncode}: "
-                + proc.stderr[:300].strip()
+        from tools.asr_benchmark.streaming_sim import (
+            _cer,
+            _dedupe_repetition,
+            _duplicate_rate,
+            _load_wav,
+            _missing_sentence_rate,
+            _normalize,
+            _repetition_ratio,
+            _wer,
+            run_streaming_sim,
+        )
+
+        audio, sample_rate = _load_wav(audio_path)
+        if quick:
+            max_samples = int(sample_rate * 45)
+            if len(audio) > max_samples:
+                audio = audio[:max_samples]
+        output = run_streaming_sim(
+            audio,
+            sample_rate,
+            config_path=config_path,
+            source="local",
+            language=sample.language,
+            asr_overrides={"model": model_override} if model_override else None,
+            endpoint_profile=_endpoint_profile_for_mode(mode),
+            speed_multiplier=speed,
+            verbose=False,
+        )
+        reference_text = ref_path.read_text(encoding="utf-8").strip()
+        if reference_text:
+            hyp = _normalize(output["transcript"], lang=sample.language, ref=reference_text)
+            ref = _normalize(reference_text, lang=sample.language, ref=reference_text)
+            hyp_dedup = _dedupe_repetition(hyp, lang=sample.language)
+            cer = round(_cer(hyp, ref), 4)
+            cer_dedup = round(_cer(hyp_dedup, ref), 4)
+            output["accuracy"] = round(1 - cer, 4)
+            output["accuracy_dedup"] = round(1 - cer_dedup, 4)
+            output["repetition_ratio"] = round(_repetition_ratio(hyp, lang=sample.language), 4)
+            output["duplicate_rate"] = round(_duplicate_rate(output["transcript"], lang=sample.language), 4)
+            output["missing_sentence_rate"] = round(
+                _missing_sentence_rate(output["transcript"], reference_text, lang=sample.language),
+                4,
             )
-            return result
-        output = json.loads(proc.stdout)
+            if not sample.language.lower().startswith(("zh", "cmn", "yue")):
+                output["wer_normalized"] = round(_wer(hyp, ref), 4)
         result.accuracy = float(output.get("accuracy", 0.0))
+        if output.get("accuracy_dedup") is not None:
+            result.accuracy_dedup = float(output.get("accuracy_dedup", 0.0))
         result.dropped_chunks = int(output.get("dropped_chunks", 0))
         result.repetition_ratio = float(output.get("repetition_ratio", 0.0))
-    except subprocess.TimeoutExpired:
-        result.error = "timeout"
-        return result
+        result.missing_sentence_rate = float(output.get("missing_sentence_rate", 0.0))
+        result.duplicate_rate = float(output.get("duplicate_rate", result.repetition_ratio))
+        result.hallucination_rate = float(output.get("hallucination_rate", 0.0))
+        result.average_final_latency_ms = float(output.get("average_final_latency_ms", 0.0))
+        result.transcript = str(output.get("transcript", ""))
     except Exception as exc:
         result.error = str(exc)
         return result
     result.failure_reasons = check_thresholds(result, sample)
     result.passed = len(result.failure_reasons) == 0
     return result
+
+
+def _model_override_for_cli(model: str) -> str:
+    """Map stable regression model labels to runtime model identifiers."""
+    normalized = str(model or "").strip().lower()
+    if normalized in {"default", "config"}:
+        return ""
+    if normalized in {"turbo", "large-v3-turbo"}:
+        return "large-v3-turbo"
+    if normalized in {"belle", "belle-zh-ct2"}:
+        return r".\runtimes\models\belle-zh-ct2"
+    return str(model or "").strip()
+
+
+def _endpoint_profile_for_mode(mode: str) -> str:
+    normalized = str(mode or "").strip().lower().replace("-", "_")
+    aliases = {
+        "meeting": "meeting_room",
+        "meeting_room": "meeting_room",
+        "dialogue": "turn_taking",
+        "conversation": "turn_taking",
+        "turn_taking": "turn_taking",
+        "low_latency": "low_latency",
+        "max_accuracy": "max_accuracy",
+        "default": "default",
+    }
+    return aliases.get(normalized, str(mode or "").strip())
 
 
 # ---------------------------------------------------------------------------
@@ -314,6 +440,11 @@ def main(argv: list[str] | None = None) -> int:
         "--manifest",
         default="downloads/asr_regression/manifest.yaml",
         help="Path to manifest.yaml",
+    )
+    parser.add_argument(
+        "--config",
+        default="config.yaml",
+        help="Application config used by the streaming simulator.",
     )
     parser.add_argument(
         "--models",
@@ -379,7 +510,15 @@ def main(argv: list[str] | None = None) -> int:
 
     for i, (sample, model, mode) in enumerate(combos, 1):
         print(f"[{i}/{total}] {sample.id}  model={model}  mode={mode} ...", flush=True)
-        result = _run_sample(sample, model, mode, args.speed, manifest_base, args.quick)
+        result = _run_sample(
+            sample,
+            model,
+            mode,
+            args.speed,
+            manifest_base,
+            args.quick,
+            Path(args.config),
+        )
         if result.error:
             print(f"  ERROR: {result.error}")
         elif result.passed:

@@ -237,6 +237,10 @@ class LocalAiPage(QWidget):
         try:
             preset = self._preset_from_config(config)
             self._select_combo_data(self.experience_preset_combo, preset)
+            self._select_combo_data(
+                self.asr_accuracy_mode_combo,
+                str(getattr(config.runtime, "asr_accuracy_mode", "balanced") or "balanced"),
+            )
             self._update_preset_labels(preset)
             zh_asr = config.asr_channels.local
             en_asr = config.asr_channels.remote
@@ -370,6 +374,9 @@ class LocalAiPage(QWidget):
         config.runtime.asr_queue_maxsize_remote = self._guarded_asr_queue_value(self.asr_queue_remote_spin)
         config.asr = zh_asr
         config.runtime.use_channel_specific_asr = True
+        config.runtime.asr_accuracy_mode = str(self.asr_accuracy_mode_combo.currentData() or "balanced")
+        config.runtime.asr_final_rescue_enabled = config.runtime.asr_accuracy_mode != "low_latency"
+        config.runtime.asr_chinese_fallback_enabled = config.runtime.asr_accuracy_mode != "low_latency"
 
         backend = str(self.llm_backend_combo.currentData() or "local_llama_inprocess")
         zh_en_llm = config.llm_channels.local
@@ -697,6 +704,11 @@ class LocalAiPage(QWidget):
         for label, value in _EXPERIENCE_PRESET_OPTIONS:
             self.experience_preset_combo.addItem(label, value)
         self._configure_combo_popup(self.experience_preset_combo)
+        self.asr_accuracy_mode_combo = QComboBox()
+        self.asr_accuracy_mode_combo.addItem("平衡", "balanced")
+        self.asr_accuracy_mode_combo.addItem("低延遲", "low_latency")
+        self.asr_accuracy_mode_combo.addItem("高準確", "high_accuracy")
+        self._configure_combo_popup(self.asr_accuracy_mode_combo)
         self.quick_health_btn = QPushButton("健康檢查")
         self.quick_save_btn = QPushButton("儲存設定")
         self.show_advanced_check = QCheckBox("顯示進階設定")
@@ -720,6 +732,7 @@ class LocalAiPage(QWidget):
         form = QFormLayout()
         self._configure_form_layout(form)
         form.addRow("使用情境", self.experience_preset_combo)
+        form.addRow("ASR 準確度", self.asr_accuracy_mode_combo)
         form.addRow("通道策略", self.channel_strategy_label)
         form.addRow("優化說明", self.optimized_profile_label)
         form.addRow("ASR 路由", self.asr_routing_summary_label)
@@ -1422,6 +1435,8 @@ class LocalAiPage(QWidget):
 
         self.asr_compute_label.setMinimumHeight(_CONTROL_HEIGHT)
         self.experience_preset_combo.currentIndexChanged.connect(self._on_experience_preset_changed)
+        self.asr_accuracy_mode_combo.currentIndexChanged.connect(lambda *_: self._refresh_asr_runtime_hints())
+        self.asr_accuracy_mode_combo.currentIndexChanged.connect(lambda *_: self._notify_settings_changed())
         self.show_advanced_check.toggled.connect(self._set_advanced_settings_visible)
         self.show_advanced_check.toggled.connect(lambda *_: self._notify_settings_changed())
         self.quick_health_btn.clicked.connect(lambda *_: self._on_health_check())
@@ -1433,6 +1448,7 @@ class LocalAiPage(QWidget):
 
         for widget in (
             self.asr_engine_combo,
+            self.asr_accuracy_mode_combo,
             self.asr_model_combo,
             self.remote_asr_model_combo,
             self.asr_device_combo,
@@ -1696,16 +1712,21 @@ class LocalAiPage(QWidget):
         compute_type = self._compute_type_for_device(requested_device)
         local_model = self._selected_asr_model(self.asr_model_combo)
         remote_model = self._selected_asr_model(self.remote_asr_model_combo)
+        accuracy_mode = str(self.asr_accuracy_mode_combo.currentData() or "balanced")
+        accuracy_text = {
+            "low_latency": "ASR 準確度：低延遲，關閉 final rescue 與中文 fallback。",
+            "high_accuracy": "ASR 準確度：高準確，低信心 final 會啟用救援辨識與中文 fallback。",
+        }.get(accuracy_mode, "ASR 準確度：平衡，低信心 final 才救援。")
         if requested_device == "cuda":
             return (
                 f"{mode_text} "
                 f"ASR 路由：中文 -> {self._format_asr_model_label(local_model)}，非中文 -> {self._format_asr_model_label(remote_model)}。"
-                f" 目前設定裝置 CUDA，shared compute type={compute_type}；若不可用會自動回退 CPU。"
+                f" {accuracy_text} 目前設定裝置 CUDA，shared compute type={compute_type}；若不可用會自動回退 CPU。"
             )
         return (
             f"{mode_text} "
             f"ASR 路由：中文 -> {self._format_asr_model_label(local_model)}，非中文 -> {self._format_asr_model_label(remote_model)}。"
-            " 目前設定裝置 CPU；若要提升速度可改為 CUDA 並確認 CUDA 版 Torch 已正確安裝。"
+            f" {accuracy_text} 目前設定裝置 CPU；若要提升速度可改為 CUDA 並確認 CUDA 版 Torch 已正確安裝。"
         )
 
     @staticmethod

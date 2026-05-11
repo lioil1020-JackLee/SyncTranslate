@@ -92,6 +92,10 @@ class TestParseSamples:
         assert s.min_accuracy == {"news_turbo": 0.85}
         assert s.max_dropped_chunks == 0
         assert s.max_repetition_ratio == pytest.approx(0.02)
+        assert s.max_missing_sentence_rate == pytest.approx(0.20)
+        assert s.max_duplicate_rate == pytest.approx(0.05)
+        assert s.max_hallucination_rate == pytest.approx(0.02)
+        assert s.max_average_final_latency_ms == pytest.approx(0.0)
 
     def test_missing_samples_key_raises(self):
         with pytest.raises(ValueError, match="samples"):
@@ -170,6 +174,9 @@ class TestParseSamples:
         assert s.min_accuracy == {}
         assert s.max_dropped_chunks == 0
         assert s.max_repetition_ratio == pytest.approx(0.05)
+        assert s.max_missing_sentence_rate == pytest.approx(0.20)
+        assert s.max_duplicate_rate == pytest.approx(0.05)
+        assert s.max_hallucination_rate == pytest.approx(0.02)
 
     def test_multiple_samples(self, tmp_path):
         multi = """\
@@ -208,6 +215,19 @@ class TestParseSamples:
             assert s.language
             assert s.audio
             assert s.reference
+
+    def test_example_manifest_parses_with_metadata(self):
+        example = Path(__file__).parent.parent / "tools" / "asr_benchmark" / "asr_regression_manifest.example.yaml"
+        data = load_manifest(example)
+        samples = parse_samples(data)
+        assert len(samples) >= 3
+        first = samples[0]
+        assert first.duration_sec > 0
+        assert first.speaker_count >= 1
+        assert first.reference_quality == "human_verified"
+        assert first.noise_level in {"low", "medium", "high", "unknown"}
+        assert first.max_missing_sentence_rate > 0
+        assert first.max_average_final_latency_ms > 0
 
 
 # ---------------------------------------------------------------------------

@@ -241,6 +241,108 @@ def _repetition_ratio(text: str, *, lang: str) -> float:
     return removed / max(1, len(text))
 
 
+def _split_reference_units(text: str, *, lang: str) -> list[str]:
+    value = str(text or "").strip()
+    if not value:
+        return []
+    if "\n" in value:
+        units = [line.strip() for line in value.splitlines() if line.strip()]
+    elif _is_cjk(lang):
+        units = [part.strip() for part in re.split(r"[。！？!?；;]+", value) if part.strip()]
+    else:
+        units = [part.strip() for part in re.split(r"[.!?;]+", value) if part.strip()]
+    normalized: list[str] = []
+    for unit in units:
+        clean = _normalize(unit, lang=lang)
+        if len(clean) >= (4 if _is_cjk(lang) else 8):
+            normalized.append(clean)
+    return normalized
+
+
+def _missing_sentence_rate(hypothesis: str, reference: str, *, lang: str) -> float:
+    units = _split_reference_units(reference, lang=lang)
+    if not units:
+        return 0.0
+    hyp = _normalize(hypothesis, lang=lang)
+    missing = 0
+    for unit in units:
+        if not _unit_is_present(unit, hyp, lang=lang):
+            missing += 1
+    return missing / max(1, len(units))
+
+
+def _unit_is_present(unit: str, hypothesis: str, *, lang: str) -> bool:
+    if not unit:
+        return True
+    if unit in hypothesis:
+        return True
+    if _is_cjk(lang):
+        # Keep missing-sentence focused on true recall failures.  If most of a
+        # long CJK utterance is present with a few substitutions/deletions, CER
+        # should capture that quality loss without counting the entire sentence
+        # as missing.
+        if len(unit) >= 12:
+            threshold = 0.62
+        elif len(unit) >= 8:
+            threshold = 0.84
+        else:
+            threshold = 0.72
+        return _best_window_similarity(unit, hypothesis) >= threshold
+    return _token_coverage(unit, hypothesis) >= 0.60 or _best_window_similarity(unit, hypothesis) >= 0.68
+
+
+def _best_window_similarity(needle: str, haystack: str) -> float:
+    if not needle:
+        return 1.0
+    if not haystack:
+        return 0.0
+    if needle in haystack:
+        return 1.0
+    n = len(needle)
+    if len(haystack) <= n:
+        distance = _edit_distance(list(needle), list(haystack))
+        return 1.0 - distance / max(n, len(haystack), 1)
+    best = 0.0
+    min_len = max(1, int(n * 0.72))
+    max_len = min(len(haystack), max(min_len, int(n * 1.25)))
+    for size in range(min_len, max_len + 1):
+        for start in range(0, len(haystack) - size + 1):
+            window = haystack[start:start + size]
+            distance = _edit_distance(list(needle), list(window))
+            score = 1.0 - distance / max(n, size, 1)
+            if score > best:
+                best = score
+                if best >= 0.92:
+                    return best
+    return best
+
+
+def _token_coverage(needle: str, haystack: str) -> float:
+    tokens = [t for t in needle.split() if t]
+    if not tokens:
+        return 1.0
+    hay_tokens = set(haystack.split())
+    if not hay_tokens:
+        return 0.0
+    hits = sum(1 for token in tokens if token in hay_tokens)
+    return hits / len(tokens)
+
+
+def _duplicate_rate(text: str, *, lang: str) -> float:
+    return _repetition_ratio(_normalize(text, lang=lang), lang=lang)
+
+
+def _hallucination_rate(finals: list[str], *, lang: str) -> float:
+    if not finals:
+        return 0.0
+    try:
+        from app.infra.asr.faster_whisper_adapter import _is_hallucination
+    except Exception:
+        return 0.0
+    hits = sum(1 for item in finals if _is_hallucination(str(item or ""), language=lang))
+    return hits / max(1, len(finals))
+
+
 # ---------------------------------------------------------------------------
 # WAV loader
 # ---------------------------------------------------------------------------
@@ -278,6 +380,7 @@ def run_streaming_sim(
     asr_overrides: dict[str, Any] | None = None,
     runtime_overrides: dict[str, Any] | None = None,
     worker_overrides: dict[str, Any] | None = None,
+    endpoint_profile: str | None = None,
     lead_in_ms: int = 1000,
     chunk_ms: int = 100,
     speed_multiplier: float = 8.0,  # feed at Nx real-time (faster = quicker test)
@@ -289,10 +392,12 @@ def run_streaming_sim(
     """
     from app.infra.config.settings_store import load_config
     from app.infra.asr.backend_v2 import build_backend_pair
+    from app.infra.asr.confidence_gate import FinalRescuePolicy
     from app.infra.asr.endpointing_v2 import build_endpointing_runtime
     from app.infra.asr.backend_resolution import resolve_backend_for_language
     from app.infra.asr.endpoint_profiles import get_endpoint_profile
     from app.infra.asr.language_profiles import resolve_language_asr_profile
+    from app.infra.asr.model_router import build_chinese_fallback_profile
     from app.infra.asr.profile_selection import asr_profile_for_language
     from app.infra.asr.profile_selection import asr_profile_slot_for_language
     from app.infra.asr.text_correction import AsrTextCorrector
@@ -372,6 +477,12 @@ def run_streaming_sim(
         final_backend = build_result.final_backend
         resolution = build_result.resolution
 
+    fallback_final_backend = None
+    fallback_profile = build_chinese_fallback_profile(config, profile, language=language)
+    if fallback_profile is not None:
+        fallback_build = build_backend_pair(config, source=source, language=language, profile_override=fallback_profile)
+        fallback_final_backend = fallback_build[1] if isinstance(fallback_build, tuple) else fallback_build.final_backend
+
     # Warmup
     partial_backend.warmup()
     final_backend.warmup()
@@ -393,7 +504,7 @@ def run_streaming_sim(
             print("[sim] WARNING: Neural VAD not available! Falling back to RMS.", flush=True)
 
     # Build endpoint profile for worker kwargs
-    _profile_name = (
+    _profile_name = endpoint_profile or (
         getattr(config.runtime, "asr_profile_remote", None)
         if source == "remote"
         else getattr(config.runtime, "asr_profile_local", None)
@@ -423,6 +534,7 @@ def run_streaming_sim(
 
     # Collect events
     finals: list[str] = []
+    final_latencies: list[int] = []
     partials: list[str] = []
     events_lock = Lock()
     done_event = Event()
@@ -457,6 +569,7 @@ def run_streaming_sim(
                     text = corrector.correct(text, language=ev.detected_language).text.strip()
                 if text:
                     finals.append(text)
+                    final_latencies.append(max(0, int(ev.latency_ms)))
                     if verbose:
                         print(f"  [FINAL #{len(finals)}] {text[:80]}", flush=True)
                 utterance_counter += 1
@@ -500,6 +613,16 @@ def run_streaming_sim(
         enhancement_noise_reduce_strength=float(getattr(config.runtime, "asr_enhancement_noise_reduce_strength", 0.42)),
         enhancement_noise_adapt_rate=float(getattr(config.runtime, "asr_enhancement_noise_adapt_rate", 0.18)),
         enhancement_music_suppress_strength=float(getattr(config.runtime, "asr_enhancement_music_suppress_strength", 0.2)),
+        fallback_final_backend=fallback_final_backend,
+        final_rescue_policy=FinalRescuePolicy(
+            enabled=bool(getattr(config.runtime, "asr_final_rescue_enabled", True))
+            and str(getattr(config.runtime, "asr_accuracy_mode", "balanced") or "balanced") != "low_latency",
+            max_attempts=int(getattr(config.runtime, "asr_final_rescue_max_attempts", 1)),
+            min_avg_logprob=float(getattr(config.runtime, "asr_final_rescue_min_avg_logprob", -1.0)),
+            max_no_speech_prob=float(getattr(config.runtime, "asr_final_rescue_max_no_speech_prob", 0.65)),
+            max_compression_ratio=float(getattr(config.runtime, "asr_final_rescue_max_compression_ratio", 2.4)),
+            min_chars=int(getattr(config.runtime, "asr_final_rescue_min_chars", 4)),
+        ),
     )
 
     runtime.start(on_event)
@@ -606,6 +729,9 @@ def run_streaming_sim(
         "speech_started_count": ep.get("speech_started_count", 0),
         "soft_endpoint_count": ep.get("soft_endpoint_count", 0),
         "hard_endpoint_count": ep.get("hard_endpoint_count", 0),
+        "average_final_latency_ms": round(sum(final_latencies) / len(final_latencies), 2) if final_latencies else 0.0,
+        "duplicate_rate": round(_duplicate_rate(full_transcript, lang=language), 4),
+        "hallucination_rate": round(_hallucination_rate(finals, lang=language), 4),
         "vad_params": {
             "neural_threshold": profile.vad.neural_threshold,
             "min_silence_duration_ms": profile.vad.min_silence_duration_ms,
@@ -707,6 +833,8 @@ def _sweep(
         r["cer_dedup"] = cer_dedup
         r["accuracy_dedup"] = acc_dedup
         r["repetition_ratio"] = rep_ratio
+        r["duplicate_rate"] = round(_duplicate_rate(r["transcript"], lang=language), 4)
+        r["missing_sentence_rate"] = round(_missing_sentence_rate(r["transcript"], reference_text, lang=language), 4)
 
         print(f"  finals={r['final_count']} transcript_len={len(r['transcript'])} "
               f"CER={cer:.3f} dedupCER={cer_dedup:.3f} rep={rep_ratio:.1%} "
@@ -744,7 +872,7 @@ def _sweep(
 # ---------------------------------------------------------------------------
 
 def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Streaming ASR simulation benchmark")
+    p = argparse.ArgumentParser(description="Streaming ASR simulation benchmark", allow_abbrev=False)
     p.add_argument("--config", default="config.yaml")
     p.add_argument("--audio", required=True, help="WAV file")
     p.add_argument("--reference", default=None, help="Ground truth text file")
@@ -754,6 +882,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--chunk-ms", type=int, default=100, help="Audio chunk size in ms")
     p.add_argument("--speed", type=float, default=8.0,
                    help="Feed speed multiplier vs real-time (8 = 8x faster than real time)")
+    p.add_argument(
+        "--mode",
+        "--endpoint-profile",
+        dest="endpoint_profile",
+        default=None,
+        help="Endpoint profile name (e.g. meeting_room, turn_taking, low_latency).",
+    )
     p.add_argument("--sweep", action="store_true", help="Sweep VAD parameters")
     p.add_argument("--neural-threshold", type=float, default=None)
     p.add_argument("--min-silence-ms", type=int, default=None)
@@ -888,6 +1023,7 @@ def main() -> None:
         asr_overrides=asr_ov or None,
         runtime_overrides=runtime_ov or None,
         worker_overrides=worker_ov or None,
+        endpoint_profile=args.endpoint_profile,
         lead_in_ms=args.lead_in_ms,
         chunk_ms=args.chunk_ms,
         speed_multiplier=args.speed,
@@ -906,6 +1042,8 @@ def main() -> None:
         result["cer_dedup"] = cer_dedup
         result["accuracy_dedup"] = round(1 - cer_dedup, 4)
         result["repetition_ratio"] = round(_repetition_ratio(hyp, lang=args.language), 4)
+        result["duplicate_rate"] = round(_duplicate_rate(result["transcript"], lang=args.language), 4)
+        result["missing_sentence_rate"] = round(_missing_sentence_rate(result["transcript"], reference_text, lang=args.language), 4)
         if wer is not None:
             result["wer_normalized"] = wer
 

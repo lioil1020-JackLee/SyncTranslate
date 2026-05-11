@@ -168,6 +168,10 @@ class FasterWhisperEngine:
         return TranscribeResult(
             text=result.text.strip(),
             detected_language=_normalize_lang(result.detected_language or self.language),
+            segments=result.segments,
+            avg_logprob=result.avg_logprob,
+            max_no_speech_prob=result.max_no_speech_prob,
+            max_compression_ratio=result.max_compression_ratio,
         )
 
     def transcribe_final(self, audio: np.ndarray, sample_rate: int) -> str:
@@ -195,6 +199,35 @@ class FasterWhisperEngine:
         return TranscribeResult(
             text=text,
             detected_language=_normalize_lang(result.detected_language or self.language),
+            segments=result.segments,
+            avg_logprob=result.avg_logprob,
+            max_no_speech_prob=result.max_no_speech_prob,
+            max_compression_ratio=result.max_compression_ratio,
+        )
+
+    def transcribe_final_rescue_result(self, audio: np.ndarray, sample_rate: int) -> TranscribeResult:
+        if audio.size == 0:
+            return TranscribeResult(text="", detected_language="")
+        result = self._transcribe(
+            audio=audio,
+            sample_rate=sample_rate,
+            vad_filter=False,
+            beam_size=max(6, int(self.final_beam_size) + 2),
+            condition_on_previous_text=bool(self.final_condition_on_previous_text or self.condition_on_previous_text),
+        )
+        text = result.text.strip()
+        if self.hallucination_filter and _is_hallucination(
+            text,
+            language=result.detected_language or self.language,
+        ):
+            text = ""
+        return TranscribeResult(
+            text=text,
+            detected_language=_normalize_lang(result.detected_language or self.language),
+            segments=result.segments,
+            avg_logprob=result.avg_logprob,
+            max_no_speech_prob=result.max_no_speech_prob,
+            max_compression_ratio=result.max_compression_ratio,
         )
 
     def warmup(self) -> None:

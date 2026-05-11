@@ -11,6 +11,8 @@ from tools.asr_benchmark.run_regression_corpus import (
     SampleResult,
     aggregate_summary,
     check_thresholds,
+    _endpoint_profile_for_mode,
+    _model_override_for_cli,
     write_summary_json,
     write_summary_md,
 )
@@ -26,6 +28,10 @@ def _make_sample(
     min_accuracy: dict | None = None,
     max_dropped_chunks: int = 0,
     max_repetition_ratio: float = 0.02,
+    max_missing_sentence_rate: float = 0.20,
+    max_duplicate_rate: float = 0.05,
+    max_hallucination_rate: float = 0.02,
+    max_average_final_latency_ms: float = 0.0,
 ) -> SampleConfig:
     return SampleConfig(
         id=sample_id,
@@ -36,6 +42,10 @@ def _make_sample(
         min_accuracy=min_accuracy if min_accuracy is not None else {"news_turbo": 0.85},
         max_dropped_chunks=max_dropped_chunks,
         max_repetition_ratio=max_repetition_ratio,
+        max_missing_sentence_rate=max_missing_sentence_rate,
+        max_duplicate_rate=max_duplicate_rate,
+        max_hallucination_rate=max_hallucination_rate,
+        max_average_final_latency_ms=max_average_final_latency_ms,
     )
 
 
@@ -47,6 +57,10 @@ def _make_result(**kwargs) -> SampleResult:
         accuracy=0.90,
         dropped_chunks=0,
         repetition_ratio=0.01,
+        missing_sentence_rate=0.0,
+        duplicate_rate=0.0,
+        hallucination_rate=0.0,
+        average_final_latency_ms=0.0,
         passed=False,
         failure_reasons=[],
         error="",
@@ -94,6 +108,30 @@ class TestCheckThresholds:
         failures = check_thresholds(result, sample)
         assert len(failures) == 3
 
+    def test_missing_sentence_rate_over_limit_fails(self):
+        sample = _make_sample(max_missing_sentence_rate=0.10)
+        result = _make_result(missing_sentence_rate=0.25)
+        failures = check_thresholds(result, sample)
+        assert any("missing_sentence_rate" in f for f in failures)
+
+    def test_duplicate_rate_over_limit_fails(self):
+        sample = _make_sample(max_duplicate_rate=0.02)
+        result = _make_result(duplicate_rate=0.05)
+        failures = check_thresholds(result, sample)
+        assert any("duplicate_rate" in f for f in failures)
+
+    def test_hallucination_rate_over_limit_fails(self):
+        sample = _make_sample(max_hallucination_rate=0.01)
+        result = _make_result(hallucination_rate=0.05)
+        failures = check_thresholds(result, sample)
+        assert any("hallucination_rate" in f for f in failures)
+
+    def test_average_final_latency_over_limit_fails_when_configured(self):
+        sample = _make_sample(max_average_final_latency_ms=1000)
+        result = _make_result(average_final_latency_ms=1200)
+        failures = check_thresholds(result, sample)
+        assert any("average_final_latency_ms" in f for f in failures)
+
     def test_no_min_accuracy_key_skips_accuracy_check(self):
         sample = _make_sample(min_accuracy={})
         result = _make_result(accuracy=0.10)
@@ -118,6 +156,18 @@ class TestCheckThresholds:
         result = _make_result(model="turbo", accuracy=0.85)
         failures = check_thresholds(result, sample)
         assert not any("accuracy" in f for f in failures)
+
+
+class TestRegressionCliMappings:
+    def test_model_aliases_map_to_runtime_models(self):
+        assert _model_override_for_cli("turbo") == "large-v3-turbo"
+        assert _model_override_for_cli("belle").endswith("belle-zh-ct2")
+        assert _model_override_for_cli("default") == ""
+
+    def test_endpoint_mode_aliases_map_to_profiles(self):
+        assert _endpoint_profile_for_mode("meeting") == "meeting_room"
+        assert _endpoint_profile_for_mode("dialogue") == "turn_taking"
+        assert _endpoint_profile_for_mode("max_accuracy") == "max_accuracy"
 
 
 # ---------------------------------------------------------------------------
@@ -184,6 +234,7 @@ class TestWriteSummaryJson:
             _make_result(passed=True),
             _make_result(
                 sample_id="s2",
+                transcript="recognized text",
                 passed=False,
                 failure_reasons=["accuracy 0.70 < min 0.85"],
             ),
@@ -196,6 +247,7 @@ class TestWriteSummaryJson:
         assert data["failed"] == 1
         assert len(data["results"]) == 2
         assert data["results"][1]["failure_reasons"] == ["accuracy 0.70 < min 0.85"]
+        assert data["results"][1]["transcript"] == "recognized text"
 
     def test_creates_nested_output_dir(self, tmp_path):
         nested = tmp_path / "a" / "b" / "c"
@@ -208,6 +260,12 @@ class TestWriteSummaryJson:
         path = write_summary_json(summary, tmp_path)
         data = json.loads(path.read_text(encoding="utf-8"))
         assert data["results"][0]["accuracy"] is None
+
+    def test_transcript_control_chars_are_sanitised(self, tmp_path):
+        summary = aggregate_summary([_make_result(passed=True, transcript="a\x00b\x1fc")])
+        path = write_summary_json(summary, tmp_path)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        assert data["results"][0]["transcript"] == "a b c"
 
 
 # ---------------------------------------------------------------------------

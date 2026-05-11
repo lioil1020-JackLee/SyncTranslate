@@ -30,6 +30,11 @@ class BackendTranscript:
     end_ms: int = 0
     confidence: float = 0.0
     rejection_reason: str = ""
+    avg_logprob: float | None = None
+    max_no_speech_prob: float | None = None
+    max_compression_ratio: float | None = None
+    rescue_used: bool = False
+    rescue_reason: str = ""
 
 
 @dataclass(slots=True)
@@ -136,6 +141,9 @@ class FasterWhisperStreamingBackend:
             text=text,
             is_final=False,
             detected_language=result.detected_language,
+            avg_logprob=result.avg_logprob,
+            max_no_speech_prob=result.max_no_speech_prob,
+            max_compression_ratio=result.max_compression_ratio,
         )
 
     def transcribe_final(
@@ -165,6 +173,46 @@ class FasterWhisperStreamingBackend:
             is_final=True,
             detected_language=result.detected_language,
             confidence=confidence,
+            avg_logprob=result.avg_logprob,
+            max_no_speech_prob=result.max_no_speech_prob,
+            max_compression_ratio=result.max_compression_ratio,
+        )
+
+    def transcribe_final_rescue(
+        self,
+        audio: np.ndarray,
+        sample_rate: int,
+        *,
+        frontend_stats: dict[str, object] | None = None,
+    ) -> BackendTranscript:
+        result_fn = getattr(self._engine, "transcribe_final_rescue_result", None)
+        if callable(result_fn):
+            result = result_fn(audio, sample_rate)
+        else:
+            result = self._engine.transcribe_final_result(audio, sample_rate)
+        text = result.text
+        confidence = 0.0
+        if self._post_processor is not None and text:
+            processed = self._post_processor.process(
+                text,
+                audio=audio,
+                sample_rate=sample_rate,
+                frontend_stats=frontend_stats,
+                is_final=True,
+            )
+            text = processed.text
+            confidence = processed.confidence
+        if text:
+            self._engine.push_context(text)
+        return BackendTranscript(
+            text=text,
+            is_final=True,
+            detected_language=result.detected_language,
+            confidence=confidence,
+            avg_logprob=result.avg_logprob,
+            max_no_speech_prob=result.max_no_speech_prob,
+            max_compression_ratio=result.max_compression_ratio,
+            rescue_used=True,
         )
 
     def runtime_info(self) -> dict[str, object]:
