@@ -35,10 +35,7 @@ class _DummyDeviceVolumeController:
         self.calls.append(("output", selector, scalar))
 
     def apply_audio_route_config(self, audio) -> None:
-        self.set_input_volume(audio.meeting_in, audio.meeting_in_gain)
-        self.set_input_volume(audio.microphone_in, audio.microphone_in_gain)
-        self.set_output_volume(audio.speaker_out, audio.speaker_out_volume)
-        self.set_output_volume(audio.meeting_out, audio.meeting_out_volume)
+        self.calls.append(("apply", str(getattr(audio, "meeting_in", "")), 1.0))
 
 
 class LiveCaptionPageUiTests(_QtTestCase):
@@ -399,27 +396,16 @@ class LiveCaptionPageUiTests(_QtTestCase):
         self.assertIn(("local", "tts"), router.calls)
         self.assertIn(("remote", "passthrough"), router.calls)
 
-    def test_main_window_applies_audio_route_levels_to_inputs_and_outputs(self) -> None:
+    def test_main_window_has_no_audio_level_controls(self) -> None:
         controller = _DummyDeviceVolumeController()
         window = MainWindow("config.yaml", device_volume_controller=controller)
-        window.audio_routing_page.meeting_in_gain_slider.setValue(30)
-        window.audio_routing_page.microphone_in_gain_slider.setValue(40)
-        window.audio_routing_page.speaker_out_volume_slider.setValue(50)
-        window.audio_routing_page.meeting_out_volume_slider.setValue(60)
+        self.assertFalse(hasattr(window.audio_routing_page, "meeting_in_gain_slider"))
+        self.assertFalse(hasattr(window.audio_routing_page, "microphone_in_gain_slider"))
+        self.assertFalse(hasattr(window.audio_routing_page, "speaker_out_volume_slider"))
+        self.assertFalse(hasattr(window.audio_routing_page, "meeting_out_volume_slider"))
+        self.assertEqual(controller.calls, [])
 
-        window._sync_ui_to_config()
-
-        self.assertAlmostEqual(window.config.audio.meeting_in_gain, 0.3, places=2)
-        self.assertAlmostEqual(window.config.audio.microphone_in_gain, 0.4, places=2)
-        self.assertAlmostEqual(window.config.audio.speaker_out_volume, 0.5, places=2)
-        self.assertAlmostEqual(window.config.audio.meeting_out_volume, 0.6, places=2)
-        self.assertAlmostEqual(window.meeting_capture._gain, 1.0, places=2)
-        self.assertAlmostEqual(window.local_capture._gain, 1.0, places=2)
-        self.assertAlmostEqual(window.speaker_playback._volume, 1.0, places=2)
-        self.assertAlmostEqual(window.meeting_playback._volume, 1.0, places=2)
-        self.assertTrue(any(call[0] == "output" and abs(call[2] - 0.5) < 1e-6 for call in controller.calls))
-
-    def test_main_window_applies_audio_route_changes_even_while_session_running(self) -> None:
+    def test_main_window_route_change_does_not_apply_in_app_volume(self) -> None:
         controller = _DummyDeviceVolumeController()
         window = MainWindow("config.yaml", device_volume_controller=controller)
 
@@ -429,14 +415,9 @@ class LiveCaptionPageUiTests(_QtTestCase):
 
         window.session_controller = _RunningSession()  # type: ignore[assignment]
         window.validate_current_routes()
-        window.audio_routing_page.speaker_out_volume_slider.setValue(80)
-        window.audio_routing_page.meeting_out_volume_slider.setValue(90)
+        window._on_audio_routing_changed()
 
-        self.assertAlmostEqual(window.config.audio.speaker_out_volume, 0.8, places=2)
-        self.assertAlmostEqual(window.config.audio.meeting_out_volume, 0.9, places=2)
-        self.assertAlmostEqual(window.speaker_playback._volume, 1.0, places=2)
-        self.assertAlmostEqual(window.meeting_playback._volume, 1.0, places=2)
-        self.assertTrue(any(call[0] == "output" and abs(call[2] - 0.9) < 1e-6 for call in controller.calls))
+        self.assertEqual(controller.calls, [])
 
     def test_main_window_keeps_live_caption_controls_enabled_while_session_running(self) -> None:
         window = MainWindow("config.yaml", device_volume_controller=_DummyDeviceVolumeController())
@@ -463,22 +444,18 @@ class LiveCaptionPageUiTests(_QtTestCase):
 
 
 class AudioRoutingPageUiTests(_QtTestCase):
-    def test_audio_route_sliders_round_trip_with_config(self) -> None:
+    def test_audio_route_page_no_longer_exposes_level_sliders(self) -> None:
         page = AudioRoutingPage(on_route_changed=lambda: None)
         config = AppConfig()
-        config.audio.meeting_in_gain = 0.3
-        config.audio.microphone_in_gain = 0.4
-        config.audio.speaker_out_volume = 0.5
-        config.audio.meeting_out_volume = 0.6
 
         page.apply_config(config)
         selected = page.selected_audio_routes()
 
-        self.assertAlmostEqual(selected.meeting_in_gain, 0.3, places=2)
-        self.assertAlmostEqual(selected.microphone_in_gain, 0.4, places=2)
-        self.assertAlmostEqual(selected.speaker_out_volume, 0.5, places=2)
-        self.assertAlmostEqual(selected.meeting_out_volume, 0.6, places=2)
-        self.assertEqual(page.meeting_out_volume_value_label.text(), "60%")
+        self.assertFalse(hasattr(page, "meeting_in_gain_slider"))
+        self.assertFalse(hasattr(page, "microphone_in_gain_slider"))
+        self.assertFalse(hasattr(page, "speaker_out_volume_slider"))
+        self.assertFalse(hasattr(page, "meeting_out_volume_slider"))
+        self.assertEqual(selected.routing_mode, "synctranslate_virtual_audio")
 
     def test_main_window_hot_applies_live_caption_settings_while_session_running(self) -> None:
         window = MainWindow("config.yaml", device_volume_controller=_DummyDeviceVolumeController())

@@ -54,7 +54,8 @@ class SettingsContractTests(_QtTestCase):
 
         self.assertTrue(has_error)
         self.assertIn("未設定裝置：本地輸入", message)
-        self.assertIn("找不到裝置：遠端輸出: Missing Headset", message)
+        self.assertIn("遠端輸入: USB Mic", message)
+        self.assertIn("遠端輸出: Missing Headset", message)
 
     def test_diagnostics_page_is_three_line_summary_without_action_buttons(self) -> None:
         page = DiagnosticsPage()

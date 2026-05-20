@@ -19,6 +19,7 @@ except Exception:
     OpenCC = None
 
 from app.application.audio_router import AudioRouter
+from app.application.auto_populate_devices import AutoPopulateDevicesService
 from app.application.export_service import ExportService
 from app.application.healthcheck_service import HealthCheckService
 from app.application.session_service import RuntimeFacade
@@ -31,6 +32,7 @@ from app.domain.models import ErrorEvent
 from app.infra.audio.capture import AudioCapture
 from app.infra.audio.device_registry import DeviceManager, canonical_device_name
 from app.infra.audio.playback import AudioPlayback
+from app.infra.audio.virtual_bridge_probe import probe_virtual_audio_bridge
 from app.infra.config.schema import AppConfig, translation_enabled_for_source
 from app.application.transcript_service import TranscriptBuffer
 from app.ui.pages.audio_routing_page import AudioRoutingPage
@@ -60,6 +62,9 @@ class MainWindow(QMainWindow):
             timeout_sec=45.0,
         )
         self.config: AppConfig = self._settings_service.load()
+        self._device_populator = AutoPopulateDevicesService(
+            exclude_virtual_devices=bool(self.config.audio.system_devices.exclude_virtual_devices)
+        )
         self.device_manager = DeviceManager()
         self.meeting_capture = AudioCapture()
         self.local_capture = AudioCapture()
@@ -77,9 +82,13 @@ class MainWindow(QMainWindow):
         self._session_action_running = False
         self._session_action_name = ""
         self._session_action_queue: Queue[tuple[str, bool, object]] = Queue()
+        self._diagnostics_refresh_interval_sec = 1.0
+        self._next_diagnostics_refresh_ts = 0.0
         self._pending_live_apply = False
         self._pending_live_caption_apply = False
         self._live_apply_ready = False
+        self._bridge_probe_cache = None
+        self._bridge_probe_cache_ts = 0.0
         self._resolved_window_icon = QIcon()
 
         self.setWindowTitle("SyncTranslate - Local AI Runtime")
@@ -119,6 +128,7 @@ class MainWindow(QMainWindow):
         self.audio_routing_page = AudioRoutingPage(
             on_route_changed=self._on_audio_routing_changed,
         )
+        self._auto_populate_devices()
         self.live_caption_page = LiveCaptionPage(
             on_clear_clicked=self.clear_live_caption,
             on_start_clicked=self.start_session,
@@ -233,6 +243,11 @@ class MainWindow(QMainWindow):
             f"Config: {self.config_path} | input={len(input_devices)} output={len(output_devices)}"
         )
         self.validate_current_routes()
+
+    def _auto_populate_devices(self) -> None:
+        self._device_populator.populate(self.config.audio)
+        summary = self._device_populator.get_device_summary()
+        self.audio_routing_page.update_device_summary(summary)
 
     def persist_config(self) -> None:
         try:
@@ -361,6 +376,7 @@ class MainWindow(QMainWindow):
     def start_session(self) -> None:
         if self._session_action_running:
             return
+        self._auto_populate_devices()
         self._ensure_pipelines_ready()
         if not self.session_controller:
             return
@@ -371,6 +387,7 @@ class MainWindow(QMainWindow):
         route = self.audio_routing_page.selected_audio_routes()
         try:
             self._validate_route_devices_or_raise(route)
+            self._validate_virtual_bridge_runtime_or_raise()
             config_changed = self._sync_ui_to_config_and_detect_changes()
             if config_changed:
                 self._runtime_facade.mark_dirty()
@@ -392,6 +409,38 @@ class MainWindow(QMainWindow):
         if has_error:
             raise ValueError(message)
 
+    def _probe_virtual_bridge_runtime(self):
+        now = time.monotonic()
+        cached = self._bridge_probe_cache
+        if cached is not None and (now - float(self._bridge_probe_cache_ts or 0.0)) < 2.0:
+            return cached
+        bridge_path = str(getattr(self.config.audio.virtual_audio, "bridge_path", "") or "")
+        result = probe_virtual_audio_bridge(bridge_path)
+        self._bridge_probe_cache = result
+        self._bridge_probe_cache_ts = now
+        return result
+
+    def _describe_bridge_validation_message(self) -> tuple[str, bool]:
+        if not bool(getattr(self.config.audio.virtual_audio, "bridge_enabled", True)):
+            return "Bridge 已停用。", False
+        result = self._probe_virtual_bridge_runtime()
+        if bool(result.ready):
+            return (
+                "Bridge 心跳正常，"
+                f"Heartbeat {float(result.heartbeat_roundtrip_ms):.1f}ms；"
+                f"Loopback {float(result.loopback_latency_ms):.1f}ms。",
+                False,
+            )
+        detail = str(getattr(result, "error", "") or "bridge_unavailable")
+        return f"Bridge 未連線或 PCM loopback 未就緒：{detail}", True
+
+    def _validate_virtual_bridge_runtime_or_raise(self) -> None:
+        if not bool(getattr(self.config.audio.virtual_audio, "bridge_enabled", True)):
+            return
+        message, has_error = self._describe_bridge_validation_message()
+        if has_error:
+            raise ValueError(message)
+
     def _current_route_validation_message(self) -> tuple[str, bool]:
         route = self.audio_routing_page.selected_audio_routes()
         return self._describe_route_validation(route)
@@ -400,10 +449,12 @@ class MainWindow(QMainWindow):
         missing: list[str] = []
         unavailable: list[str] = []
         checks = (
-            ("遠端輸入", route.meeting_in, self.input_device_names),
+            # 遠端輸入（meeting_in）應是 render endpoint（虛擬喇叭）。
+            ("遠端輸入", route.meeting_in, self.output_device_names),
             ("本地輸入", route.microphone_in, self.input_device_names),
             ("本地輸出", route.speaker_out, self.output_device_names),
-            ("遠端輸出", route.meeting_out, self.output_device_names),
+            # 遠端輸出（meeting_out）應是 capture endpoint（虛擬麥克風）。
+            ("遠端輸出", route.meeting_out, self.input_device_names),
         )
         for label, selector, existing_names in checks:
             raw_selector = str(selector or "").strip()
@@ -642,6 +693,16 @@ class MainWindow(QMainWindow):
     def _refresh_runtime_diagnostics(self) -> None:
         if not getattr(self, "diagnostics_page", None):
             return
+        now = time.monotonic()
+        if now < self._next_diagnostics_refresh_ts:
+            return
+        self._next_diagnostics_refresh_ts = now + self._diagnostics_refresh_interval_sec
+
+        if self._session_action_running and self._session_action_name == "start":
+            self.diagnostics_page.set_asr_runtime_details("starting...")
+            self.diagnostics_page.set_llm_runtime_details("starting...")
+            self.diagnostics_page.set_tts_runtime_details("starting...")
+            return
         if not self.audio_router:
             self.diagnostics_page.set_asr_runtime_details("router=not-built")
             self.diagnostics_page.set_llm_runtime_details("")
@@ -771,25 +832,64 @@ class MainWindow(QMainWindow):
     def _build_llm_diagnostics_summary(router_stats) -> str:
         overflow = router_stats.translation_overflow or {}
         latest_latency = (router_stats.latency or [{}])[0] if router_stats.latency else {}
+        latency_values: list[float] = []
+        for item in list(router_stats.latency or [])[:64]:
+            for key in (
+                "first_asr_partial_ms",
+                "first_display_partial_ms",
+                "speech_end_to_asr_final_ms",
+                "asr_final_to_llm_final_ms",
+                "tts_enqueue_to_playback_start_ms",
+            ):
+                value = item.get(key)
+                if isinstance(value, (int, float)):
+                    latency_values.append(float(value))
         overflow_text = f"overflow l={int(overflow.get('local', 0))} r={int(overflow.get('remote', 0))}"
+        histogram_text = MainWindow._latency_histogram_text(latency_values)
         if not latest_latency:
-            return overflow_text
+            return f"{overflow_text} ; hist={histogram_text}"
         return (
             f"{overflow_text} ; latest="
             f"{latest_latency.get('source', '-')}:"
             f"asr_final={latest_latency.get('speech_end_to_asr_final_ms', '-')}"
             f"/llm_final={latest_latency.get('asr_final_to_llm_final_ms', '-')}"
+            f" ; hist={histogram_text}"
         )
+
+    @staticmethod
+    def _latency_histogram_text(values: list[float]) -> str:
+        bins = [0, 0, 0, 0, 0]
+        for raw in values:
+            value = max(0.0, float(raw))
+            if value < 500.0:
+                bins[0] += 1
+            elif value < 1000.0:
+                bins[1] += 1
+            elif value < 2000.0:
+                bins[2] += 1
+            elif value < 4000.0:
+                bins[3] += 1
+            else:
+                bins[4] += 1
+        return f"{bins[0]}/{bins[1]}/{bins[2]}/{bins[3]}/{bins[4]}"
 
     @staticmethod
     def _build_tts_diagnostics_summary(router_stats) -> str:
         tts = router_stats.tts or {}
+        bridge = getattr(router_stats, "bridge", {}) or {}
         return (
             f"depth={int(tts.get('queue_depth', 0) or 0)} "
             f"local={int(tts.get('queue_depth_local', 0) or 0)} "
             f"remote={int(tts.get('queue_depth_remote', 0) or 0)} "
             f"drop_l={int(tts.get('drop_count_local', 0) or 0)} "
-            f"drop_r={int(tts.get('drop_count_remote', 0) or 0)}"
+            f"drop_r={int(tts.get('drop_count_remote', 0) or 0)} "
+            f"bridge={int(bool(bridge.get('connected', False)))} "
+            f"rin={int(bridge.get('remote_input_buffered_frames', 0) or 0)}/"
+            f"{int(bridge.get('remote_input_buffer_capacity_frames', 0) or 0)} "
+            f"vmic={int(bridge.get('virtual_microphone_buffered_frames', 0) or 0)}/"
+            f"{int(bridge.get('virtual_microphone_buffer_capacity_frames', 0) or 0)} "
+            f"vmic_drop={int(bridge.get('virtual_microphone_dropped_frames', 0) or 0)} "
+            f"sink_drop={int(bridge.get('sink_dropped_frames', 0) or 0)}"
         )
 
     def _resolve_active_sources(self) -> set[str]:
@@ -973,11 +1073,8 @@ class MainWindow(QMainWindow):
             pipeline_revision=pipeline_revision,
             transcript_buffer=self.transcript_buffer,
             local_capture=self.local_capture,
-            meeting_capture=self.meeting_capture,
             speaker_playback=self.speaker_playback,
-            meeting_playback=self.meeting_playback,
             get_local_output_device=self._get_speaker_output_device,
-            get_remote_output_device=self._get_meeting_output_device,
             on_error=self._report_error,
             on_asr_event=self._on_asr_stage_event,
             on_diagnostic_event=lambda message: self._report_error(f"[router] {message}"),
@@ -1163,17 +1260,24 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self._apply_live_config_now)
 
     def _export_session_report(self, payload: dict[str, object]) -> None:
-        try:
-            routes = self.audio_routing_page.selected_audio_routes()
-            self._export_service.export_session(
-                config_path=self.config_path,
-                config=self.config,
-                routes=routes,
-                payload=payload,
-                recent_errors=self._get_recent_errors(),
-            )
-        except Exception as exc:
-            self._report_error(f"export_session_report failed: {exc}")
+        routes = self.audio_routing_page.selected_audio_routes()
+        config_path = str(self.config_path)
+        config_snapshot = self.config
+        errors_snapshot = self._get_recent_errors()
+
+        def _worker() -> None:
+            try:
+                self._export_service.export_session(
+                    config_path=config_path,
+                    config=config_snapshot,
+                    routes=routes,
+                    payload=payload,
+                    recent_errors=errors_snapshot,
+                )
+            except Exception as exc:
+                self._report_error(f"export_session_report failed: {exc}")
+
+        Thread(target=_worker, daemon=True).start()
 
     def _get_recent_errors(self) -> list[str]:
         with self._error_lock:

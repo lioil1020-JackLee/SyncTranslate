@@ -56,6 +56,18 @@ def migrate_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
     result["audio"]["microphone_in"] = str(audio.get("microphone_in") or audio.get("local_mic_in") or "")
     result["audio"]["speaker_out"] = str(audio.get("speaker_out") or audio.get("local_tts_out") or "")
     result["audio"]["meeting_out"] = str(audio.get("meeting_out") or audio.get("meeting_tts_out") or "")
+    
+    # Phase 7 routing_mode upgrade: old manual/third-party virtual audio setups
+    # are normalized to synctranslate_virtual_audio by AppConfig.from_dict().
+    old_routing_mode = str(audio.get("routing_mode", "")).strip().lower()
+    if old_routing_mode == "advanced_manual":
+        # Keep the legacy value only in the intermediate migration payload so
+        # downstream parsing can perform one canonical normalization step.
+        result["audio"]["routing_mode"] = "advanced_manual"
+    else:
+        # All other cases → new standard synctranslate_virtual_audio mode
+        result["audio"]["routing_mode"] = "synctranslate_virtual_audio"
+        result["runtime"]["last_migration_note"] = "upgraded_to_virtual_audio_mode"
 
     result["direction"]["mode"] = "bidirectional"
 
@@ -239,8 +251,10 @@ def migrate_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
     )
     result["runtime"]["translation_enabled"] = legacy_translation_enabled
     result["runtime"]["asr_language_mode"] = "auto"
-    result["runtime"]["config_schema_version"] = 5
-    result["runtime"]["last_migration_note"] = "migrated_from_legacy"
+    result["runtime"]["config_schema_version"] = 6
+    # Set migration note if not already set (routing_mode migration may have set it)
+    if result["runtime"].get("last_migration_note") != "upgraded_to_virtual_audio_mode":
+        result["runtime"]["last_migration_note"] = "migrated_from_legacy"
     result["runtime"]["warmup_on_start"] = True
     result["runtime"]["use_channel_specific_asr"] = True
     result["runtime"]["use_channel_specific_llm"] = True

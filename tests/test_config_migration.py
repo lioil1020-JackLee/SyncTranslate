@@ -145,7 +145,7 @@ class ConfigMigrationTests(unittest.TestCase):
         self.assertEqual(migrated["audio"]["meeting_out"], "REMOTE_OUT")
         self.assertEqual(migrated["runtime"]["sample_rate"], 16000)
         self.assertEqual(migrated["runtime"]["chunk_ms"], 30)
-        self.assertEqual(migrated["runtime"]["config_schema_version"], 5)
+        self.assertEqual(migrated["runtime"]["config_schema_version"], 6)
         self.assertEqual(migrated["llm"]["backend"], "local_llama_inprocess")
         self.assertIn("local", migrated["asr_channels"])
         self.assertIn("remote", migrated["llm_channels"])
@@ -261,7 +261,7 @@ class ConfigMigrationTests(unittest.TestCase):
                 "local_translation_enabled": False,
                 "passthrough_gain": 1.0,
                 "tts_gain": 1.0,
-                "config_schema_version": 5,
+                "config_schema_version": 6,
                 "last_migration_note": "",
             },
             "health_last_success": {"asr": "", "llm": "", "tts": ""},

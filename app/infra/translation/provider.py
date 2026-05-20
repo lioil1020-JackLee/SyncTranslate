@@ -36,6 +36,8 @@ class TranslationProvider(Protocol):
 
     def debug_snapshot(self) -> dict[str, str]: ...
 
+    def warmup(self) -> None: ...
+
 
 class LocalLlamaTranslationProvider:
     def __init__(self, config: LlmConfig) -> None:
@@ -90,6 +92,9 @@ class LocalLlamaTranslationProvider:
 
     def debug_snapshot(self) -> dict[str, str]:
         return self._client.debug_snapshot()
+
+    def warmup(self) -> None:
+        self._client.warmup()
 
 
 def create_translation_provider(config: LlmConfig) -> TranslationProvider:

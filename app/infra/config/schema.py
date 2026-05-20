@@ -19,15 +19,44 @@ DEFAULT_FIXED_LLM_MODEL = "hy-mt1.5-7b"
 
 
 @dataclass(slots=True)
+class AudioSystemDeviceConfig:
+    capture_role: str = "communications"
+    render_role: str = "communications"
+    follow_system_default: bool = True
+    fallback_to_multimedia_role: bool = True
+    exclude_virtual_devices: bool = True
+
+
+@dataclass(slots=True)
+class VirtualAudioConfig:
+    speaker_name: str = "SyncTranslate Virtual Speaker"
+    microphone_name: str = "SyncTranslate Virtual Microphone"
+    bridge_enabled: bool = True
+    bridge_path: str = r"runtimes\audio\sync_audio_bridge.exe"
+    sample_rate: int = 48000
+    frame_ms: int = 10
+    target_latency_ms: int = 120
+    require_driver: bool = True
+
+
+@dataclass(slots=True)
+class CallTranslationConfig:
+    listen_remote_original: bool = True
+    listen_remote_translation: bool = True
+    output_local_original: bool = False
+    output_local_translation: bool = True
+
+
+@dataclass(slots=True)
 class AudioRouteConfig:
     meeting_in: str = ""
     microphone_in: str = ""
     speaker_out: str = ""
     meeting_out: str = ""
-    meeting_in_gain: float = 1.0
-    microphone_in_gain: float = 1.0
-    speaker_out_volume: float = 1.0
-    meeting_out_volume: float = 1.0
+    routing_mode: str = "synctranslate_virtual_audio"
+    system_devices: AudioSystemDeviceConfig = field(default_factory=AudioSystemDeviceConfig)
+    virtual_audio: VirtualAudioConfig = field(default_factory=VirtualAudioConfig)
+    call_translation: CallTranslationConfig = field(default_factory=CallTranslationConfig)
 
 
 @dataclass(slots=True)
@@ -307,7 +336,7 @@ class RuntimeConfig:
     local_echo_guard_enabled: bool = False
     local_echo_guard_resume_delay_ms: int = 300
     remote_echo_guard_resume_delay_ms: int = 300
-    config_schema_version: int = 5
+    config_schema_version: int = 6
     last_migration_note: str = ""
     warmup_on_start: bool = True
     remote_translation_enabled: bool = True

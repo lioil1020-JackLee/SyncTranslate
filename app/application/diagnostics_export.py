@@ -4,7 +4,40 @@ from datetime import datetime
 import json
 from pathlib import Path
 
+from app.infra.audio.virtual_bridge_probe import probe_virtual_audio_bridge
+from app.infra.audio.bridge_protocol import BRIDGE_PROTOCOL_VERSION
+from app.infra.audio.virtual_devices import detect_virtual_audio_install
 from app.infra.config.schema import AppConfig, translation_enabled_for_source
+from app.version import app_version
+
+
+def _latency_histogram(values: list[float]) -> str:
+    bins = {
+        "0_500": 0,
+        "500_1000": 0,
+        "1000_2000": 0,
+        "2000_4000": 0,
+        "4000_plus": 0,
+    }
+    for raw in values:
+        value = max(0.0, float(raw))
+        if value < 500.0:
+            bins["0_500"] += 1
+        elif value < 1000.0:
+            bins["500_1000"] += 1
+        elif value < 2000.0:
+            bins["1000_2000"] += 1
+        elif value < 4000.0:
+            bins["2000_4000"] += 1
+        else:
+            bins["4000_plus"] += 1
+    return (
+        f"0-500={bins['0_500']} "
+        f"500-1000={bins['500_1000']} "
+        f"1000-2000={bins['1000_2000']} "
+        f"2000-4000={bins['2000_4000']} "
+        f">=4000={bins['4000_plus']}"
+    )
 
 
 def export_runtime_diagnostics(
@@ -18,13 +51,30 @@ def export_runtime_diagnostics(
 ) -> Path:
     now = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_path = Path(f"diagnostics_{now}.txt")
+    virtual_audio_status = detect_virtual_audio_install()
+    bridge_probe = (
+        probe_virtual_audio_bridge(config.audio.virtual_audio.bridge_path)
+        if bool(config.audio.virtual_audio.bridge_enabled)
+        else None
+    )
 
     overflow = {}
     latency_summary: list[str] = []
+    latency_samples_ms: list[float] = []
     if router_stats:
         overflow = router_stats.get("translation_overflow") or {}
         for entry in list(router_stats.get("latency") or [])[:8]:
             latency_summary.append(str(entry))
+            for key in (
+                "first_asr_partial_ms",
+                "first_display_partial_ms",
+                "speech_end_to_asr_final_ms",
+                "asr_final_to_llm_final_ms",
+                "tts_enqueue_to_playback_start_ms",
+            ):
+                value = entry.get(key)
+                if isinstance(value, (int, float)):
+                    latency_samples_ms.append(float(value))
     asr_observation_summary: list[str] = []
     for label, source in (("meeting", "remote"), ("local", "local")):
         asr_stats = ((router_stats or {}).get("asr") or {}).get(source) or {}
@@ -67,6 +117,34 @@ def export_runtime_diagnostics(
             f"timestamp: {datetime.now().isoformat()}",
             f"config_path: {config_path}",
             f"mode: {config.direction.mode}",
+            f"audio_routing_mode: {config.audio.routing_mode}",
+            f"virtual_speaker_name: {config.audio.virtual_audio.speaker_name}",
+            f"virtual_microphone_name: {config.audio.virtual_audio.microphone_name}",
+            f"virtual_bridge_enabled: {config.audio.virtual_audio.bridge_enabled}",
+            f"virtual_bridge_ready: {bool(getattr(bridge_probe, 'ready', False))}",
+            f"virtual_bridge_connected: {bool(getattr(bridge_probe, 'connected', False))}",
+            f"virtual_bridge_error: {str(getattr(bridge_probe, 'error', '') or '')}",
+            f"virtual_bridge_shared_memory_name: {str(getattr(bridge_probe, 'shared_memory_name', '') or '')}",
+            f"virtual_bridge_event_name: {str(getattr(bridge_probe, 'event_name', '') or '')}",
+            f"virtual_bridge_heartbeat_ok: {bool(getattr(bridge_probe, 'heartbeat_ok', False))}",
+            f"virtual_bridge_heartbeat_roundtrip_ms: {float(getattr(bridge_probe, 'heartbeat_roundtrip_ms', 0.0) or 0.0):.2f}",
+            f"virtual_bridge_loopback_ok: {bool(getattr(bridge_probe, 'loopback_ok', False))}",
+            f"virtual_bridge_loopback_latency_ms: {float(getattr(bridge_probe, 'loopback_latency_ms', 0.0) or 0.0):.2f}",
+            f"virtual_bridge_remote_input_running: {bool(getattr(bridge_probe, 'remote_input_running', False))}",
+            f"virtual_bridge_remote_input_frames: {int(getattr(bridge_probe, 'remote_input_frames', 0) or 0)}",
+            f"virtual_bridge_remote_input_buffered_frames: {int(getattr(bridge_probe, 'remote_input_buffered_frames', 0) or 0)}",
+            f"virtual_bridge_remote_input_capacity_frames: {int(getattr(bridge_probe, 'remote_input_buffer_capacity_frames', 0) or 0)}",
+            f"virtual_bridge_virtual_mic_frames: {int(getattr(bridge_probe, 'virtual_microphone_frames', 0) or 0)}",
+            f"virtual_bridge_virtual_mic_buffered_frames: {int(getattr(bridge_probe, 'virtual_microphone_buffered_frames', 0) or 0)}",
+            f"virtual_bridge_virtual_mic_dropped_frames: {int(getattr(bridge_probe, 'virtual_microphone_dropped_frames', 0) or 0)}",
+            f"virtual_bridge_virtual_mic_capacity_frames: {int(getattr(bridge_probe, 'virtual_microphone_buffer_capacity_frames', 0) or 0)}",
+            f"virtual_driver_installed: {virtual_audio_status.installed}",
+            f"virtual_driver_speaker_available: {virtual_audio_status.speaker_available}",
+            f"virtual_driver_microphone_available: {virtual_audio_status.microphone_available}",
+            f"virtual_driver_detected_speaker: {virtual_audio_status.speaker_name}",
+            f"virtual_driver_detected_microphone: {virtual_audio_status.microphone_name}",
+            f"virtual_driver_detected_speaker_index: {virtual_audio_status.speaker_index}",
+            f"virtual_driver_detected_microphone_index: {virtual_audio_status.microphone_index}",
             f"remote_translation_target: {config.language.meeting_target}",
             f"local_translation_target: {config.language.local_target}",
             f"meeting_in: {routes.meeting_in}",
@@ -102,6 +180,7 @@ def export_runtime_diagnostics(
             f"asr_chinese_fallback_enabled: {bool(getattr(config.runtime, 'asr_chinese_fallback_enabled', True))}",
             f"translation_overflow_local: {overflow.get('local', 0)}",
             f"translation_overflow_remote: {overflow.get('remote', 0)}",
+            f"latency_histogram_ms: {_latency_histogram(latency_samples_ms)}",
             "asr_observation:",
             *asr_observation_summary,
             "recent_latency_entries:",
@@ -127,8 +206,20 @@ def export_session_report(
     report_dir = Path("logs") / "session_reports"
     report_dir.mkdir(parents=True, exist_ok=True)
     now = datetime.now()
+    virtual_audio_status = detect_virtual_audio_install()
+    bridge_probe = (
+        probe_virtual_audio_bridge(config.audio.virtual_audio.bridge_path)
+        if bool(config.audio.virtual_audio.bridge_enabled)
+        else None
+    )
     report = {
         "timestamp": now.isoformat(),
+        "versions": {
+            "app": app_version(),
+            "bridge_protocol": BRIDGE_PROTOCOL_VERSION,
+            "driver": "",
+            "msi": "",
+        },
         "config_path": config_path,
         "mode": config.direction.mode,
         "selected_devices": {
@@ -136,6 +227,46 @@ def export_session_report(
             "microphone_in": routes.microphone_in,
             "speaker_out": routes.speaker_out,
             "meeting_out": routes.meeting_out,
+        },
+        "audio_routing": {
+            "mode": config.audio.routing_mode,
+            "virtual_speaker_name": config.audio.virtual_audio.speaker_name,
+            "virtual_microphone_name": config.audio.virtual_audio.microphone_name,
+            "bridge_enabled": config.audio.virtual_audio.bridge_enabled,
+            "bridge_path": config.audio.virtual_audio.bridge_path,
+            "bridge_ready": bool(getattr(bridge_probe, "ready", False)),
+            "bridge_connected": bool(getattr(bridge_probe, "connected", False)),
+            "bridge_error": str(getattr(bridge_probe, "error", "") or ""),
+            "bridge_shared_memory_name": str(getattr(bridge_probe, "shared_memory_name", "") or ""),
+            "bridge_event_name": str(getattr(bridge_probe, "event_name", "") or ""),
+            "bridge_heartbeat_ok": bool(getattr(bridge_probe, "heartbeat_ok", False)),
+            "bridge_heartbeat_roundtrip_ms": float(getattr(bridge_probe, "heartbeat_roundtrip_ms", 0.0) or 0.0),
+            "bridge_loopback_ok": bool(getattr(bridge_probe, "loopback_ok", False)),
+            "bridge_loopback_latency_ms": float(getattr(bridge_probe, "loopback_latency_ms", 0.0) or 0.0),
+            "bridge_remote_input_running": bool(getattr(bridge_probe, "remote_input_running", False)),
+            "bridge_remote_input_frames": int(getattr(bridge_probe, "remote_input_frames", 0) or 0),
+            "bridge_remote_input_buffered_frames": int(getattr(bridge_probe, "remote_input_buffered_frames", 0) or 0),
+            "bridge_remote_input_capacity_frames": int(getattr(bridge_probe, "remote_input_buffer_capacity_frames", 0) or 0),
+            "bridge_virtual_mic_frames": int(getattr(bridge_probe, "virtual_microphone_frames", 0) or 0),
+            "bridge_virtual_mic_buffered_frames": int(getattr(bridge_probe, "virtual_microphone_buffered_frames", 0) or 0),
+            "bridge_virtual_mic_dropped_frames": int(getattr(bridge_probe, "virtual_microphone_dropped_frames", 0) or 0),
+            "bridge_virtual_mic_capacity_frames": int(getattr(bridge_probe, "virtual_microphone_buffer_capacity_frames", 0) or 0),
+            "require_driver": config.audio.virtual_audio.require_driver,
+            "driver_installed": virtual_audio_status.installed,
+            "driver_speaker_available": virtual_audio_status.speaker_available,
+            "driver_microphone_available": virtual_audio_status.microphone_available,
+            "driver_detected_speaker": virtual_audio_status.speaker_name,
+            "driver_detected_microphone": virtual_audio_status.microphone_name,
+            "driver_detected_speaker_index": virtual_audio_status.speaker_index,
+            "driver_detected_microphone_index": virtual_audio_status.microphone_index,
+            "driver_render_endpoint_count": len(virtual_audio_status.render_endpoints),
+            "driver_capture_endpoint_count": len(virtual_audio_status.capture_endpoints),
+            "call_translation": {
+                "listen_remote_original": config.audio.call_translation.listen_remote_original,
+                "listen_remote_translation": config.audio.call_translation.listen_remote_translation,
+                "output_local_original": config.audio.call_translation.output_local_original,
+                "output_local_translation": config.audio.call_translation.output_local_translation,
+            },
         },
         "backend": {
             "llm_backend": config.llm.backend,
@@ -180,6 +311,20 @@ def export_session_report(
         "stats": payload.get("stats_before_stop", {}),
         "translation_overflow": (payload.get("stats_before_stop") or {}).get("translation_overflow", {}),
         "recent_latency": list((payload.get("stats_before_stop") or {}).get("latency") or [])[:16],
+        "latency_histogram_ms": _latency_histogram(
+            [
+                float(item[key])
+                for item in list((payload.get("stats_before_stop") or {}).get("latency") or [])[:64]
+                for key in (
+                    "first_asr_partial_ms",
+                    "first_display_partial_ms",
+                    "speech_end_to_asr_final_ms",
+                    "asr_final_to_llm_final_ms",
+                    "tts_enqueue_to_playback_start_ms",
+                )
+                if isinstance(item.get(key), (int, float))
+            ]
+        ),
         "session_meta": payload.get("session_meta", {}),
         "recent_errors": recent_errors[-50:],
         "config_snapshot": config.to_dict(),

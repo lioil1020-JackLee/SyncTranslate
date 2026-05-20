@@ -408,7 +408,8 @@ class ASRManagerV2:
             speech_end_finalize_audio_ms=_ep_kwargs.get("speech_end_finalize_audio_ms"),
             frontend_enabled=bool(getattr(self._config.runtime, "asr_frontend_enabled", True)),
             frontend_target_rms=float(getattr(self._config.runtime, "asr_frontend_target_rms", 0.05)),
-            frontend_max_gain=float(getattr(self._config.runtime, "asr_frontend_max_gain", 3.0)),
+            # AGC 已禁用，max_gain 強制為 1.0
+            frontend_max_gain=1.0,
             frontend_highpass_alpha=float(
                 getattr(self._config.runtime, "asr_frontend_highpass_alpha", ASR_DEFAULT_FRONTEND_HIGHPASS_ALPHA)
             ),

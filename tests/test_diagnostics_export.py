@@ -43,6 +43,9 @@ class DiagnosticsExportTests(unittest.TestCase):
             self.assertIn("local_translation_enabled: True", text)
             self.assertIn("asr_language_mode: auto", text)
             self.assertIn("tts_output_mode: subtitle_only", text)
+            self.assertIn("virtual_bridge_heartbeat_ok:", text)
+            self.assertIn("virtual_bridge_loopback_ok:", text)
+            self.assertIn("virtual_bridge_virtual_mic_dropped_frames:", text)
             self.assertIn("router: running=True", text)
             self.assertIn("warn-2", text)
 
@@ -99,6 +102,7 @@ class DiagnosticsExportTests(unittest.TestCase):
             self.assertIn("display_partial_strategy: stable_only", text)
             self.assertIn("translation_overflow_local: 3", text)
             self.assertIn("translation_overflow_remote: 7", text)
+            self.assertIn("latency_histogram_ms:", text)
             self.assertIn("asr_observation:", text)
             self.assertIn("meeting: q=0 p=5 f=4 pause_ms=240", text)
             self.assertIn("last_rej=markup-leak", text)
@@ -143,11 +147,15 @@ class DiagnosticsExportTests(unittest.TestCase):
             self.assertEqual(report["runtime"]["tts_output_mode"], "tts")
             self.assertIn("max_pipeline_latency_ms", report["runtime"])
             self.assertIn("display_partial_strategy", report["runtime"])
+            self.assertIn("bridge_heartbeat_ok", report["audio_routing"])
+            self.assertIn("bridge_loopback_ok", report["audio_routing"])
+            self.assertIn("bridge_virtual_mic_dropped_frames", report["audio_routing"])
             self.assertEqual(report["stats"], payload["stats_before_stop"])
             self.assertEqual(report["session_meta"], payload["session_meta"])
             self.assertEqual(report["recent_errors"][-1], "err-b")
             self.assertEqual(report["translation_overflow"], {"local": 2, "remote": 4})
             self.assertEqual(len(report["recent_latency"]), 1)
+            self.assertIn("latency_histogram_ms", report)
 
 
 class DiagnosticsAsmStatsTests(unittest.TestCase):

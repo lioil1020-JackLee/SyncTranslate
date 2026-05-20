@@ -7,11 +7,36 @@ import numpy as np
 from app.infra.audio.capture import AudioCapture, CaptureStats
 
 
+class _AudioInputEndpoint:
+    def start(self, device_name: str, sample_rate: int, chunk_ms: int) -> None: ...
+
+    def stop(self) -> None: ...
+
+    def add_consumer(self, consumer: Callable[[np.ndarray, float], None]) -> None: ...
+
+    def remove_consumer(self, consumer: Callable[[np.ndarray, float], None]) -> None: ...
+
+    def set_gain(self, gain: float) -> None: ...
+
+    def stats(self) -> CaptureStats: ...
+
+
 class AudioInputManager:
-    def __init__(self, *, local_capture: AudioCapture, remote_capture: AudioCapture) -> None:
+    def __init__(
+        self,
+        *,
+        local_source: _AudioInputEndpoint | None = None,
+        remote_source: _AudioInputEndpoint | None = None,
+        local_capture: AudioCapture | None = None,
+        remote_capture: AudioCapture | None = None,
+    ) -> None:
+        local_endpoint = local_source or local_capture
+        remote_endpoint = remote_source or remote_capture
+        if local_endpoint is None or remote_endpoint is None:
+            raise TypeError("AudioInputManager requires local_source/remote_source or local_capture/remote_capture")
         self._captures = {
-            "local": local_capture,
-            "remote": remote_capture,
+            "local": local_endpoint,
+            "remote": remote_endpoint,
         }
 
     def start(self, source: str, device_name: str, sample_rate: int, chunk_ms: int) -> None:
@@ -40,7 +65,7 @@ class AudioInputManager:
             "remote": self._captures["remote"].stats(),
         }
 
-    def _capture_of(self, source: str) -> AudioCapture:
+    def _capture_of(self, source: str) -> _AudioInputEndpoint:
         if source == "remote":
             return self._captures["remote"]
         return self._captures["local"]

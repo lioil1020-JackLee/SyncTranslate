@@ -78,7 +78,7 @@ class TranslationDispatcher:
         self._worker = Thread(target=self._run, daemon=True, name="translation-dispatcher")
         self._worker.start()
 
-    def stop(self) -> None:
+    def stop(self, wait_timeout: float = 1.2) -> None:
         self._stop_event.set()
         # Unblock worker with sentinel
         try:
@@ -86,7 +86,9 @@ class TranslationDispatcher:
         except Full:
             pass
         if self._worker and self._worker.is_alive():
-            self._worker.join(timeout=6.0)
+            self._worker.join(timeout=max(0.1, float(wait_timeout)))
+            if self._worker.is_alive():
+                _log.warning("TranslationDispatcher did not stop within %.1fs", float(wait_timeout))
         self._worker = None
         # Drain any leftover sentinel so a subsequent start() gets a clean queue
         while not self._queue.empty():

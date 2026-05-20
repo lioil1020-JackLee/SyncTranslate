@@ -250,7 +250,7 @@ class AsrV2EndpointingTests(unittest.TestCase):
         self.assertTrue(all(not event.is_early_final for event in finals))
 
     @patch("app.infra.asr.manager_v2.build_backend_pair")
-    def test_manager_v2_flushes_active_short_segment_on_stop(self, mock_build_backend_pair) -> None:
+    def test_manager_v2_stop_with_active_short_segment_does_not_crash(self, mock_build_backend_pair) -> None:
         cfg = AppConfig()
         cfg.runtime.asr_pipeline = "v2"
         cfg.runtime.asr_v2_endpointing = "rms"
@@ -273,9 +273,38 @@ class AsrV2EndpointingTests(unittest.TestCase):
         time.sleep(0.12)
         manager.stop("local")
 
+        # Responsive stop mode: we no longer force synchronous final flush on stop.
+        # The key invariant is that stop must complete cleanly without worker crash.
+        self.assertIsInstance(events, list)
+
+    @patch("app.infra.asr.manager_v2.build_backend_pair")
+    def test_manager_v2_flushes_final_when_stream_goes_idle(self, mock_build_backend_pair) -> None:
+        cfg = AppConfig()
+        cfg.runtime.asr_pipeline = "v2"
+        cfg.runtime.asr_v2_endpointing = "rms"
+        cfg.runtime.asr_profile_local = "turn_taking"
+        cfg.asr_channels.local.vad.backend = "rms"
+        cfg.asr_channels.local.vad.min_speech_duration_ms = 80
+        cfg.asr_channels.local.vad.min_silence_duration_ms = 1200
+        cfg.asr_channels.local.vad.speech_pad_ms = 80
+        cfg.asr_channels.local.streaming.partial_interval_ms = 200
+        mock_build_backend_pair.return_value = (
+            self._FakeBackend("fake:partial", is_final=False),
+            self._FakeBackend("fake:final", is_final=True),
+        )
+        events = []
+        manager = ASRManagerV2(cfg, pipeline_revision=13)
+        manager.start("local", events.append)
+
+        # Feed speech and then leave stream idle long enough to trigger idle flush.
+        speech = np.full((6400,), 0.05, dtype=np.float32)
+        manager.submit("local", speech, 16000)
+        time.sleep(1.8)
+
         finals = [event for event in events if event.is_final]
         self.assertGreaterEqual(len(finals), 1)
         self.assertEqual(finals[-1].text, "final text")
+        manager.stop("local")
 
 
 if __name__ == "__main__":

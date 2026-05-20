@@ -255,6 +255,9 @@ class InProcessLlamaClient:
             )
         return self._runtime
 
+    def warmup(self) -> None:
+        self._ensure_runtime()
+
     def health_check(self) -> tuple[bool, str]:
         try:
             self._chat_completion(messages=[{"role": "user", "content": "ping"}], max_tokens=2)

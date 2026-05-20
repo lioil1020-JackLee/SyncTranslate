@@ -10,7 +10,9 @@ from app.infra.config.schema import (
     AsrChannelsConfig,
     AsrConfig,
     AsrStreamingSettings,
+    AudioSystemDeviceConfig,
     AudioRouteConfig,
+    CallTranslationConfig,
     DirectionConfig,
     HealthStateConfig,
     LanguageConfig,
@@ -25,6 +27,7 @@ from app.infra.config.schema import (
     TtsChannelsConfig,
     TtsConfig,
     VadSettings,
+    VirtualAudioConfig,
     merge_tts_configs,
 )
 
@@ -86,12 +89,91 @@ def _parse_llm_config(raw: dict[str, Any], fallback: LlmConfig) -> LlmConfig:
     )
 
 
+def _as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _parse_audio_route_config(raw: dict[str, Any]) -> AudioRouteConfig:
+    defaults = AudioRouteConfig()
+    data = _as_dict(raw)
+    system_devices_raw = _as_dict(data.get("system_devices"))
+    virtual_audio_raw = _as_dict(data.get("virtual_audio"))
+    call_translation_raw = _as_dict(data.get("call_translation"))
+    system_devices = AudioSystemDeviceConfig(
+        capture_role=str(system_devices_raw.get("capture_role", defaults.system_devices.capture_role)),
+        render_role=str(system_devices_raw.get("render_role", defaults.system_devices.render_role)),
+        follow_system_default=bool(
+            system_devices_raw.get("follow_system_default", defaults.system_devices.follow_system_default)
+        ),
+        fallback_to_multimedia_role=bool(
+            system_devices_raw.get(
+                "fallback_to_multimedia_role",
+                defaults.system_devices.fallback_to_multimedia_role,
+            )
+        ),
+        exclude_virtual_devices=bool(
+            system_devices_raw.get("exclude_virtual_devices", defaults.system_devices.exclude_virtual_devices)
+        ),
+    )
+    virtual_audio = VirtualAudioConfig(
+        speaker_name=str(virtual_audio_raw.get("speaker_name", defaults.virtual_audio.speaker_name)),
+        microphone_name=str(virtual_audio_raw.get("microphone_name", defaults.virtual_audio.microphone_name)),
+        bridge_enabled=bool(virtual_audio_raw.get("bridge_enabled", defaults.virtual_audio.bridge_enabled)),
+        bridge_path=str(virtual_audio_raw.get("bridge_path", defaults.virtual_audio.bridge_path)),
+        sample_rate=int(virtual_audio_raw.get("sample_rate", defaults.virtual_audio.sample_rate)),
+        frame_ms=int(virtual_audio_raw.get("frame_ms", defaults.virtual_audio.frame_ms)),
+        target_latency_ms=int(
+            virtual_audio_raw.get("target_latency_ms", defaults.virtual_audio.target_latency_ms)
+        ),
+        require_driver=bool(virtual_audio_raw.get("require_driver", defaults.virtual_audio.require_driver)),
+    )
+    call_translation = CallTranslationConfig(
+        listen_remote_original=bool(
+            call_translation_raw.get(
+                "listen_remote_original",
+                defaults.call_translation.listen_remote_original,
+            )
+        ),
+        listen_remote_translation=bool(
+            call_translation_raw.get(
+                "listen_remote_translation",
+                defaults.call_translation.listen_remote_translation,
+            )
+        ),
+        output_local_original=bool(
+            call_translation_raw.get("output_local_original", defaults.call_translation.output_local_original)
+        ),
+        output_local_translation=bool(
+            call_translation_raw.get(
+                "output_local_translation",
+                defaults.call_translation.output_local_translation,
+            )
+        ),
+    )
+    routing_mode = str(data.get("routing_mode", defaults.routing_mode) or defaults.routing_mode).strip().lower()
+    if routing_mode != "synctranslate_virtual_audio":
+        routing_mode = "synctranslate_virtual_audio"
+    virtual_audio.sample_rate = max(8000, min(192000, int(virtual_audio.sample_rate)))
+    virtual_audio.frame_ms = max(5, min(100, int(virtual_audio.frame_ms)))
+    virtual_audio.target_latency_ms = max(20, min(2000, int(virtual_audio.target_latency_ms)))
+    return AudioRouteConfig(
+        meeting_in=str(data.get("meeting_in", defaults.meeting_in)),
+        microphone_in=str(data.get("microphone_in", defaults.microphone_in)),
+        speaker_out=str(data.get("speaker_out", defaults.speaker_out)),
+        meeting_out=str(data.get("meeting_out", defaults.meeting_out)),
+        routing_mode=routing_mode,
+        system_devices=system_devices,
+        virtual_audio=virtual_audio,
+        call_translation=call_translation,
+    )
+
+
 def parse_app_config(raw: dict[str, Any]) -> AppConfig:  # noqa: PLR0912,PLR0915
     """Build a fully-validated :class:`AppConfig` from a raw dict."""
     _asr_d = AsrConfig()
     _llm_d = LlmConfig()
 
-    audio = AudioRouteConfig(**(raw.get("audio") or {}))
+    audio = _parse_audio_route_config(raw.get("audio") or {})
     direction = DirectionConfig(**(raw.get("direction") or {}))
     language = LanguageConfig(**(raw.get("language") or {}))
 

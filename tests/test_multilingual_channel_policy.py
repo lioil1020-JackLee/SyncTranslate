@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import unittest
 import numpy as np
@@ -17,11 +17,11 @@ from app.infra.tts.playback_queue import TTSManager
 from app.infra.tts.voice_policy import resolve_edge_voice_for_target
 
 
-class _DummyPlayback:
+class _DummySink:
     def __init__(self) -> None:
-        self.passthrough_calls: list[tuple[np.ndarray, float, str]] = []
+        self.passthrough_calls: list[tuple[np.ndarray, float]] = []
 
-    def play(self, audio, sample_rate, output_device_name, *, blocking: bool = False) -> None:
+    def play(self, audio, sample_rate, *, blocking: bool = False) -> None:
         pass
 
     def stop(self) -> None:
@@ -30,8 +30,8 @@ class _DummyPlayback:
     def set_volume(self, volume: float) -> None:
         pass
 
-    def push_passthrough(self, *, audio, sample_rate: float, output_device_name: str) -> None:
-        self.passthrough_calls.append((audio, sample_rate, output_device_name))
+    def push_passthrough(self, audio, sample_rate: float) -> None:
+        self.passthrough_calls.append((audio, sample_rate))
 
 
 class MultiLingualChannelPolicyTests(unittest.TestCase):
@@ -249,10 +249,8 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
         cfg.runtime.local_tts_voice = "ko-KR-InJoonNeural"
         manager = TTSManager(
             config=cfg,
-            local_playback=_DummyPlayback(),
-            remote_playback=_DummyPlayback(),
-            get_local_output_device=lambda: "speaker",
-            get_remote_output_device=lambda: "meeting",
+            local_sink=_DummySink(),
+            remote_sink=_DummySink(),
         )
 
         local_channel_cfg = manager._channel_tts_config("local")
@@ -263,13 +261,11 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
 
     def test_passthrough_downmix_keeps_right_channel_signal(self) -> None:
         cfg = AppConfig()
-        local_playback = _DummyPlayback()
+        local_sink = _DummySink()
         manager = TTSManager(
             config=cfg,
-            local_playback=local_playback,
-            remote_playback=_DummyPlayback(),
-            get_local_output_device=lambda: "speaker",
-            get_remote_output_device=lambda: "meeting",
+            local_sink=local_sink,
+            remote_sink=_DummySink(),
         )
         manager.set_output_mode("local", "passthrough")
         manager._passthrough_warmup_until["local"] = 0.0
@@ -278,21 +274,18 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
         stereo[:, 1] = 0.5
         manager.submit_passthrough("local", stereo, 48000.0)
 
-        forwarded, sample_rate, output_device = local_playback.passthrough_calls[0]
+        forwarded, sample_rate = local_sink.passthrough_calls[0]
         self.assertEqual(forwarded.shape, (4, 2))
         self.assertGreater(float(np.max(np.abs(forwarded[:, 1]))), 0.0)
         self.assertEqual(sample_rate, 48000.0)
-        self.assertEqual(output_device, "speaker")
 
     def test_passthrough_uses_raw_streaming_audio_before_playback_volume(self) -> None:
         cfg = AppConfig()
-        local_playback = _DummyPlayback()
+        local_sink = _DummySink()
         manager = TTSManager(
             config=cfg,
-            local_playback=local_playback,
-            remote_playback=_DummyPlayback(),
-            get_local_output_device=lambda: "speaker",
-            get_remote_output_device=lambda: "meeting",
+            local_sink=local_sink,
+            remote_sink=_DummySink(),
         )
         manager.set_output_mode("local", "passthrough")
         manager._passthrough_warmup_until["local"] = 0.0
@@ -300,7 +293,7 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
         mono = np.full((4, 1), 0.25, dtype=np.float32)
         manager.submit_passthrough("local", mono, 48000.0)
 
-        forwarded, _, _ = local_playback.passthrough_calls[0]
+        forwarded, _ = local_sink.passthrough_calls[0]
         self.assertAlmostEqual(float(forwarded[0, 0]), 0.25, places=5)
 
     def test_asr_submit_prefers_strongest_input_channel(self) -> None:
@@ -454,10 +447,8 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
         cfg.runtime.tts_partial_min_chars = 4
         manager = TTSManager(
             config=cfg,
-            local_playback=_DummyPlayback(),
-            remote_playback=_DummyPlayback(),
-            get_local_output_device=lambda: "speaker",
-            get_remote_output_device=lambda: "meeting",
+            local_sink=_DummySink(),
+            remote_sink=_DummySink(),
         )
         manager.set_output_mode("local", "tts")
 
@@ -477,10 +468,8 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
         cfg = AppConfig()
         manager = TTSManager(
             config=cfg,
-            local_playback=_DummyPlayback(),
-            remote_playback=_DummyPlayback(),
-            get_local_output_device=lambda: "speaker",
-            get_remote_output_device=lambda: "meeting",
+            local_sink=_DummySink(),
+            remote_sink=_DummySink(),
         )
         manager.set_output_mode("local", "tts")
 
@@ -493,10 +482,8 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
         cfg = AppConfig()
         manager = TTSManager(
             config=cfg,
-            local_playback=_DummyPlayback(),
-            remote_playback=_DummyPlayback(),
-            get_local_output_device=lambda: "speaker",
-            get_remote_output_device=lambda: "meeting",
+            local_sink=_DummySink(),
+            remote_sink=_DummySink(),
         )
         manager.set_output_mode("local", "tts")
 
@@ -514,10 +501,8 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
         cfg.runtime.tts_max_wait_ms = 1
         manager = TTSManager(
             config=cfg,
-            local_playback=_DummyPlayback(),
-            remote_playback=_DummyPlayback(),
-            get_local_output_device=lambda: "speaker",
-            get_remote_output_device=lambda: "meeting",
+            local_sink=_DummySink(),
+            remote_sink=_DummySink(),
         )
         manager.set_output_mode("local", "tts")
         manager.enqueue("local", "final sentence", utterance_id="u1", revision=1, is_final=True)
@@ -545,3 +530,4 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

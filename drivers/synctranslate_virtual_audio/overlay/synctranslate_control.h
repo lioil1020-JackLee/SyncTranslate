@@ -1,0 +1,25 @@
+#pragma once
+
+#include <sysvad.h>
+
+#define SYNCTRANSLATE_CONTROL_DEVICE_NAME L"\\Device\\SyncTranslateVirtualAudioControl"
+#define SYNCTRANSLATE_CONTROL_SYMBOLIC_LINK L"\\DosDevices\\SyncTranslateVirtualAudioControl"
+
+#define IOCTL_SYNCTRANSLATE_AUDIO_WRITE_PCM \
+    CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, FILE_WRITE_DATA)
+
+#define IOCTL_SYNCTRANSLATE_AUDIO_FLUSH \
+    CTL_CODE(FILE_DEVICE_UNKNOWN, 0x802, METHOD_BUFFERED, FILE_WRITE_DATA)
+
+#define IOCTL_SYNCTRANSLATE_AUDIO_GET_STATS \
+    CTL_CODE(FILE_DEVICE_UNKNOWN, 0x803, METHOD_BUFFERED, FILE_READ_DATA)
+
+NTSTATUS
+SyncTranslateControlInitialize(
+    _In_ PDRIVER_OBJECT driverObject
+);
+
+VOID
+SyncTranslateControlShutdown(
+    _In_opt_ PDRIVER_OBJECT driverObject
+);

@@ -3,10 +3,27 @@
   microphone_in: ''
   speaker_out: ''
   meeting_out: ''
-  meeting_in_gain: 1.0
-  microphone_in_gain: 1.0
-  speaker_out_volume: 1.0
-  meeting_out_volume: 1.0
+  routing_mode: synctranslate_virtual_audio
+  system_devices:
+    capture_role: communications
+    render_role: communications
+    follow_system_default: true
+    fallback_to_multimedia_role: true
+    exclude_virtual_devices: true
+  virtual_audio:
+    speaker_name: SyncTranslate Virtual Speaker
+    microphone_name: SyncTranslate Virtual Microphone
+    bridge_enabled: true
+    bridge_path: runtimes\audio\sync_audio_bridge.exe
+    sample_rate: 48000
+    frame_ms: 10
+    target_latency_ms: 120
+    require_driver: true
+  call_translation:
+    listen_remote_original: true
+    listen_remote_translation: true
+    output_local_original: false
+    output_local_translation: true
 language:
   meeting_source: en
   meeting_target: zh-TW

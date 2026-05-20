@@ -16,7 +16,7 @@ from app.domain.constants import (
     TTS_DEFAULT_PARTIAL_MIN_CHARS,
 )
 from app.domain.models import ErrorEvent
-from app.infra.audio.playback import AudioPlayback
+from app.infra.audio.sinks import AudioSink
 from app.infra.tts.edge_tts_adapter import EdgeTtsProvider
 from app.infra.tts.voice_policy import resolve_tts_config_for_target
 from app.infra.config.schema import AppConfig, TtsConfig
@@ -76,22 +76,16 @@ class TTSManager:
         self,
         *,
         config: AppConfig,
-        local_playback: AudioPlayback,
-        remote_playback: AudioPlayback,
-        get_local_output_device: Callable[[], str],
-        get_remote_output_device: Callable[[], str],
+        local_sink: AudioSink,
+        remote_sink: AudioSink,
         on_error: Callable[[str | ErrorEvent], None] | None = None,
         on_play_start: Callable[[str], None] | None = None,
         on_play_end: Callable[[str], None] | None = None,
     ) -> None:
         self._config = config
-        self._playbacks = {
-            "local": local_playback,
-            "remote": remote_playback,
-        }
-        self._output_getters = {
-            "local": get_local_output_device,
-            "remote": get_remote_output_device,
+        self._sinks = {
+            "local": local_sink,
+            "remote": remote_sink,
         }
         self._on_error = on_error
         self._on_play_start = on_play_start
@@ -185,8 +179,8 @@ class TTSManager:
             self._passthrough_pending["remote"].clear()
             self._queue_changed.notify_all()
         # 停止硬體播放
-        for playback in self._playbacks.values():
-            playback.stop()
+        for sink in self._sinks.values():
+            sink.stop()
         # P1-1: 收集所有存活線程，以 deadline 平行 join，而非序列等待
         deadline = time.monotonic() + max(0.1, float(wait_timeout))
         all_workers: list[Thread] = []
@@ -283,7 +277,7 @@ class TTSManager:
 
     def set_volume(self, channel: str, volume: float) -> None:
         key = channel if channel in ("local", "remote") else "local"
-        self._playbacks[key].set_volume(volume)
+        self._sinks[key].set_volume(volume)
 
     def set_muted(self, channel: str, muted: bool) -> None:
         key = channel if channel in ("local", "remote") else "local"
@@ -297,7 +291,7 @@ class TTSManager:
         key = channel if channel in ("local", "remote") else "local"
         normalized = mode if mode in {"tts", "subtitle_only", "passthrough"} else "subtitle_only"
         self._output_mode[key] = normalized
-        self._playbacks[key].stop()
+        self._sinks[key].stop()
         with self._queue_changed:
             self._pending = deque(task for task in self._pending if task.channel != key)
             self._ready_audio[key].clear()
@@ -348,10 +342,9 @@ class TTSManager:
                         self._passthrough_drop_count[key] += 1
                     self._queue_changed.notify_all()
                 return
-            self._playbacks[key].push_passthrough(
+            self._sinks[key].push_passthrough(
                 audio=passthrough_audio,
                 sample_rate=float(sample_rate),
-                output_device_name=self._output_getters[key](),
             )
         except Exception as exc:
             if self._on_error:
@@ -416,16 +409,14 @@ class TTSManager:
             if self._output_mode.get(channel) != "tts":
                 continue
             task = synthesized.task
-            playback = self._playbacks[channel]
-            output_device = self._output_getters[channel]()
+            sink = self._sinks[channel]
             try:
                 self._current_task_by_channel[channel] = task
                 if self._on_play_start:
                     self._on_play_start(channel)
-                playback.play(
+                sink.play(
                     audio=synthesized.audio,
                     sample_rate=int(synthesized.sample_rate),
-                    output_device_name=output_device,
                 )
             except Exception as exc:
                 if self._on_error:
@@ -506,10 +497,9 @@ class TTSManager:
             if self._output_mode.get(channel) != "passthrough":
                 continue
             try:
-                self._playbacks[channel].push_passthrough(
+                self._sinks[channel].push_passthrough(
                     audio=task.audio,
                     sample_rate=float(task.sample_rate),
-                    output_device_name=self._output_getters[channel](),
                 )
             except Exception as exc:
                 if self._on_error:

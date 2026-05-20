@@ -96,6 +96,7 @@ _log = logging.getLogger(__name__)
 
 # 單一語音段落最大 chunk 數（60 秒 @ 16kHz 100ms/chunk）
 _SEGMENT_MAX_CHUNKS = 600
+_IDLE_FINALIZE_TIMEOUT_MS = 1400
 
 
 @dataclass(slots=True)
@@ -223,6 +224,7 @@ class SourceRuntimeV2(_AdaptiveTunerMixin):
         self._last_partial_emit_ms = 0
         self._last_partial_text = ""
         self._last_partial_latency_ms = 0
+        self._last_chunk_received_ms = 0
         self._deferred_early_final_until_ms = 0
         self._segment_chunks: list[np.ndarray] = []
         self._segment_sample_rate = 16000
@@ -305,12 +307,18 @@ class SourceRuntimeV2(_AdaptiveTunerMixin):
                 warmup()
         self._debug("v2 warmup ready")
 
-    def stop(self) -> None:
+    def stop(self, *, wait_timeout: float = 1.2, flush_final_on_stop: bool = False) -> None:
         self._stop_event.set()
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=8.0)
+        # Prevent late callbacks from stale workers during shutdown.
+        self._on_event = None
+        thread = self._thread
+        if thread and thread.is_alive():
+            thread.join(timeout=max(0.1, float(wait_timeout)))
+            if thread.is_alive():
+                _log.warning("ASRWorkerV2 (%s) did not stop within %.1fs", self._source, float(wait_timeout))
         self._thread = None
-        self._flush_final_on_stop()
+        if flush_final_on_stop:
+            self._flush_final_on_stop()
         self._endpointing.reset()
         self._frontend.reset()
         self._segment_chunks = []
@@ -438,6 +446,7 @@ class SourceRuntimeV2(_AdaptiveTunerMixin):
             try:
                 chunk, sample_rate = self._queue.get(timeout=0.2)
             except Empty:
+                self._maybe_finalize_on_idle()
                 continue
 
             drained = 0
@@ -465,9 +474,32 @@ class SourceRuntimeV2(_AdaptiveTunerMixin):
                 sample_rate=sample_rate,
             )
 
+    def _maybe_finalize_on_idle(self) -> None:
+        if not self._in_segment or not self._segment_chunks:
+            return
+        now_ms = int(time.monotonic() * 1000)
+        last_ms = int(self._last_chunk_received_ms or 0)
+        if last_ms <= 0:
+            return
+        if (now_ms - last_ms) < _IDLE_FINALIZE_TIMEOUT_MS:
+            return
+        audio_ms = self._segment_audio_ms()
+        if audio_ms < max(240, int(self._min_partial_audio_ms)):
+            return
+        try:
+            self._debug(f"v2 idle flush final segment_ms={audio_ms}")
+            self._emit_final(now_ms=now_ms, is_early_final=False)
+        except Exception:
+            _log.exception("ASRWorkerV2 (%s) failed idle final flush", self._source)
+        finally:
+            self._endpointing.reset()
+            self._reset_segment()
+            self._clear_pre_roll()
+
     def _process_chunk(self, *, chunk: np.ndarray, sample_rate: float) -> None:
         if sample_rate <= 0:
             return
+        self._last_chunk_received_ms = int(time.monotonic() * 1000)
         prepared = self._frontend.process(chunk, sample_rate)
         chunk = prepared.audio
         if chunk.size == 0:
@@ -590,7 +622,8 @@ class SourceRuntimeV2(_AdaptiveTunerMixin):
         self._pre_roll_sample_count = 0
 
     def _emit_partial(self, *, now_ms: int) -> None:
-        if self._on_event is None:
+        callback = self._on_event
+        if callback is None:
             return
         audio = self._limited_audio(self._partial_history_seconds)
         start = time.perf_counter()
@@ -611,7 +644,7 @@ class SourceRuntimeV2(_AdaptiveTunerMixin):
         self._last_partial_text = text
         self._last_partial_latency_ms = latency_ms
         self._last_partial_emit_ms = now_ms
-        self._on_event(
+        callback(
             V2RuntimeEvent(
                 text=text,
                 is_final=False,
@@ -626,7 +659,8 @@ class SourceRuntimeV2(_AdaptiveTunerMixin):
             self._partial_count += 1
 
     def _emit_final(self, *, now_ms: int, is_early_final: bool) -> None:
-        if self._on_event is None:
+        callback = self._on_event
+        if callback is None:
             return
         audio = self._limited_audio(self._final_history_seconds)
         segment_stats = self._segment_signal_stats(audio=audio, sample_rate=self._segment_sample_rate)
@@ -701,7 +735,7 @@ class SourceRuntimeV2(_AdaptiveTunerMixin):
             )
         self._adaptive_recent_audio_ms.append(max(0, audio_ms))
         self._adaptive_final_latencies.append(max(0, latency_ms))
-        self._on_event(
+        callback(
             V2RuntimeEvent(
                 text=text,
                 is_final=True,

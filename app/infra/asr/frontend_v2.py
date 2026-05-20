@@ -144,13 +144,10 @@ class AsrAudioFrontendV2:
         enhanced = self._enhancer.process(mono, sample_rate_int, speech_ratio=speech_ratio)
         mono = enhanced.audio
         speech_ratio = max(speech_ratio, self._speech_ratio(mono, sample_rate_int, baseline_rms=max(_rms(mono), 1e-6)))
+        current_rms = max(_rms(mono), 1e-6)
         gain = 1.0
-        enhanced_rms = _rms(mono)
-        if enhanced_rms > 1e-6:
-            gain = min(self._max_gain, self._target_rms / enhanced_rms)
-            # Keep music/noise pumping under control when the chunk looks weakly voiced.
-            if speech_ratio < 0.25:
-                gain = min(gain, 1.8)
+        if (speech_ratio > 0.0 or input_rms >= 0.003) and current_rms < self._target_rms:
+            gain = min(self._max_gain, self._target_rms / current_rms)
         processed = np.clip(mono * gain, -1.0, 1.0)
         clipped_ratio = float(np.mean(np.abs(processed) >= 0.995)) if processed.size else 0.0
         output_rms = _rms(processed)

@@ -43,6 +43,10 @@ elif os.path.exists(lioil_icns):
 if os.path.exists(config_yaml):
     datas.append((config_yaml, "."))
 
+bridge_exe = os.path.join(here, "runtimes", "audio", "sync_audio_bridge.exe")
+if os.path.exists(bridge_exe):
+    datas.append((bridge_exe, os.path.join("runtimes", "audio")))
+
 endpoint_volume_script = os.path.join(here, "app", "infra", "audio", "windows_endpoint_volume.ps1")
 if os.path.exists(endpoint_volume_script):
     datas.append((endpoint_volume_script, os.path.join("app", "infra", "audio")))

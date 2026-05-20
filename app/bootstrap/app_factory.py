@@ -14,6 +14,8 @@ from PySide6.QtWidgets import QApplication
 from app.infra.audio.device_registry import DeviceManager
 from app.infra.config.schema import translation_enabled_for_source
 from app.infra.config.settings_store import load_config
+from app.infra.translation.engine import TranslatorManager
+from app.infra.translation.provider import create_translation_provider
 from app.ui.main_window import MainWindow
 
 
@@ -74,6 +76,7 @@ def run_from_cli(argv: list[str] | None = None) -> int:
     if args.check:
         print(f"Config OK: {args.config}")
         print(f"mode={config.direction.mode}")
+        print(f"audio_routing_mode={config.audio.routing_mode}")
         print(
             "runtime_modes="
             f"remote_translation_enabled={translation_enabled_for_source(config.runtime, 'remote')} "
@@ -98,6 +101,8 @@ def run_from_cli(argv: list[str] | None = None) -> int:
         )
         print(f"devices_found={len(devices)}")
         return 0
+
+    _prewarm_translation_runtime(config)
 
     _apply_windows_app_id()
     app = QApplication(sys.argv)
@@ -164,6 +169,46 @@ def _run_translation_smoke(config) -> int:
     }
     print(json.dumps(payload, ensure_ascii=False))
     return 0 if payload["ok"] else 1
+
+
+def _prewarm_translation_runtime(config) -> None:
+    runtime_cfg = getattr(config, "runtime", None)
+    if runtime_cfg is not None and not bool(getattr(runtime_cfg, "warmup_on_start", True)):
+        return
+    local_enabled = bool(translation_enabled_for_source(getattr(config, "runtime", None), "local"))
+    remote_enabled = bool(translation_enabled_for_source(getattr(config, "runtime", None), "remote"))
+    if not (local_enabled or remote_enabled):
+        return
+
+    effective_local = TranslatorManager._effective_llm_config(config.llm, config.llm_channels.local)
+    effective_remote = TranslatorManager._effective_llm_config(config.llm, config.llm_channels.remote)
+
+    warmup_targets: list[object] = []
+    if local_enabled:
+        warmup_targets.append(effective_local)
+    if remote_enabled:
+        warmup_targets.append(effective_remote)
+
+    seen: set[tuple[str, str, int, int, int, int]] = set()
+    for llm_cfg in warmup_targets:
+        backend = str(getattr(llm_cfg, "backend", "") or "").strip().lower()
+        runtime = getattr(llm_cfg, "runtime", None)
+        model_path = str(getattr(runtime, "model_path", "") or "")
+        ctx_size = int(getattr(runtime, "ctx_size", 4096) or 4096)
+        gpu_layers = int(getattr(runtime, "gpu_layers", 0) or 0)
+        threads = int(getattr(runtime, "threads", 1) or 1)
+        batch_size = int(getattr(runtime, "batch_size", 1) or 1)
+        key = (backend, model_path, ctx_size, gpu_layers, threads, batch_size)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            provider = create_translation_provider(llm_cfg)
+            warmup = getattr(provider, "warmup", None)
+            if callable(warmup):
+                warmup()
+        except Exception as exc:
+            print(f"[startup] llm warmup skipped: {exc}", file=sys.stderr)
 
 
 def _apply_windows_app_id() -> None:

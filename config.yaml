@@ -1,12 +1,29 @@
 audio:
-  meeting_in: Windows WASAPI::Voicemeeter Out B1 (VB-Audio Voicemeeter VAIO)
-  microphone_in: Windows WASAPI::Voicemeeter Out B2 (VB-Audio Voicemeeter VAIO)
-  speaker_out: Windows WASAPI::Voicemeeter In 1 (VB-Audio Voicemeeter VAIO)
-  meeting_out: Windows WASAPI::Voicemeeter AUX Input (VB-Audio Voicemeeter VAIO)
-  meeting_in_gain: 1.0
-  microphone_in_gain: 1.0
-  speaker_out_volume: 0.2
-  meeting_out_volume: 1.0
+  meeting_in: 喇叭 (SyncTranslate Virtual Audio Device)
+  microphone_in: Microsoft 音效對應表 - Input
+  speaker_out: Microsoft 音效對應表 - Output
+  meeting_out: SyncTranslate Virtual Microphone (SyncTranslate Virtual Audio Device)
+  routing_mode: synctranslate_virtual_audio
+  system_devices:
+    capture_role: communications
+    render_role: communications
+    follow_system_default: true
+    fallback_to_multimedia_role: true
+    exclude_virtual_devices: true
+  virtual_audio:
+    speaker_name: SyncTranslate Virtual Speaker
+    microphone_name: SyncTranslate Virtual Microphone
+    bridge_enabled: true
+    bridge_path: runtimes\audio\sync_audio_bridge.exe
+    sample_rate: 48000
+    frame_ms: 10
+    target_latency_ms: 120
+    require_driver: true
+  call_translation:
+    listen_remote_original: true
+    listen_remote_translation: true
+    output_local_original: false
+    output_local_translation: true
 language:
   meeting_source: en
   meeting_target: en
@@ -241,6 +258,14 @@ runtime:
   asr_profile_local: meeting_room
   asr_profile_remote: meeting_room
   degradation_policy_enabled: true
+  asr_final_priority_enabled: true
+  asr_final_priority_queue_ratio: 0.45
+  asr_final_priority_latency_ms: 1800
+  asr_final_priority_recover_queue_ratio: 0.15
+  asr_final_priority_recover_after_ms: 8000
+  asr_display_punctuation_enabled: false
+  asr_display_punctuation_languages: zh
+  asr_display_punctuation_mode: lightweight
   asr_accuracy_mode: balanced
   asr_final_rescue_enabled: true
   asr_final_rescue_max_attempts: 1
@@ -256,7 +281,7 @@ asr_profiles:
     model: large-v3-turbo
     device: cuda
     compute_type: float16
-    beam_size: 1
+    beam_size: 2
     final_beam_size: 4
     condition_on_previous_text: false
     final_condition_on_previous_text: false

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import field
 from dataclasses import replace
 from datetime import datetime
 import sys
@@ -35,8 +36,9 @@ class RouterStats:
     capture: dict[str, dict[str, object]]
     asr: dict[str, dict[str, object]]
     tts: dict[str, object]
-    latency: list[dict[str, object]]
-    translation_overflow: dict[str, int]
+    bridge: dict[str, object] = field(default_factory=dict)
+    latency: list[dict[str, object]] = field(default_factory=list)
+    translation_overflow: dict[str, int] = field(default_factory=dict)
 
 
 class AudioRouter:
@@ -125,7 +127,10 @@ class AudioRouter:
         self._input_manager.stop_all()
         self._asr_manager.stop_all()
         self._stop_translation_workers()
-        self._tts_manager.stop()
+        try:
+            self._tts_manager.stop(wait_timeout=1.5)
+        except TypeError:
+            self._tts_manager.stop()
         self._active_sources.clear()
         self._mode = ""
         self._routes = None
@@ -164,12 +169,91 @@ class AudioRouter:
             capture=capture,
             asr=self._asr_manager.stats(),
             tts=self._tts_manager.stats(),
+            bridge=self._bridge_stats(),
             latency=self._latency_tracker.recent(),
             translation_overflow={
                 source: d.stats().overflow_count
                 for source, d in self._translation_dispatchers.items()
             },
         )
+
+    def _bridge_stats(self) -> dict[str, object]:
+        stats: dict[str, object] = {
+            "connected": False,
+            "remote_input_running": False,
+            "remote_input_frames": 0,
+            "remote_input_buffered_frames": 0,
+            "remote_input_buffer_capacity_frames": 0,
+            "virtual_microphone_frames": 0,
+            "virtual_microphone_buffered_frames": 0,
+            "virtual_microphone_dropped_frames": 0,
+            "virtual_microphone_buffer_capacity_frames": 0,
+            "sink_write_failures": 0,
+            "sink_silence_fallback_writes": 0,
+            "sink_dropped_frames": 0,
+            "sink_last_error": "",
+            "last_error": "",
+        }
+
+        bridge_client = None
+        captures = getattr(self._input_manager, "_captures", None)
+        if isinstance(captures, dict):
+            remote_source = captures.get("remote")
+            bridge_client = getattr(remote_source, "_bridge", None)
+        if bridge_client is None:
+            sinks = getattr(self._tts_manager, "_sinks", None)
+            if isinstance(sinks, dict):
+                remote_sink = sinks.get("remote")
+                bridge_client = getattr(remote_sink, "_bridge", None)
+
+        if bridge_client is not None and callable(getattr(bridge_client, "stats", None)):
+            # Do not trigger transport bootstrap from a UI stats poll. If bridge
+            # transport is not yet live, keep default metrics and return quickly.
+            has_live_transport = getattr(bridge_client, "_has_live_transport", None)
+            if callable(has_live_transport) and not bool(has_live_transport()):
+                return stats
+            try:
+                bridge = bridge_client.stats()
+                stats.update(
+                    {
+                        "connected": bool(getattr(bridge, "connected", False)),
+                        "remote_input_running": bool(getattr(bridge, "remote_input_running", False)),
+                        "remote_input_frames": int(getattr(bridge, "remote_input_frames", 0) or 0),
+                        "remote_input_buffered_frames": int(getattr(bridge, "remote_input_buffered_frames", 0) or 0),
+                        "remote_input_buffer_capacity_frames": int(
+                            getattr(bridge, "remote_input_buffer_capacity_frames", 0) or 0
+                        ),
+                        "virtual_microphone_frames": int(getattr(bridge, "virtual_microphone_frames", 0) or 0),
+                        "virtual_microphone_buffered_frames": int(
+                            getattr(bridge, "virtual_microphone_buffered_frames", 0) or 0
+                        ),
+                        "virtual_microphone_dropped_frames": int(
+                            getattr(bridge, "virtual_microphone_dropped_frames", 0) or 0
+                        ),
+                        "virtual_microphone_buffer_capacity_frames": int(
+                            getattr(bridge, "virtual_microphone_buffer_capacity_frames", 0) or 0
+                        ),
+                        "last_error": str(getattr(bridge, "last_error", "") or ""),
+                    }
+                )
+            except Exception as exc:
+                stats["last_error"] = str(exc)
+
+        sinks = getattr(self._tts_manager, "_sinks", None)
+        if isinstance(sinks, dict):
+            remote_sink = sinks.get("remote")
+            diagnostic_stats = getattr(remote_sink, "diagnostic_stats", None)
+            if callable(diagnostic_stats):
+                try:
+                    sink = diagnostic_stats() or {}
+                    stats["sink_write_failures"] = int(sink.get("write_failures", 0) or 0)
+                    stats["sink_silence_fallback_writes"] = int(sink.get("silence_fallback_writes", 0) or 0)
+                    stats["sink_dropped_frames"] = int(sink.get("dropped_frames", 0) or 0)
+                    stats["sink_backpressure_flushes"] = int(sink.get("backpressure_flushes", 0) or 0)
+                    stats["sink_last_error"] = str(sink.get("last_error", "") or "")
+                except Exception as exc:
+                    stats["sink_last_error"] = str(exc)
+        return stats
 
     def _on_local_audio_chunk(self, chunk: np.ndarray, sample_rate: float) -> None:
         self._handle_source_audio_chunk(
@@ -637,7 +721,7 @@ class AudioRouter:
 
     def _stop_translation_workers(self) -> None:
         for dispatcher in self._translation_dispatchers.values():
-            dispatcher.stop()
+            dispatcher.stop(wait_timeout=1.0)
 
     def _enqueue_translation_event(self, event: ASREventWithSource) -> None:
         key = event.source if event.source in ("local", "remote") else "local"

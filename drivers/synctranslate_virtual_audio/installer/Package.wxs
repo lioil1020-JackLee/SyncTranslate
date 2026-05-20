@@ -1,0 +1,48 @@
+﻿<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Name="SyncTranslate Virtual Audio Driver"
+    Manufacturer="SyncTranslate"
+    Version="$(ProductVersion)"
+    UpgradeCode="{55E95DAB-C7F8-41D9-B605-5E6F764985C0}"
+    Scope="perMachine">
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of SyncTranslate Virtual Audio Driver is already installed." />
+    <Property Id="REBOOT" Value="ReallySuppress"/>
+    <MediaTemplate EmbedCab="yes" />
+
+    <SummaryInformation Description="SyncTranslate Virtual Audio Driver MSI" Manufacturer="SyncTranslate" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="SyncTranslate Virtual Audio Driver" />
+    </StandardDirectory>
+
+    <Feature Id="Main" Title="SyncTranslate Virtual Audio Driver" Level="1">
+      <ComponentGroupRef Id="DriverPayload" />
+    </Feature>
+
+    <ComponentGroup Id="DriverPayload" Directory="INSTALLFOLDER">
+      <Files Include="$(PayloadDir)\**" />
+    </ComponentGroup>
+
+    <CustomAction
+      Id="InstallDriverDevice"
+      Directory="INSTALLFOLDER"
+      ExeCommand="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;$infPath = [System.IO.Path]::Combine('[INSTALLFOLDER]', 'ComponentizedAudioSample.inf'); $devconPath = [System.IO.Path]::Combine('[INSTALLFOLDER]', 'devcon.exe'); if ([System.IO.File]::Exists($devconPath)) { &amp; $devconPath install $infPath 'Root\SyncTranslateVirtualAudio' } else { Write-Host 'devcon.exe not found, skipping device installation' }&quot;"
+      Execute="deferred"
+      Return="ignore"
+      Impersonate="no" />
+
+    <CustomAction
+      Id="UninstallDriverPackage"
+      Directory="INSTALLFOLDER"
+      ExeCommand="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]uninstall_driver_package.ps1&quot;"
+      Execute="deferred"
+      Return="ignore"
+      Impersonate="no" />
+
+    <InstallExecuteSequence>
+      <Custom Action="InstallDriverDevice" After="InstallFiles" Condition="NOT REMOVE" />
+      <Custom Action="UninstallDriverPackage" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
+    </InstallExecuteSequence>
+  </Package>
+</Wix>

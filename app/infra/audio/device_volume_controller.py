@@ -21,10 +21,10 @@ class SystemDeviceVolumeController:
         self._script_path = script_path or self._default_script_path()
 
     def apply_audio_route_config(self, audio: AudioRouteConfig) -> None:
-        self.set_input_volume(audio.meeting_in, audio.meeting_in_gain)
-        self.set_input_volume(audio.microphone_in, audio.microphone_in_gain)
-        self.set_output_volume(audio.speaker_out, audio.speaker_out_volume)
-        self.set_output_volume(audio.meeting_out, audio.meeting_out_volume)
+        del audio
+        # Route-level gain/volume control was removed; keep this method as a no-op
+        # for backward compatibility with older call sites.
+        return
 
     def set_input_volume(self, selector: str, scalar: float) -> None:
         self._set_endpoint_volume(flow="capture", selector=selector, scalar=scalar)
