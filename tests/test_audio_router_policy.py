@@ -26,8 +26,11 @@ class _FakeInputManager:
         self.running = {"local": False, "remote": False}
         self.start_calls: list[str] = []
         self.stop_calls: list[str] = []
+        self.fail_start_sources: set[str] = set()
 
     def start(self, source: str, device_name: str, sample_rate: int, chunk_ms: int) -> None:
+        if source in self.fail_start_sources:
+            raise RuntimeError(f"simulated start failure for {source}")
         self.running[source] = True
         self.start_calls.append(source)
 
@@ -228,6 +231,34 @@ def _build_router(
 
 
 class AudioRouterPolicyTests(unittest.TestCase):
+    def test_local_capture_start_failure_does_not_block_remote_source(self) -> None:
+        router, input_manager, asr_manager, _, _ = _build_router(enabled_by_source={"remote": True, "local": True})
+        config = type(
+            "Cfg",
+            (),
+            {
+                "runtime": type(
+                    "Rt",
+                    (),
+                    {
+                        "remote_asr_language": "en",
+                        "local_asr_language": "zh-TW",
+                    },
+                )()
+            },
+        )()
+        router.refresh_runtime_config(config)  # type: ignore[arg-type]
+        input_manager.fail_start_sources.add("local")
+
+        routes = AudioRouteConfig(meeting_in="remote-dev", microphone_in="local-dev", speaker_out="spk", meeting_out="mtg")
+        router.start("bidirectional", routes, sample_rate=24000, chunk_ms=40)
+
+        self.assertIn("remote", input_manager.start_calls)
+        self.assertNotIn("local", input_manager.start_calls)
+        self.assertIn("remote", asr_manager.start_calls)
+        self.assertIn("local", asr_manager.start_calls)
+        self.assertTrue(router.running)
+
     def test_router_starts_only_sources_with_asr_enabled(self) -> None:
         router, input_manager, asr_manager, translator, _ = _build_router(enabled_by_source={"remote": True, "local": True})
         config = type("Cfg", (), {"runtime": type("Rt", (), {"remote_asr_language": "en", "local_asr_language": "none"})()})()

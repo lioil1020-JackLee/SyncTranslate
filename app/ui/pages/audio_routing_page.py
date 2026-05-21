@@ -24,6 +24,7 @@ class AudioRoutingPage(QWidget):
         self._on_route_changed = on_route_changed
         self._input_devices: list[DeviceInfo] = []
         self._output_devices: list[DeviceInfo] = []
+        self._latest_device_summary: dict[str, str] = {}
         self._current_audio_config = AudioRouteConfig()
         self._suspend_notify = False
 
@@ -38,7 +39,7 @@ class AudioRoutingPage(QWidget):
 
         form = QFormLayout()
         form.addRow("音訊模式", self.routing_mode_combo)
-        form.addRow("虛擬裝置", self.virtual_device_summary_label)
+        form.addRow("目前偵測到的裝置", self.virtual_device_summary_label)
 
         info_label = QLabel("SyncTranslate 不提供音量控制；請直接使用 Windows 系統音量與通訊軟體音量。")
         info_label.setWordWrap(True)
@@ -62,7 +63,7 @@ class AudioRoutingPage(QWidget):
 
     def apply_config(self, config: AppConfig) -> None:
         self._current_audio_config = deepcopy(config.audio)
-        self._sync_virtual_summary()
+        self._refresh_device_summary_label()
 
     def selected_audio_routes(self) -> AudioRouteConfig:
         current = deepcopy(self._current_audio_config)
@@ -96,21 +97,15 @@ class AudioRoutingPage(QWidget):
         Args:
             summary: 包含 'meeting_in', 'microphone_in', 'speaker_out', 'meeting_out' 的字典
         """
-        meeting_in = summary.get("meeting_in", "(未偵測)")
-        meeting_out = summary.get("meeting_out", "(未偵測)")
-        microphone_in = summary.get("microphone_in", "(未偵測)")
-        speaker_out = summary.get("speaker_out", "(未偵測)")
-        
-        text = (
-            f"遠端輸入：{meeting_in}\n"
-            f"本地輸入：{microphone_in}\n"
-            f"本地輸出：{speaker_out}\n"
-            f"虛擬麥克風：{meeting_out}"
-        )
-        self.virtual_device_summary_label.setText(text)
+        self._latest_device_summary = dict(summary)
+        self._refresh_device_summary_label()
 
     def _sync_virtual_summary(self) -> None:
-        virtual = self._current_audio_config.virtual_audio
+        self._refresh_device_summary_label()
+
+    def _refresh_device_summary_label(self) -> None:
+        microphone_in = str(self._latest_device_summary.get("microphone_in", "") or "(未偵測)")
+        speaker_out = str(self._latest_device_summary.get("speaker_out", "") or "(未偵測)")
         self.virtual_device_summary_label.setText(
-            f"虛擬喇叭：{virtual.speaker_name}；虛擬麥克風：{virtual.microphone_name}"
+            f"本地輸入：{microphone_in}；本地輸出：{speaker_out}"
         )

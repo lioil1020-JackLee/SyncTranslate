@@ -194,7 +194,7 @@ artifacts/driver/synctranslate_virtual_audio/SyncTranslateVirtualAudioDriver.msi
 2.1.2
 ```
 
-MSI 目前是 staging wrapper。它不應自動安裝 driver package，也不應排程 reboot。
+MSI 目前是使用者安裝包。正式使用時直接雙擊 MSI 即可；若需要手動驗證，先完成 Test Mode。
 
 ## 驗證 Gate
 

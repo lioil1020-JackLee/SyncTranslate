@@ -132,6 +132,8 @@ class TTSManager:
         self._passthrough_gate_until: dict[str, float] = {"local": 0.0, "remote": 0.0}
         self._passthrough_backoff_until: dict[str, float] = {"local": 0.0, "remote": 0.0}
         self._passthrough_failure_backoff_sec = 1.2
+        self._passthrough_batch_wait_sec = 0.10
+        self._passthrough_batch_min_chunks = 4
         self._passthrough_drop_count = {"local": 0, "remote": 0}
         self._passthrough_stop = Event()
         self._passthrough_workers: dict[str, Thread | None] = {"local": None, "remote": None}
@@ -326,7 +328,7 @@ class TTSManager:
         if audio.size == 0 or sample_rate <= 0:
             return
         try:
-            passthrough_audio = audio.astype(np.float32, copy=False)
+            passthrough_audio = self._apply_passthrough_gain(audio)
             worker = self._passthrough_workers.get(key)
             if worker and worker.is_alive():
                 with self._queue_changed:
@@ -525,12 +527,25 @@ class TTSManager:
                 return None
             first = queue.popleft()
 
-            # Merge adjacent chunks into one packet (up to ~320ms) so playback has fewer gaps.
+            # Let real-time audio accumulate briefly so virtual endpoints receive
+            # fewer, larger writes instead of a stream of 20ms fragments.
+            batch_deadline = time.monotonic() + max(0.0, float(self._passthrough_batch_wait_sec))
+            while (
+                not self._passthrough_stop.is_set()
+                and len(queue) < int(self._passthrough_batch_min_chunks - 1)
+                and time.monotonic() < batch_deadline
+            ):
+                remaining = batch_deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self._queue_changed.wait(timeout=min(remaining, 0.02))
+
+            # Merge adjacent chunks into one packet so playback has fewer gaps.
             merged_audio = [first.audio]
             total_frames = int(first.audio.shape[0])
-            max_frames = max(1, int(float(first.sample_rate) * 0.32))
+            max_frames = max(1, int(float(first.sample_rate) * 0.80))
             merged_chunks = 1
-            while queue and total_frames < max_frames and merged_chunks < 8:
+            while queue and total_frames < max_frames and merged_chunks < 24:
                 nxt = queue[0]
                 if abs(float(nxt.sample_rate) - float(first.sample_rate)) > 1.0:
                     break
@@ -571,6 +586,16 @@ class TTSManager:
         out[:fade_frames, :] *= ramp.reshape(-1, 1)
         out[-fade_frames:, :] *= ramp[::-1].reshape(-1, 1)
         return out
+
+    def _apply_passthrough_gain(self, audio: np.ndarray) -> np.ndarray:
+        passthrough_audio = audio.astype(np.float32, copy=False)
+        gain = max(0.0, float(getattr(self._config.runtime, "passthrough_gain", 1.0) or 1.0))
+        if gain == 1.0 or passthrough_audio.size == 0:
+            return passthrough_audio
+        boosted = passthrough_audio.astype(np.float32, copy=True)
+        boosted *= gain
+        np.clip(boosted, -1.0, 1.0, out=boosted)
+        return boosted
 
     def _next_text_task(self, channel: str) -> _TtsTask | None:
         with self._queue_changed:
@@ -693,7 +718,9 @@ class TTSManager:
         return dropped
 
     def _channel_tts_config(self, channel: str) -> TtsConfig:
-        # 通道映射：remote 對應遠端翻譯目標(Meeting)，local 對應本地翻譯目標(Local)
+        # 通道語義是「播放目的地」而非「語音來源」：
+        # - channel=local  : 播放給本地使用者（來自 remote source）
+        # - channel=remote : 播放給遠端對方（來自 local source）
         if channel == "remote":
             target_language = self._config.language.local_target
             preferred_voice = str(getattr(self._config.runtime, "local_tts_voice", "none") or "none")

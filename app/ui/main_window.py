@@ -229,6 +229,9 @@ class MainWindow(QMainWindow):
         self.input_device_names = {d.name for d in input_devices}
         self.output_device_names = {d.name for d in output_devices}
 
+        # Keep route config aligned with current OS defaults before applying UI state.
+        self._auto_populate_devices()
+
         self._suspend_live_apply = True
         try:
             self.audio_routing_page.set_devices(input_devices, output_devices)
@@ -245,7 +248,18 @@ class MainWindow(QMainWindow):
         self.validate_current_routes()
 
     def _auto_populate_devices(self) -> None:
+        before = asdict(self.config.audio)
         self._device_populator.populate(self.config.audio)
+        after = asdict(self.config.audio)
+        if after != before:
+            try:
+                self._save_config_to_disk()
+            except Exception as exc:
+                self._report_error(f"auto_populate save failed: {exc}")
+            try:
+                self._runtime_facade.mark_dirty()
+            except Exception:
+                pass
         summary = self._device_populator.get_device_summary()
         self.audio_routing_page.update_device_summary(summary)
 
@@ -393,6 +407,17 @@ class MainWindow(QMainWindow):
                 self._runtime_facade.mark_dirty()
                 self._ensure_pipelines_ready()
             self.clear_live_caption()
+            
+            # 診斷輸出
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(
+                f"=== START SESSION ===\n"
+                f"Route: local={route.microphone_in!r}, remote={route.meeting_in!r}\n"
+                f"Mode: {self.live_caption_page.selected_mode()!r}\n"
+                f"Sample rate: {self.config.runtime.sample_rate}, Chunk: {self.config.runtime.chunk_ms}"
+            )
+            
             self._run_session_action(
                 "start",
                 route=route,
@@ -432,6 +457,12 @@ class MainWindow(QMainWindow):
                 False,
             )
         detail = str(getattr(result, "error", "") or "bridge_unavailable")
+        if bool(getattr(result, "connected", False)) and bool(getattr(result, "heartbeat_ok", False)) and not bool(getattr(result, "loopback_ok", False)):
+            return (
+                "Bridge 已連線，但 PCM loopback 暫時未就緒："
+                f"{detail}。可先直接開始，若之後仍有問題再看診斷資訊。",
+                False,
+            )
         return f"Bridge 未連線或 PCM loopback 未就緒：{detail}", True
 
     def _validate_virtual_bridge_runtime_or_raise(self) -> None:
@@ -907,8 +938,18 @@ class MainWindow(QMainWindow):
 
     def _resolve_source_runtime_state(self) -> dict[str, dict[str, object]]:
         empty = {
-            "local": {"capture_ready": False, "asr_ready": False, "translation_ready": False},
-            "remote": {"capture_ready": False, "asr_ready": False, "translation_ready": False},
+            "local": {
+                "capture_running": False,
+                "capture_ready": False,
+                "asr_ready": False,
+                "translation_ready": False,
+            },
+            "remote": {
+                "capture_running": False,
+                "capture_ready": False,
+                "asr_ready": False,
+                "translation_ready": False,
+            },
         }
         if not self.audio_router:
             return empty
@@ -925,6 +966,7 @@ class MainWindow(QMainWindow):
                 init_mode = str(asr.get("model_init_mode", "lazy") or "lazy").strip().lower()
                 init_failure = str(asr.get("init_failure", "") or "").strip()
                 ready[source] = {
+                    "capture_running": running,
                     "capture_ready": running and frame_count > 0,
                     "asr_ready": not init_failure and (init_mode == "warm" or partial_count > 0 or final_count > 0),
                     "translation_ready": bool(translation_enabled_for_source(self.config.runtime, source)),
@@ -948,18 +990,34 @@ class MainWindow(QMainWindow):
         local_original_active: bool,
         local_translated_active: bool,
     ) -> None:
+        import logging
+        logger = logging.getLogger(__name__)
+        
         active_sources = self._resolve_active_sources()
         runtime_state = self._resolve_source_runtime_state()
         is_preparing = self._session_action_running and self._session_action_name == "start"
 
         remote_enabled = "remote" in active_sources
         local_enabled = "local" in active_sources
+        
+        # 診斷日誌（採樣輸出）
+        import random
+        if random.random() < 0.1:  # 10% 採樣率
+            logger.debug(
+                f"Panel status update:\n"
+                f"  remote_enabled={remote_enabled}, active_sources={active_sources}\n"
+                f"  runtime_state={runtime_state}\n"
+                f"  remote_original_active={remote_original_active}, "
+                f"remote_translated_active={remote_translated_active}\n"
+                f"  local_original_active={local_original_active}, "
+                f"local_translated_active={local_translated_active}"
+            )
 
         def _original_status(enabled: bool, source: str, has_output: bool) -> str:
             if not enabled:
                 return "idle"
             state = runtime_state.get(source, {})
-            source_ready = bool(state.get("capture_ready", False) and state.get("asr_ready", False))
+            source_ready = bool(state.get("capture_running", False) and state.get("asr_ready", False))
             if is_preparing or not source_ready:
                 return "preparing"
             if has_output or source_ready:

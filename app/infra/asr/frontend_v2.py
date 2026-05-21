@@ -141,8 +141,32 @@ class AsrAudioFrontendV2:
         speech_ratio = self._speech_ratio(mono, sample_rate_int, baseline_rms=input_rms)
         if apply_highpass:
             mono = self._highpass(mono)
+        pre_enhanced = mono.astype(np.float32, copy=True)
         enhanced = self._enhancer.process(mono, sample_rate_int, speech_ratio=speech_ratio)
         mono = enhanced.audio
+        enhanced_rms = _rms(mono)
+        # Guard against false-positive over-suppression: keep audible chunks audible.
+        # This avoids "ASR ready but no captions" when enhancer misclassifies speech/music.
+        if (
+            self._enhancer.enabled
+            and input_rms >= 0.006
+            and enhanced_rms <= max(0.0006, input_rms * 0.08)
+            and (enhanced.suppression_ratio >= 0.90 or enhanced.music_likelihood >= 0.70)
+        ):
+            mono = pre_enhanced
+            enhanced_rms = _rms(mono)
+            enhanced = FrontendChunk(
+                audio=mono.astype(np.float32, copy=False),
+                sample_rate=sample_rate_int,
+                input_rms=input_rms,
+                output_rms=enhanced_rms,
+                applied_gain=1.0,
+                clipped_ratio=0.0,
+                speech_ratio=speech_ratio,
+                noise_floor_rms=enhanced.noise_floor_rms,
+                suppression_ratio=0.0,
+                music_likelihood=enhanced.music_likelihood,
+            )
         speech_ratio = max(speech_ratio, self._speech_ratio(mono, sample_rate_int, baseline_rms=max(_rms(mono), 1e-6)))
         current_rms = max(_rms(mono), 1e-6)
         gain = 1.0

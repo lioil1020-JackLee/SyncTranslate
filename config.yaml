@@ -1,7 +1,7 @@
 audio:
-  meeting_in: 喇叭 (SyncTranslate Virtual Audio Device)
-  microphone_in: Microsoft 音效對應表 - Input
-  speaker_out: Microsoft 音效對應表 - Output
+  meeting_in: Output 1 (SyncTranslate Virtual Speaker)
+  microphone_in: Voicemeeter Out B1 (VB-Audio Voicemeeter VAIO)
+  speaker_out: Voicemeeter Input (VB-Audio Voicemeeter VAIO)
   meeting_out: SyncTranslate Virtual Microphone (SyncTranslate Virtual Audio Device)
   routing_mode: synctranslate_virtual_audio
   system_devices:
@@ -170,7 +170,7 @@ tts:
   model_path: ''
   config_path: ''
   voice_name: zh-TW-HsiaoChenNeural
-  style_preset: broadcast_clear
+  style_preset: conversational
   speaker_id: 0
   length_scale: 1.0
   noise_scale: 0.6
@@ -186,6 +186,7 @@ runtime:
   asr_v2_endpointing: neural_endpoint
   sample_rate: 48000
   chunk_ms: 40
+  passthrough_gain: 4.0
   adaptive_asr_enabled: true
   adaptive_llm_enabled: true
   asr_pre_roll_ms: 360
@@ -239,7 +240,7 @@ runtime:
   local_echo_guard_resume_delay_ms: 300
   remote_echo_guard_resume_delay_ms: 300
   tts_output_mode: passthrough
-  remote_asr_language: auto
+  remote_asr_language: zh-TW
   local_asr_language: zh-TW
   remote_translation_target: en
   local_translation_target: en

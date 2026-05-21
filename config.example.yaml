@@ -243,6 +243,7 @@ runtime:
   asr_pipeline: v2
   asr_v2_backend: faster_whisper_v2
   asr_v2_endpointing: neural_endpoint
+  passthrough_gain: 4.0
   sample_rate: 48000
   chunk_ms: 40
   adaptive_asr_enabled: true

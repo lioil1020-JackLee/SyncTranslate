@@ -35,6 +35,8 @@ try:
 except Exception:
     sc = None
 
+from app.infra.audio.capture import AudioCapture
+from app.infra.audio.device_registry import list_indexed_devices, normalize_device_text
 from app.infra.audio.bridge_ring_buffer import SharedMemoryPcmRingBuffer
 from app.infra.audio.bridge_protocol import (
     BRIDGE_PROTOCOL_VERSION,
@@ -99,6 +101,7 @@ class BridgeCommandHandler:
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
         cmd = str(request.get("cmd") or "").strip()
+        print(f"[BRIDGE HANDLER] cmd='{cmd}', request_keys={list(request.keys())}", flush=True)
         try:
             if cmd == "hello":
                 return self._ok(
@@ -116,8 +119,11 @@ class BridgeCommandHandler:
                 self.state.configured.update(request)
                 return self._ok(configured=True)
             if cmd == "start_remote_input":
+                requested_rate = int(request.get("sample_rate", 48000) or 48000)
+                print(f"[BRIDGE] START_REMOTE_INPUT: old_rate={self.state.remote_input_sample_rate}, new_rate={requested_rate}", flush=True)
                 self.state.remote_input_running = True
-                self.state.remote_input_sample_rate = int(request.get("sample_rate", 48000) or 48000)
+                self.state.remote_input_sample_rate = requested_rate
+                print(f"[BRIDGE] START_REMOTE_INPUT: state now has rate={self.state.remote_input_sample_rate}", flush=True)
                 self._start_remote_input_capture(
                     device_name=str(request.get("device_name") or ""),
                     sample_rate=self.state.remote_input_sample_rate,
@@ -134,9 +140,12 @@ class BridgeCommandHandler:
                 packet = request.get("packet")
                 if not isinstance(packet, dict):
                     raise ValueError("packet is required")
-                audio, sample_rate = decode_audio_packet(packet)
+                audio, packet_sample_rate = decode_audio_packet(packet)
+                print(f"[BRIDGE] INJECT: packet_sample_rate={packet_sample_rate}, state.remote_input_sample_rate={self.state.remote_input_sample_rate}", flush=True)
                 written_frames = self.remote_input_buffer.write(audio)
-                self.state.remote_input_sample_rate = int(sample_rate or self.state.remote_input_sample_rate or 48000)
+                # NOTE: Do NOT update state.remote_input_sample_rate from injected audio.
+                # The sample rate is set by start_remote_input() and should remain stable.
+                # Injected audio inherits the bridge's configured sample rate.
                 self.state.remote_input_frames += written_frames
                 return self._ok(written_frames=written_frames)
             if cmd == "read_remote_input":
@@ -147,6 +156,7 @@ class BridgeCommandHandler:
                 self.remote_input_buffer.clear()
                 self.remote_input_event.reset()
                 sample_rate = int(self.state.remote_input_sample_rate or request.get("sample_rate", 48000) or 48000)
+                print(f"[BRIDGE] READ_REMOTE_INPUT: state_rate={self.state.remote_input_sample_rate}, returning_rate={sample_rate}, frames={audio.shape[0] if audio.ndim > 0 else 0}", flush=True)
                 return self._ok(packet=encode_audio_packet(audio, sample_rate=sample_rate))
             if cmd == "write_virtual_microphone":
                 packet = request.get("packet")
@@ -227,37 +237,102 @@ class BridgeCommandHandler:
         self.remote_input_thread = None
 
     def _remote_input_capture_worker(self, *, device_name: str, sample_rate: int, chunk_ms: int) -> None:
-        if sc is None:
-            self.state.last_error = "soundcard_unavailable"
-            return
+        capture = AudioCapture()
         com_initialized = self._coinitialize_for_thread()
+        resolved_device_name = self._resolve_remote_input_capture_device(device_name)
         try:
-            microphone = self._resolve_loopback_microphone(device_name)
-            block_frames = max(128, int(int(sample_rate) * max(5, int(chunk_ms)) / 1000))
-            with microphone.recorder(samplerate=int(sample_rate), channels=2, blocksize=block_frames) as recorder:
-                while not self.remote_input_stop.is_set():
-                    audio = recorder.record(numframes=block_frames)
-                    if audio is None:
-                        continue
-                    payload = np.asarray(audio, dtype=np.float32)
-                    if payload.size == 0:
-                        continue
-                    if payload.ndim == 1:
-                        payload = payload.reshape((-1, 1))
-                    if payload.shape[1] == 1:
-                        payload = np.repeat(payload, 2, axis=1)
-                    elif payload.shape[1] > 2:
-                        payload = payload[:, :2]
-                    written_frames = self.remote_input_buffer.write(payload)
-                    self.state.remote_input_frames += int(written_frames)
-                    self.remote_input_event.set()
-                    self.state.last_error = ""
+            def _on_audio(audio: np.ndarray, _capture_sample_rate: float) -> None:
+                if self.remote_input_stop.is_set():
+                    return
+                payload = np.asarray(audio, dtype=np.float32)
+                if payload.size == 0:
+                    return
+                if payload.ndim == 1:
+                    payload = payload.reshape((-1, 1))
+                if payload.shape[1] == 1:
+                    payload = np.repeat(payload, 2, axis=1)
+                elif payload.shape[1] > 2:
+                    payload = payload[:, :2]
+                written_frames = self.remote_input_buffer.write(payload)
+                self.state.remote_input_frames += int(written_frames)
+                self.remote_input_event.set()
+                self.state.last_error = ""
+
+            capture.add_consumer(_on_audio)
+            capture.start(resolved_device_name, sample_rate=sample_rate, chunk_ms=chunk_ms)
+            while not self.remote_input_stop.wait(0.1):
+                pass
         except Exception as exc:
             if not self.remote_input_stop.is_set():
                 self.state.last_error = str(exc)
         finally:
+            try:
+                capture.stop()
+            except Exception:
+                pass
             if com_initialized:
                 ctypes.OleDLL("ole32").CoUninitialize()
+
+    @staticmethod
+    def _resolve_remote_input_capture_device(device_name: str) -> str:
+        requested = str(device_name or "").strip()
+        if not requested:
+            return requested
+
+        try:
+            indexed = list_indexed_devices()
+        except Exception:
+            return requested
+
+        requested_item = None
+        for _, item in indexed:
+            if str(item.get("name") or "").strip() == requested:
+                requested_item = item
+                break
+
+        if requested_item is not None and int(requested_item.get("max_input_channels", 0) or 0) > 0:
+            return requested
+
+        requested_norm = normalize_device_text(requested)
+        if "synctranslate" not in requested_norm:
+            return requested
+
+        requested_hostapi = int(requested_item.get("hostapi", -1) or -1) if requested_item else -1
+        speaker_tokens = ("speaker", "output", "render", "喇叭", "輸出")
+        microphone_tokens = ("microphone", "mic", "麥克風", "輸入")
+
+        candidates: list[tuple[int, str]] = []
+        for _, item in indexed:
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            if int(item.get("max_input_channels", 0) or 0) <= 0:
+                continue
+            normalized = normalize_device_text(name)
+            if "synctranslate" not in normalized:
+                continue
+
+            hostapi = int(item.get("hostapi", -1) or -1)
+            hostapi_penalty = 0 if requested_hostapi >= 0 and hostapi == requested_hostapi else 1
+            # Prefer loopback/speaker-like endpoints, and avoid microphone-like endpoints.
+            speaker_hint_penalty = 0 if any(token in normalized for token in speaker_tokens) else 1
+            loopback_hint_penalty = 0 if "loopback" in normalized else 1
+            microphone_hint_penalty = 1 if any(token in normalized for token in microphone_tokens) else 0
+            candidates.append(
+                (
+                    hostapi_penalty * 100
+                    + speaker_hint_penalty * 10
+                    + loopback_hint_penalty * 5
+                    + microphone_hint_penalty,
+                    name,
+                )
+            )
+
+        if not candidates:
+            return requested
+
+        candidates.sort(key=lambda pair: (pair[0], pair[1].lower()))
+        return candidates[0][1]
 
     @staticmethod
     def _coinitialize_for_thread() -> bool:

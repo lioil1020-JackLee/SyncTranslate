@@ -39,6 +39,15 @@ Copy-Item -Path (Join-Path $scriptRoot "verify_driver_install.ps1") -Destination
 Copy-Item -Path (Join-Path $driverRoot "README.md") -Destination $stagingDir -Force
 Copy-Item -Path (Join-Path $driverRoot "driver_contract.md") -Destination $stagingDir -Force
 
+# Copy create_root_device.ps1 (devcon-free SetupAPI helper) into staging
+$createRootDeviceScript = Join-Path $scriptRoot "create_root_device.ps1"
+if (Test-Path $createRootDeviceScript) {
+    Copy-Item -Path $createRootDeviceScript -Destination (Join-Path $stagingDir "create_root_device.ps1") -Force
+} else {
+    Write-Warning "create_root_device.ps1 not found at $createRootDeviceScript. The MSI custom action may not create the virtual audio device."
+}
+
+# Copy devcon.exe if available from WDK (optional, no longer required by MSI)
 $devconCandidates = @(
     "${env:ProgramFiles(x86)}\Windows Kits\10\Tools\10.0.26100.0\x64\devcon.exe",
     "${env:ProgramFiles}\Windows Kits\10\Tools\10.0.26100.0\x64\devcon.exe"
@@ -46,9 +55,6 @@ $devconCandidates = @(
 $devcon = $devconCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
 if ($devcon) {
     Copy-Item -Path $devcon -Destination (Join-Path $stagingDir "devcon.exe") -Force
-}
-else {
-    Write-Warning "devcon.exe was not found. The MSI can still stage the driver, but may not create the root-enumerated audio device."
 }
 if (Test-Path $CertificatePath) {
     Copy-Item -Path $CertificatePath -Destination (Join-Path $stagingDir "SyncTranslateVirtualAudioTest.cer") -Force

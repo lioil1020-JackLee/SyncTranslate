@@ -67,7 +67,6 @@ def _normalize_external_config_keys(raw: dict[str, Any]) -> dict[str, Any]:
     if isinstance(runtime, dict):
         if str(runtime.get("asr_v2_backend", "")).strip().lower() == "funasr_v2":
             runtime["asr_v2_backend"] = "faster_whisper_v2"
-        runtime.pop("passthrough_gain", None)
         runtime.pop("tts_gain", None)
         runtime.pop("streaming_profile_local", None)
         runtime.pop("streaming_profile_remote", None)
@@ -202,7 +201,6 @@ def _present_external_config_keys(raw: dict[str, Any]) -> dict[str, Any]:
         runtime.pop("warmup_on_start", None)
         runtime.pop("use_channel_specific_asr", None)
         runtime.pop("use_channel_specific_llm", None)
-        runtime.pop("passthrough_gain", None)
         runtime.pop("tts_gain", None)
         runtime.pop("streaming_profile_local", None)
         runtime.pop("streaming_profile_remote", None)

@@ -314,7 +314,7 @@ class ConfigMigrationTests(unittest.TestCase):
         self.assertNotIn("translation_enabled", presented["runtime"])
         self.assertNotIn("remote_translation_enabled", presented["runtime"])
         self.assertNotIn("local_translation_enabled", presented["runtime"])
-        self.assertNotIn("passthrough_gain", presented["runtime"])
+        self.assertEqual(presented["runtime"]["passthrough_gain"], 1.0)
         self.assertNotIn("tts_gain", presented["runtime"])
         self.assertNotIn("config_schema_version", presented["runtime"])
         self.assertNotIn("last_migration_note", presented["runtime"])
@@ -491,6 +491,7 @@ class ConfigMigrationTests(unittest.TestCase):
         cfg.runtime.remote_translation_enabled = False
         cfg.runtime.local_translation_enabled = True
         cfg.runtime.tts_output_mode = "passthrough"
+        cfg.runtime.passthrough_gain = 3.5
         cfg.runtime.asr_language_mode = "auto"
         cfg.runtime.local_echo_guard_enabled = True
         cfg.runtime.local_echo_guard_resume_delay_ms = 420
@@ -507,6 +508,7 @@ class ConfigMigrationTests(unittest.TestCase):
         self.assertFalse(loaded.runtime.remote_translation_enabled)
         self.assertTrue(loaded.runtime.local_translation_enabled)
         self.assertEqual(loaded.runtime.tts_output_mode, "passthrough")
+        self.assertEqual(loaded.runtime.passthrough_gain, 3.5)
         self.assertEqual(loaded.runtime.asr_language_mode, "auto")
         self.assertTrue(loaded.runtime.local_echo_guard_enabled)
         self.assertEqual(loaded.runtime.local_echo_guard_resume_delay_ms, 420)

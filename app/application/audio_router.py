@@ -583,34 +583,62 @@ class AudioRouter:
     def _reconcile_runtime_sources(self) -> None:
         if not self.running or self._routes is None or self._sample_rate <= 0:
             return
+        
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(
+            f"_reconcile_runtime_sources: mode={self._mode}, "
+            f"local_device={self._device_of('local')!r}, "
+            f"remote_device={self._device_of('remote')!r}, "
+            f"sample_rate={self._sample_rate}"
+        )
+        
         desired = self._desired_source_state()
         for source in ("local", "remote"):
             capture_needed = bool(desired[source]["capture"])
             asr_needed = bool(desired[source]["asr"])
+            try:
+                self._reconcile_single_source(source=source, capture_needed=capture_needed, asr_needed=asr_needed)
+            except Exception as exc:
+                self._emit_diagnostic_event(
+                    f"audio_source_reconcile_failed source={source} capture_needed={int(capture_needed)} "
+                    f"asr_needed={int(asr_needed)} error={exc}"
+                )
+                if self._on_error:
+                    self._on_error(f"[{source}] audio source reconcile failed: {exc}")
 
-            self._asr_manager.set_enabled(source, asr_needed)
-            asr_running = self._asr_running.get(source, False)
-            if asr_needed and not asr_running:
-                self._asr_manager.start(source, self._on_asr_event)
-                self._asr_running[source] = True
-            elif (not asr_needed) and asr_running:
-                self._asr_manager.stop(source)
-                self._asr_running[source] = False
+    def _reconcile_single_source(self, *, source: str, capture_needed: bool, asr_needed: bool) -> None:
+        self._asr_manager.set_enabled(source, asr_needed)
+        asr_running = self._asr_running.get(source, False)
+        if asr_needed and not asr_running:
+            self._asr_manager.start(source, self._on_asr_event)
+            self._asr_running[source] = True
+        elif (not asr_needed) and asr_running:
+            self._asr_manager.stop(source)
+            self._asr_running[source] = False
 
-            running = self._capture_running.get(source, False)
-            if capture_needed and not running:
-                self._input_manager.add_consumer(source, self._consumer_of(source))
+        running = self._capture_running.get(source, False)
+        if capture_needed and not running:
+            consumer = self._consumer_of(source)
+            self._input_manager.add_consumer(source, consumer)
+            try:
                 self._input_manager.start(
                     source,
                     self._device_of(source),
                     sample_rate=self._sample_rate,
                     chunk_ms=self._chunk_ms,
                 )
-                self._capture_running[source] = True
-            elif not capture_needed and running:
-                self._input_manager.remove_consumer(source, self._consumer_of(source))
-                self._input_manager.stop(source)
-                self._capture_running[source] = False
+            except Exception:
+                try:
+                    self._input_manager.remove_consumer(source, consumer)
+                except Exception:
+                    pass
+                raise
+            self._capture_running[source] = True
+        elif not capture_needed and running:
+            self._input_manager.remove_consumer(source, self._consumer_of(source))
+            self._input_manager.stop(source)
+            self._capture_running[source] = False
 
     def _desired_source_state(self) -> dict[str, dict[str, bool]]:
         return {
@@ -691,14 +719,32 @@ class AudioRouter:
         created_at: datetime,
         speaker_label: str = "",
     ) -> None:
-        should_display, is_stable_partial = self._partial_display_policy.should_display(
-            channel=channel,
-            utterance_id=utterance_id,
-            text=text,
-            is_final=is_final,
-        )
+        import logging
+        logger = logging.getLogger(__name__)
+
+        # Remote meeting captions should appear immediately once ASR emits text.
+        # Local captions keep the stable-partial policy to avoid noisy updates.
+        if channel.startswith("meeting_") and not is_final:
+            should_display, is_stable_partial = True, False
+        else:
+            should_display, is_stable_partial = self._partial_display_policy.should_display(
+                channel=channel,
+                utterance_id=utterance_id,
+                text=text,
+                is_final=is_final,
+            )
         if not should_display:
+            if channel.startswith("meeting_"):
+                logger.info(
+                    f"meeting_transcript_filtered channel={channel} source={source} is_final={is_final} "
+                    f"utterance_id={utterance_id} revision={revision} text={text!r}"
+                )
             return
+        if channel.startswith("meeting_"):
+            logger.info(
+                f"meeting_transcript_stored channel={channel} source={source} is_final={is_final} "
+                f"utterance_id={utterance_id} revision={revision} stable={is_stable_partial} text={text!r}"
+            )
         self._transcript_buffer.upsert_event(
             source=source,
             channel=channel,

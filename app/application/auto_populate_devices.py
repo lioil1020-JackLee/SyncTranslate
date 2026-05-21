@@ -23,16 +23,29 @@ class AutoPopulateDevicesService:
             config: 現有配置
             
         Returns:
-            更新後的配置副本
+            更新後的配置副本，虛擬裝置名稱永遠使用系統當前偵測值
         """
+        import logging
+        logger = logging.getLogger(__name__)
+        
         virtual_status = detect_virtual_audio_install()
         default_capture = self.system_resolver.default_capture_name()
         default_render = self.system_resolver.default_render_name()
 
-        config.meeting_in = virtual_status.speaker_name or ""
-        config.microphone_in = default_capture or ""
-        config.speaker_out = default_render or ""
-        config.meeting_out = virtual_status.microphone_name or ""
+        # Always use detected virtual device names to handle driver/system updates.
+        # Even if config has old names, these will be refreshed to match current system state.
+        config.meeting_in = virtual_status.speaker_name or config.meeting_in or ""
+        config.microphone_in = default_capture or config.microphone_in or ""
+        config.speaker_out = default_render or config.speaker_out or ""
+        config.meeting_out = virtual_status.microphone_name or config.meeting_out or ""
+        
+        logger.info(
+            f"Auto-populated audio routes: "
+            f"meeting_in={config.meeting_in!r}, "
+            f"meeting_out={config.meeting_out!r}, "
+            f"microphone_in={config.microphone_in!r}, "
+            f"speaker_out={config.speaker_out!r}"
+        )
 
         return config
 

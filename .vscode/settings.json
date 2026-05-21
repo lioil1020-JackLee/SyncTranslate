@@ -1,5 +1,6 @@
 {
     "python.terminal.activateEnvironment": false,
     "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
-    "python.terminal.launchArgs": []
+    "python.terminal.launchArgs": [],
+    "chat.agent.maxRequests": 200
 }

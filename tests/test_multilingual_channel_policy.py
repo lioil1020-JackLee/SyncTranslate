@@ -296,6 +296,42 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
         forwarded, _ = local_sink.passthrough_calls[0]
         self.assertAlmostEqual(float(forwarded[0, 0]), 0.25, places=5)
 
+    def test_passthrough_gain_boosts_audio_before_sink(self) -> None:
+        cfg = AppConfig()
+        cfg.runtime.passthrough_gain = 4.0
+        local_sink = _DummySink()
+        manager = TTSManager(
+            config=cfg,
+            local_sink=local_sink,
+            remote_sink=_DummySink(),
+        )
+        manager.set_output_mode("local", "passthrough")
+        manager._passthrough_warmup_until["local"] = 0.0
+
+        mono = np.full((4, 1), 0.1, dtype=np.float32)
+        manager.submit_passthrough("local", mono, 48000.0)
+
+        forwarded, _ = local_sink.passthrough_calls[0]
+        self.assertAlmostEqual(float(forwarded[0, 0]), 0.4, places=5)
+
+    def test_passthrough_gain_clips_audio(self) -> None:
+        cfg = AppConfig()
+        cfg.runtime.passthrough_gain = 4.0
+        local_sink = _DummySink()
+        manager = TTSManager(
+            config=cfg,
+            local_sink=local_sink,
+            remote_sink=_DummySink(),
+        )
+        manager.set_output_mode("local", "passthrough")
+        manager._passthrough_warmup_until["local"] = 0.0
+
+        mono = np.full((4, 1), 0.5, dtype=np.float32)
+        manager.submit_passthrough("local", mono, 48000.0)
+
+        forwarded, _ = local_sink.passthrough_calls[0]
+        self.assertAlmostEqual(float(forwarded[0, 0]), 1.0, places=5)
+
     def test_asr_submit_prefers_strongest_input_channel(self) -> None:
         cfg = AppConfig()
         manager = ASRManagerV2(cfg)

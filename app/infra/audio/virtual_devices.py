@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import soundcard as sc
+
 from app.infra.audio.device_registry import hostapi_name_by_index, list_indexed_devices
 
 
@@ -111,13 +113,15 @@ def _best_capture_endpoint(endpoints: tuple[VirtualAudioEndpoint, ...]) -> Virtu
     return min(endpoints, key=lambda endpoint: _named_endpoint_score(endpoint, SYNC_MICROPHONE_TOKEN))
 
 
-def _named_endpoint_score(endpoint: VirtualAudioEndpoint, preferred_token: str) -> tuple[int, int, int, str]:
+def _named_endpoint_score(endpoint: VirtualAudioEndpoint, preferred_token: str) -> tuple[int, int, int, int, str]:
     normalized = endpoint.name.lower()
     preferred_name_score = 0 if preferred_token in normalized else 1
     semantic_score = _semantic_endpoint_score(normalized, preferred_token)
     hostapi_score = _hostapi_score(endpoint.hostapi_name)
     sample_rate_score = 0 if int(endpoint.default_samplerate) == 48000 else 1
-    return (hostapi_score, preferred_name_score, semantic_score, sample_rate_score, normalized)
+    # Prioritize: name match > semantic match > hostapi > sample rate
+    # This ensures we select the correct virtual speaker/microphone even if it's not the preferred host API.
+    return (preferred_name_score, semantic_score, hostapi_score, sample_rate_score, normalized)
 
 
 def _semantic_endpoint_score(normalized_name: str, preferred_token: str) -> int:

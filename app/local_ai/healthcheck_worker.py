@@ -104,9 +104,18 @@ def main(argv: list[str] | None = None) -> int:
             llm_message=message,
             tts_message=message,
         )
-    sys.stdout.write(json.dumps(asdict(report), ensure_ascii=False))
-    sys.stdout.flush()
-    sys.stderr.flush()
+    payload = json.dumps(asdict(report), ensure_ascii=False)
+    try:
+        sys.stdout.write(payload)
+        sys.stdout.flush()
+    except OSError:
+        # Some Windows launch paths provide a stdout handle that cannot be flushed
+        # reliably; the health result is still produced for any caller that reads it.
+        pass
+    try:
+        sys.stderr.flush()
+    except OSError:
+        pass
     # faster-whisper / CUDA teardown can crash this short-lived subprocess on exit
     # after the health report has already been produced. Exit immediately after flush.
     os._exit(0)

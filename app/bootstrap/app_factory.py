@@ -11,9 +11,10 @@ import time
 from PySide6.QtGui import QFont, QFontDatabase, QIcon
 from PySide6.QtWidgets import QApplication
 
+from app.application.auto_populate_devices import AutoPopulateDevicesService
 from app.infra.audio.device_registry import DeviceManager
 from app.infra.config.schema import translation_enabled_for_source
-from app.infra.config.settings_store import load_config
+from app.infra.config.settings_store import load_config, save_config
 from app.infra.translation.engine import TranslatorManager
 from app.infra.translation.provider import create_translation_provider
 from app.ui.main_window import MainWindow
@@ -67,6 +68,17 @@ def run_from_cli(argv: list[str] | None = None) -> int:
         return int(healthcheck_worker_main(worker_args))
 
     config = load_config(args.config)
+    
+    # Auto-detect and persist virtual device names to ensure config stays in sync with system state.
+    # This handles driver updates or reinstalls that may change virtual device names.
+    try:
+        populator = AutoPopulateDevicesService(exclude_virtual_devices=True)
+        populator.populate(config.audio)
+        save_config(config, args.config)
+    except Exception:
+        # If auto-populate fails, continue with existing config (graceful degradation)
+        pass
+    
     if args.llm_runtime_check:
         return _run_llm_runtime_check(config)
     if args.translation_smoke:

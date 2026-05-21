@@ -4,10 +4,40 @@ import unittest
 
 import numpy as np
 
+from app.infra.asr.enhancement_v2 import EnhancementChunk
 from app.infra.asr.frontend_v2 import AsrAudioFrontendV2
 
 
 class AsrFrontendV2Tests(unittest.TestCase):
+    def test_frontend_falls_back_when_enhancement_over_suppresses(self) -> None:
+        frontend = AsrAudioFrontendV2()
+
+        class _OverSuppressEnhancer:
+            enabled = True
+
+            def process(self, audio: np.ndarray, sample_rate: int, *, speech_ratio: float) -> EnhancementChunk:
+                del sample_rate, speech_ratio
+                return EnhancementChunk(
+                    audio=np.zeros_like(audio, dtype=np.float32),
+                    noise_floor_rms=0.001,
+                    suppression_ratio=0.98,
+                    music_likelihood=0.92,
+                    spectral_flatness=0.1,
+                )
+
+            def reset(self) -> None:
+                pass
+
+        frontend._enhancer = _OverSuppressEnhancer()  # type: ignore[assignment]
+        t = np.linspace(0.0, 0.15, 2400, endpoint=False, dtype=np.float32)
+        signal = 0.05 * np.sin(2.0 * np.pi * 180.0 * t).astype(np.float32)
+
+        chunk = frontend.process(signal, 16000)
+
+        self.assertGreater(chunk.input_rms, 0.006)
+        self.assertGreater(chunk.output_rms, 0.003)
+        self.assertEqual(chunk.suppression_ratio, 0.0)
+
     def test_frontend_prefers_dominant_stereo_channel(self) -> None:
         frontend = AsrAudioFrontendV2()
         t = np.linspace(0.0, 0.02, 960, endpoint=False, dtype=np.float32)

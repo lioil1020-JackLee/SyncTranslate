@@ -61,13 +61,30 @@ class VirtualSpeakerSource:
         self._pending = np.zeros((0, 1), dtype=np.float32)
 
     def start(self, device_name: str, sample_rate: int, chunk_ms: int) -> None:
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        if not device_name:
+            logger.error("VirtualSpeakerSource.start() called with empty device_name")
+            raise ValueError("device_name cannot be empty for VirtualSpeakerSource")
+        
+        # CRITICAL: Remote speaker audio must always be captured at 48kHz
+        # to preserve quality. ASR sample rate (e.g., 16kHz) applies only to
+        # local audio capture. Do NOT resample remote audio to ASR rates.
+        remote_sample_rate = 48000  # Bridge outputs speaker audio at 48kHz
+        
+        logger.info(
+            f"VirtualSpeakerSource.start: device_name={device_name!r}, "
+            f"requested_sample_rate={sample_rate}, remote_sample_rate={remote_sample_rate}, chunk_ms={chunk_ms}"
+        )
+        
         try:
             self._bridge.start_remote_input(
-                sample_rate=int(sample_rate),
+                sample_rate=remote_sample_rate,
                 device_name=str(device_name or ""),
                 chunk_ms=int(chunk_ms),
             )
-            self._sample_rate = int(sample_rate)
+            self._sample_rate = remote_sample_rate
             self._chunk_frames = max(1, int(self._sample_rate * max(5, int(chunk_ms)) / 1000))
             self._pending = np.zeros((0, 1), dtype=np.float32)
             self._running = True
@@ -75,6 +92,7 @@ class VirtualSpeakerSource:
         except Exception as exc:
             self._running = False
             self._last_error = str(exc)
+            logger.exception(f"VirtualSpeakerSource.start() failed: {exc}")
             raise
 
     def stop(self) -> None:
@@ -85,8 +103,15 @@ class VirtualSpeakerSource:
             self._pending = np.zeros((0, 1), dtype=np.float32)
 
     def add_consumer(self, consumer: AudioConsumer) -> None:
+        import logging
+        logger = logging.getLogger(__name__)
+        
         if consumer not in self._consumers:
             self._consumers.append(consumer)
+            logger.info(f"VirtualSpeakerSource.add_consumer: total_consumers={len(self._consumers)}")
+        
+        # Always register bridge callback to ensure remote input thread is started/maintained
+        logger.debug("Registering bridge remote_input_consumer callback")
         self._bridge.add_remote_input_consumer(self._dispatch_audio)
 
     def remove_consumer(self, consumer: AudioConsumer) -> None:

@@ -199,22 +199,7 @@ test_signing_enabled
 
 ## 安裝策略
 
-不要先在開發主機安裝。
-
-正確順序：
-
-1. 建立 disposable Windows VM。
-2. 建立 VM snapshot。
-3. 在 VM 啟用 Test Mode。
-4. 在 VM 信任測試憑證。
-5. 在 VM 安裝 MSI 或 driver package。
-6. 確認裝置管理員沒有驚嘆號。
-7. 確認有：
-   - `SyncTranslate Virtual Speaker`
-   - `SyncTranslate Virtual Microphone`
-8. 重啟 VM 三次。
-9. 執行 IOCTL sine injection smoke test。
-10. 再做 Driver Verifier。
+正式測試建議先在 disposable Windows VM 上完成：啟用 Test Mode、雙擊 MSI、確認 `SyncTranslate Virtual Speaker` / `SyncTranslate Virtual Microphone` 出現，再做 smoke test。
 
 ## VM 驗證流程
 
@@ -228,15 +213,7 @@ powershell -ExecutionPolicy Bypass -File drivers/synctranslate_virtual_audio/scr
 powershell -ExecutionPolicy Bypass -File drivers/synctranslate_virtual_audio/scripts/vm_smoke_sequence.ps1 -Phase all
 ```
 
-`vm_smoke_sequence.ps1 -Phase all` 會依序執行：
-
-1. **preflight** — 環境 gate（administrator / test signing / certificate）
-2. **install** — 安裝 `SyncTranslateVirtualAudioDriver.msi`
-3. **verify** — 確認 `SyncTranslate Virtual Speaker` / `SyncTranslate Virtual Microphone` 出現
-4. **ioctl** — Python IOCTL smoke test（WRITE_PCM / GET_STATS / FLUSH / 錄音驗證）
-5. **reboot gate** — 提示手動重啟三次（每次重啟後重跑 verify + ioctl）
-6. **verifier** — 啟用 Driver Verifier，再次 smoke
-7. **uninstall** — 解除安裝，確認裝置清除
+`vm_smoke_sequence.ps1 -Phase all` 會依序做 preflight、install、verify、ioctl、reboot gate、verifier 與 uninstall。
 
 結果 JSON 寫入 `logs/vm_smoke_sequence/`。
 

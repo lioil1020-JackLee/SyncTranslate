@@ -8,7 +8,10 @@ param(
     [switch]$SkipLlmDownload,
     [string]$LlamaCudaFlavor = "cu125",
     # Force CPU-only llama-cpp-python wheel (for CI without GPU, or CPU-only machines)
-    [switch]$LlamaCpuOnly
+    [switch]$LlamaCpuOnly,
+    # Build llama-cpp-python from source instead of using a prebuilt wheel.
+    # This is opt-in because source builds can accidentally pick up Debug CRTs.
+    [switch]$BuildLlamaCppFromSource
 )
 
 $ErrorActionPreference = "Stop"
@@ -49,7 +52,9 @@ New-RuntimeVenv -Name "shared" -InstallCudaTorch -Packages @(
     "onnxruntime>=1.22.0"
 )
 
-# Install llama-cpp-python. Auto-detects CUDA+MSVC for GPU build, falls back to CPU wheel.
+# Install llama-cpp-python from a prebuilt wheel by default.
+# Source builds are opt-in because they are more fragile on Windows and can
+# produce Debug CRT dependencies when the toolchain is not perfectly aligned.
 $sharedPy = Join-Path $RuntimeRoot "shared\Scripts\python.exe"
 
 function Find-VcVars64 {
@@ -73,7 +78,7 @@ function Install-LlamaCppPython {
     $hasNvcc = (Get-Command "nvcc" -ErrorAction SilentlyContinue) -ne $null
     $vcvars  = Find-VcVars64
 
-    if (-not $CpuOnly -and $hasNvcc -and $vcvars) {
+    if ($BuildLlamaCppFromSource -and -not $CpuOnly -and $hasNvcc -and $vcvars) {
         Write-Host "[runtime:shared] CUDA + MSVC detected - building llama-cpp-python with CUDA support..."
         # Must run inside vcvars64 environment; use NMake generator to avoid VS CUDA toolset requirement
         # /utf-8 is required on Traditional Chinese Windows (CP950) to prevent C2001 errors in llama.cpp jinja headers
@@ -92,6 +97,9 @@ set FORCE_CMAKE=1
         }
         Write-Warning "[runtime:shared] CUDA build failed (exit $LASTEXITCODE), falling back to prebuilt CUDA wheel"
     } else {
+        if (-not $BuildLlamaCppFromSource) {
+            Write-Host "[runtime:shared] source build disabled - using prebuilt wheel"
+        }
         if (-not $hasNvcc) { Write-Host "[runtime:shared] nvcc not found - skipping CUDA build" }
         if (-not $vcvars)  { Write-Host "[runtime:shared] MSVC (vcvars64.bat) not found - skipping CUDA build" }
     }

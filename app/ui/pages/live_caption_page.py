@@ -696,7 +696,10 @@ class LiveCaptionPage(_LiveCaptionConfigMixin, QWidget):
             self._channel_combo(channel, "voice").setEnabled(translation_enabled)
             self._channel_combo(channel, "asr").setToolTip("ASR辨識語言，可選 auto 或指定語言")
             self._channel_combo(channel, "target").setToolTip("翻譯模式下使用的目標語言")
-            self._channel_combo(channel, "voice").setToolTip("翻譯模式下使用的 TTS 聲線")
+            if channel == "remote":
+                self._channel_combo(channel, "voice").setToolTip("遠端來源翻譯後在本地播放的 TTS 聲線")
+            else:
+                self._channel_combo(channel, "voice").setToolTip("本地來源翻譯後送往遠端的 TTS 聲線")
     def _refresh_panel_labels(self) -> None:
         for channel in _CHANNELS:
             self._channel_text_label(channel, "original").setText(

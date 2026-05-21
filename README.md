@@ -2,7 +2,7 @@
 
 ## 重要安全狀態
 
-目前 SyncTranslate 自製 Windows 音訊 driver 僅可在一次性 Windows VM / lab 環境測試，不建議安裝到日常使用的主機。曾觀察到 `tabletaudiosample.sys` 觸發 `SYSTEM_THREAD_EXCEPTION_NOT_HANDLED (0x7E)` 藍畫面，因此 MSI 已改為只封裝檔案，不會自動安裝 driver 或要求重開機；`install_driver_package.ps1` 也會預設阻擋主機安裝，除非明確傳入 `-AllowHostInstall`。
+SyncTranslate 使用 test-signed 的 Windows 音訊 driver。正常流程是先 `uv sync`，再直接雙擊 MSI 安裝驅動，最後在通訊軟體裡選擇 SyncTranslate 虛擬裝置。若把專案搬到另一台電腦，先重新執行 `uv sync`；如果 `runtimes/` 沒一起搬過去，再補跑 runtime 準備腳本。
 
 **Windows 本地 AI 通話翻譯系統** — 透過自研虛擬音訊設備實現無需 Voicemeeter、無需外接硬體的全雙向通話翻譯。
 
@@ -29,18 +29,12 @@ SyncTranslate 提供 `SyncTranslate Virtual Speaker` 與 `SyncTranslate Virtual 
 - Python 3.12 / uv（用於開發環境）
 
 ### 驅動安裝（首次只需一次）
-```powershell
-# 1. 以系統管理員身份開啟 PowerShell
-# 2. 啟用 Windows Test Mode（需重新開機一次）
-Set-Location E:\py\SyncTranslate
-.\drivers\synctranslate_virtual_audio\scripts\enable_test_mode.ps1
-# 重新開機後...
 
-# 3. 安裝 MSI（需要 Administrator 權限）
-msiexec /i "artifacts/driver/synctranslate_virtual_audio/SyncTranslateVirtualAudioDriver.msi"
-```
+1. 以系統管理員身份開啟 PowerShell，執行 `enable_test_mode.ps1`。
+2. 重新開機一次。
+3. 直接雙擊 `artifacts/driver/synctranslate_virtual_audio/SyncTranslateVirtualAudioDriver.msi`。
 
-安裝完成後，可在「聲音設定」或「音訊設備管理員」中看到 SyncTranslate 虛擬端點。不同 Windows 語系可能顯示為 `SyncTranslate Virtual Speaker`，或類似 `喇叭 (SyncTranslate Virtual Audio Device)`；麥克風通常顯示為 `SyncTranslate Virtual Microphone`。
+安裝完成後，應能看到 `SyncTranslate Virtual Speaker` 與 `SyncTranslate Virtual Microphone`。
 
 ### 首次運行應用
 ```powershell
@@ -53,6 +47,13 @@ uv run python main.py --check
 ```
 
 首次運行時，若 bridge process（`sync_audio_bridge.exe`）未啟動，App 會嘗試自動啟動；若需手動啟動或重啟 bridge，可由 UI 設定面板觸發。
+
+### 搬到新電腦
+
+1. 安裝 Python 3.12 與 `uv`。
+2. 在專案根目錄執行 `uv sync`。
+3. 若沒有帶上 `runtimes/`，先跑 `tools/runtime_setup/prepare_external_runtimes.ps1`。
+4. 直接雙擊 MSI 安裝驅動。
 
 ### 基本使用流程
 1. 在 Zoom/Teams/Meet 等通訊軟體中，將麥克風輸入設為 `SyncTranslate Virtual Microphone`
@@ -229,8 +230,7 @@ SyncTranslate Virtual Microphone ← 虛擬麥克風（通訊軟體看得到）
 
 目前不做正式簽章，因此這是自用/內測路線：
 
-- 需要 Administrator 權限安裝 driver。
-- 需要 Windows Test Mode。
+- 需要 Administrator 權限與 Windows Test Mode。
 - Secure Boot 可能需要關閉。
 - 未簽章 App/Driver 可能被 SmartScreen 或防毒提醒。
 - 公司電腦、受管裝置或不願意開 Test Mode 的朋友不適合使用目前版本。
@@ -268,11 +268,7 @@ Set-Location E:\py\SyncTranslate
 
 #### 步驟 2：安裝 MSI
 
-Test Mode 啟用且重新開機後，以 Administrator 身份執行：
-
-```powershell
-msiexec /i "artifacts/driver/synctranslate_virtual_audio/SyncTranslateVirtualAudioDriver.msi"
-```
+Test Mode 啟用且重新開機後，直接雙擊 `artifacts/driver/synctranslate_virtual_audio/SyncTranslateVirtualAudioDriver.msi` 即可。
 
 #### 步驟 3：驗證安裝
 

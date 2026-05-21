@@ -79,6 +79,17 @@ class VirtualAudioBridgeClient:
         self._driver_client = SyncTranslateDriverAudioClient()
 
     def start_remote_input(self, *, sample_rate: int, device_name: str = "", chunk_ms: int = 10) -> None:
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        if not device_name:
+            logger.error("start_remote_input called with empty device_name")
+            raise ValueError("device_name cannot be empty")
+        
+        logger.info(
+            f"VirtualAudioBridgeClient.start_remote_input: "
+            f"device_name={device_name!r}, sample_rate={sample_rate}, chunk_ms={chunk_ms}"
+        )
         self._remote_input_sample_rate = int(sample_rate)
         self._request(
             {
@@ -375,6 +386,16 @@ class VirtualAudioBridgeClient:
                 if audio.size == 0:
                     continue
                 sample_rate_float = float(sample_rate or self._remote_input_sample_rate or 48000)
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.debug(
+                    f"[CLIENT] _poll_remote_input: "
+                    f"packet_sample_rate={sample_rate}, "
+                    f"stored_sample_rate={self._remote_input_sample_rate}, "
+                    f"final_rate={sample_rate_float}, "
+                    f"audio_frames={audio.shape[0] if audio.ndim > 0 else 0}, "
+                    f"consumers={len(consumers)}"
+                )
                 for consumer in consumers:
                     consumer(audio.astype(np.float32, copy=False), sample_rate_float)
             except Exception as exc:
@@ -382,9 +403,9 @@ class VirtualAudioBridgeClient:
                 time.sleep(0.1)
 
     def _request(self, request: dict[str, object]) -> dict[str, object]:
-        with self._lock:
-            if self._embedded_handler is not None:
-                return self._request_embedded_locked(request)
+            with self._lock:
+                if self._embedded_handler is not None:
+                    return self._request_embedded_locked(request)
             try:
                 connection = self._ensure_connection_locked()
             except VirtualBridgeUnavailable:
