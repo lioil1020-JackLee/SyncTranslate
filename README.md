@@ -99,7 +99,7 @@ uv run python main.py --check
 ### 虛擬音訊驅動
 - **SyncTranslate Virtual Speaker**：接收 SyncTranslate 的本地翻譯輸出
 - **SyncTranslate Virtual Microphone**：向通訊軟體呈現 SyncTranslate 的虛擬麥克風
-- **Bridge Process**：原生 C++ audio bridge（`sync_audio_bridge.exe`），負責 48kHz 48-bit ring buffer 與 IPC
+- **Bridge Process**：原生 C++ audio bridge（`sync_audio_bridge.exe`），負責 48kHz PCM ring buffer 與 IPC
 - **無需第三方虛擬音訊軟體**：不依賴 Voicemeeter、VB-CABLE 或其他虛擬音訊工具
 
 ### 診斷與監測
