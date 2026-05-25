@@ -12,6 +12,8 @@ import numpy as np
 
 from app.domain.models import ErrorEvent
 from app.infra.audio.routing import AudioInputManager
+from app.infra.audio.frame import ChannelPolicy
+from app.infra.audio.format_adapter import ensure_float32_frame, to_asr_mono_16k
 from app.infra.asr.contracts import ASREventWithSource, AsrManagerProtocol
 from app.infra.config.schema import AppConfig, AudioRouteConfig, RuntimeConfig
 from app.domain.runtime_state import StateManager
@@ -76,6 +78,7 @@ class AudioRouter:
         self._chunk_ms: int = ASR_DEFAULT_CHUNK_MS
         self._capture_running: dict[str, bool] = {"local": False, "remote": False}
         self._asr_running: dict[str, bool] = {"local": False, "remote": False}
+        self._source_roles: dict[str, str] = {"local": "dialogue_local", "remote": "dialogue_remote"}
         self._async_translation = bool(async_translation)
         self._runtime_config: AppConfig | None = None
         self._translation_dispatchers: dict[str, TranslationDispatcher] = {
@@ -105,17 +108,24 @@ class AudioRouter:
         self._state.start_session()
         self._tts_manager.start()
         self._mode = self._normalize_mode(mode)
+        if self._runtime_config is not None and hasattr(self._runtime_config.runtime, "session_mode"):
+            self._mode = self._normalize_mode(getattr(self._runtime_config.runtime, "session_mode", self._mode))
         self._routes = routes
         self._sample_rate = int(sample_rate)
         self._chunk_ms = int(chunk_ms)
         desired = self._desired_source_state()
-        self._active_sources = {source for source, state in desired.items() if state["capture"] or state["asr"]}
+        self._source_roles = (
+            {"local": "meeting_disabled", "remote": "meeting_monitor"}
+            if self._mode == "meeting"
+            else {"local": "dialogue_local", "remote": "dialogue_remote"}
+        )
+        self._active_sources = {self._logical_name(source) for source, state in desired.items() if state["capture"] or state["asr"]}
 
         if not self._active_sources and not self._has_passthrough_enabled():
             raise ValueError("No active sources configured")
 
         self._start_translation_workers()
-        self._warmup_asr_sources(sorted(source for source in self._active_sources if desired[source]["asr"]))
+        self._warmup_asr_sources(sorted(source for source, state in desired.items() if state["asr"]))
         self._reconcile_runtime_sources()
 
     def stop(self) -> None:
@@ -151,6 +161,7 @@ class AudioRouter:
                 "frame_count": item.frame_count,
                 "level": item.level,
                 "last_error": item.last_error,
+                "channels": int(getattr(item, "channels", 0) or 0),
             }
             for source, item in capture_stats.items()
         }
@@ -159,6 +170,8 @@ class AudioRouter:
             running=state.running,
             active_sources=sorted(self._active_sources),
             state={
+                "session_mode": self._mode,
+                "source_roles": dict(self._source_roles),
                 "local_asr_enabled": state.local_asr_enabled,
                 "remote_asr_enabled": state.remote_asr_enabled,
                 "local_tts_busy": state.local_tts_busy,
@@ -280,13 +293,22 @@ class AudioRouter:
         sample_rate: float,
     ) -> None:
         self._state.tick()
-        # Submit audio to ASR before any optional passthrough/output work so the
-        # recognition path is not delayed by playback-device overhead.
-        if self._state.can_accept_asr(source):
-            self._asr_manager.submit(source, chunk, sample_rate)
-        # Keep local/remote passthrough handling fully symmetric: the source-specific
-        # difference is only which output channel receives the live audio.
-        self._tts_manager.submit_passthrough(passthrough_channel, chunk, sample_rate)
+        desired = self._desired_source_state().get(source, {})
+        if bool(desired.get("direct_passthrough", False)):
+            submit_direct = getattr(self._tts_manager, "submit_direct_passthrough", None)
+            if callable(submit_direct):
+                submit_direct(passthrough_channel, chunk, sample_rate)
+            else:
+                self._tts_manager.submit_passthrough(passthrough_channel, chunk, sample_rate)
+            return
+        if bool(desired.get("asr", False)) and self._state.can_accept_asr(source):
+            frame = ensure_float32_frame(
+                chunk,
+                int(sample_rate),
+                source_id=source,
+                role=self._source_roles.get(source, source),
+            )
+            self._asr_manager.submit(source, to_asr_mono_16k(frame), 16000.0)
 
     def _on_asr_event(self, event: ASREventWithSource) -> None:
         try:
@@ -622,12 +644,21 @@ class AudioRouter:
             consumer = self._consumer_of(source)
             self._input_manager.add_consumer(source, consumer)
             try:
-                self._input_manager.start(
-                    source,
-                    self._device_of(source),
-                    sample_rate=self._sample_rate,
-                    chunk_ms=self._chunk_ms,
-                )
+                try:
+                    self._input_manager.start(
+                        source,
+                        self._device_of(source),
+                        sample_rate=self._sample_rate,
+                        chunk_ms=self._chunk_ms,
+                        channels_policy=self._channel_policy_of(source),
+                    )
+                except TypeError:
+                    self._input_manager.start(
+                        source,
+                        self._device_of(source),
+                        sample_rate=self._sample_rate,
+                        chunk_ms=self._chunk_ms,
+                    )
             except Exception:
                 try:
                     self._input_manager.remove_consumer(source, consumer)
@@ -642,15 +673,23 @@ class AudioRouter:
 
     def _desired_source_state(self) -> dict[str, dict[str, bool]]:
         return {
-            "local": {
-                "asr": self._asr_needed_for_source("local"),
-                "capture": self._asr_needed_for_source("local") or self._tts_manager.is_passthrough_enabled("remote"),
-            },
-            "remote": {
-                "asr": self._asr_needed_for_source("remote"),
-                "capture": self._asr_needed_for_source("remote") or self._tts_manager.is_passthrough_enabled("local"),
-            },
+            "local": self._direction_state("local"),
+            "remote": self._direction_state("remote"),
         }
+
+    def _direction_state(self, source: str) -> dict[str, bool]:
+        if self._mode == "meeting":
+            return {
+                "asr": source == "remote",
+                "capture": source == "remote",
+                "direct_passthrough": False,
+            }
+        if not self._mode_allows_source(source):
+            return {"asr": False, "capture": False, "direct_passthrough": False}
+        policy = self._dialogue_output_policy(source)
+        direct = policy == "direct_passthrough"
+        asr = policy in {"translated_tts", "subtitle_only"} and self._asr_needed_for_source(source)
+        return {"asr": asr, "capture": asr or direct, "direct_passthrough": direct}
 
     def _asr_needed_for_source(self, source: str) -> bool:
         if not self._mode_allows_source(source):
@@ -658,10 +697,14 @@ class AudioRouter:
         runtime = self._effective_runtime
         if runtime is None:
             return True
+        if self._mode == "meeting" and self._runtime_config is not None:
+            return str(getattr(self._runtime_config.meeting, "asr_language", "zh-TW") or "zh-TW").strip().lower() != "none"
         attr = "remote_asr_language" if source == "remote" else "local_asr_language"
-        return str(getattr(runtime, attr, "auto") or "auto").strip().lower() != "none"
+        return str(getattr(runtime, attr, "en") or "en").strip().lower() != "none"
 
     def _mode_allows_source(self, source: str) -> bool:
+        if self._mode == "meeting":
+            return source == "remote"
         if self._mode == "meeting_to_local":
             return source == "remote"
         if self._mode == "local_to_meeting":
@@ -671,9 +714,13 @@ class AudioRouter:
     @staticmethod
     def _normalize_mode(mode: str) -> str:
         normalized = str(mode or "").strip().lower()
+        if normalized in {"meeting", "meeting_monitor", "caption"}:
+            return "meeting"
+        if normalized in {"dialogue", "dialogue_voice", "voice"}:
+            return "dialogue"
         if normalized in {"meeting_to_local", "local_to_meeting", "bidirectional"}:
-            return normalized
-        return "bidirectional"
+            return "dialogue" if normalized == "bidirectional" else normalized
+        return "meeting"
 
     def _has_passthrough_enabled(self) -> bool:
         return self._tts_manager.is_passthrough_enabled("local") or self._tts_manager.is_passthrough_enabled("remote")
@@ -687,9 +734,36 @@ class AudioRouter:
     def _device_of(self, source: str) -> str:
         if self._routes is None:
             return ""
+        if self._mode == "meeting" and self._runtime_config is not None and hasattr(self._runtime_config, "meeting"):
+            meeting = self._runtime_config.meeting
+            return meeting.output_loopback_device if meeting.audio_source == "system_output_loopback" else meeting.input_device
         if source == "remote":
             return self._routes.meeting_in
         return self._routes.microphone_in
+
+    def _channel_policy_of(self, source: str) -> str:
+        if self._mode == "meeting":
+            meeting = getattr(self._runtime_config, "meeting", None)
+            if meeting is not None and getattr(meeting, "audio_source", "") == "system_output_loopback":
+                return ChannelPolicy.STEREO_OR_MONO.value
+            return ChannelPolicy.MONO.value
+        state = self._desired_source_state().get(source, {})
+        if bool(state.get("direct_passthrough", False)):
+            return ChannelPolicy.STEREO_OR_MONO.value
+        return ChannelPolicy.STEREO.value if source == "remote" else ChannelPolicy.MONO.value
+
+    def _logical_name(self, source: str) -> str:
+        if self._mode == "meeting" and source == "remote":
+            return "meeting"
+        return "dialogue_remote" if source == "remote" else "dialogue_local"
+
+    def _dialogue_output_policy(self, source: str) -> str:
+        cfg = self._runtime_config
+        if cfg is None or not hasattr(cfg, "dialogue"):
+            channel = "local" if source == "remote" else "remote"
+            return "direct_passthrough" if self._tts_manager.is_passthrough_enabled(channel) else "translated_tts"
+        direction = cfg.dialogue.remote_to_local if source == "remote" else cfg.dialogue.local_to_remote
+        return str(getattr(direction, "output_policy", "direct_passthrough") or "direct_passthrough")
 
     def _consumer_of(self, source: str):
         if source == "remote":
@@ -723,16 +797,12 @@ class AudioRouter:
         logger = logging.getLogger(__name__)
 
         # Remote meeting captions should appear immediately once ASR emits text.
-        # Local captions keep the stable-partial policy to avoid noisy updates.
-        if channel.startswith("meeting_") and not is_final:
-            should_display, is_stable_partial = True, False
-        else:
-            should_display, is_stable_partial = self._partial_display_policy.should_display(
-                channel=channel,
-                utterance_id=utterance_id,
-                text=text,
-                is_final=is_final,
-            )
+        should_display, is_stable_partial = self._partial_display_policy.should_display(
+            channel=channel,
+            utterance_id=utterance_id,
+            text=text,
+            is_final=is_final,
+        )
         if not should_display:
             if channel.startswith("meeting_"):
                 logger.info(

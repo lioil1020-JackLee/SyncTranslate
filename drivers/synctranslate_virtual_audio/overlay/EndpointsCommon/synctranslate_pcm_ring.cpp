@@ -6,7 +6,7 @@ typedef struct _SYNCTRANSLATE_PCM_RING
 {
     KSPIN_LOCK lock;
     volatile LONG initState;
-    FLOAT* samples;
+    SHORT* samples;
     ULONG capacityFrames;
     ULONG readPos;
     ULONG writePos;
@@ -42,8 +42,8 @@ SyncTranslatePcmRingInitialize(
         return STATUS_DEVICE_BUSY;
     }
 
-    SIZE_T allocationBytes = (SIZE_T)capacityFrames * sizeof(FLOAT);
-    FLOAT* samples = (FLOAT*)ExAllocatePool2(
+    SIZE_T allocationBytes = (SIZE_T)capacityFrames * SYNCTRANSLATE_VIRTUAL_AUDIO_BYTES_PER_FRAME;
+    SHORT* samples = (SHORT*)ExAllocatePool2(
         POOL_FLAG_NON_PAGED,
         allocationBytes,
         SYNCTRANSLATE_PCM_RING_POOLTAG
@@ -72,7 +72,7 @@ SyncTranslatePcmRingInitialize(
 VOID
 SyncTranslatePcmRingShutdown()
 {
-    FLOAT* samples = NULL;
+    SHORT* samples = NULL;
 
     if (InterlockedExchange(&g_syncTranslatePcmRing.initState, 0) == 2)
     {
@@ -107,16 +107,20 @@ SyncTranslatePcmRingFlush()
 }
 
 ULONG
-SyncTranslatePcmRingWriteFloat32Mono(
-    _In_reads_(frames) const FLOAT* samples,
-    _In_ ULONG frames
+SyncTranslatePcmRingWritePcm16Stereo(
+    _In_reads_bytes_(bytes) const BYTE* pcmBytes,
+    _In_ ULONG bytes
 )
 {
-    if (samples == NULL || frames == 0 ||
+    if (pcmBytes == NULL || bytes == 0 ||
+        (bytes % SYNCTRANSLATE_VIRTUAL_AUDIO_BYTES_PER_FRAME) != 0 ||
         InterlockedCompareExchange(&g_syncTranslatePcmRing.initState, 2, 2) != 2)
     {
         return 0;
     }
+
+    ULONG frames = bytes / SYNCTRANSLATE_VIRTUAL_AUDIO_BYTES_PER_FRAME;
+    const SHORT* sourceSamples = (const SHORT*)pcmBytes;
 
     KIRQL oldIrql;
     KeAcquireSpinLock(&g_syncTranslatePcmRing.lock, &oldIrql);
@@ -130,7 +134,10 @@ SyncTranslatePcmRingWriteFloat32Mono(
             g_syncTranslatePcmRing.droppedFrames++;
         }
 
-        g_syncTranslatePcmRing.samples[g_syncTranslatePcmRing.writePos] = samples[frame];
+        SIZE_T sourceIndex = (SIZE_T)frame * SYNCTRANSLATE_VIRTUAL_AUDIO_CHANNELS;
+        SIZE_T ringIndex = (SIZE_T)g_syncTranslatePcmRing.writePos * SYNCTRANSLATE_VIRTUAL_AUDIO_CHANNELS;
+        g_syncTranslatePcmRing.samples[ringIndex] = sourceSamples[sourceIndex];
+        g_syncTranslatePcmRing.samples[ringIndex + 1] = sourceSamples[sourceIndex + 1];
         g_syncTranslatePcmRing.writePos = (g_syncTranslatePcmRing.writePos + 1) % g_syncTranslatePcmRing.capacityFrames;
         g_syncTranslatePcmRing.bufferedFrames++;
         g_syncTranslatePcmRing.totalWrittenFrames++;
@@ -141,21 +148,25 @@ SyncTranslatePcmRingWriteFloat32Mono(
 }
 
 ULONG
-SyncTranslatePcmRingReadFloat32Mono(
-    _Out_writes_(frames) FLOAT* samples,
-    _In_ ULONG frames
+SyncTranslatePcmRingReadPcm16Stereo(
+    _Out_writes_bytes_(bytes) BYTE* pcmBytes,
+    _In_ ULONG bytes
 )
 {
-    if (samples == NULL || frames == 0)
+    if (pcmBytes == NULL || bytes == 0 ||
+        (bytes % SYNCTRANSLATE_VIRTUAL_AUDIO_BYTES_PER_FRAME) != 0)
     {
         return 0;
     }
 
-    RtlZeroMemory(samples, (SIZE_T)frames * sizeof(FLOAT));
+    RtlZeroMemory(pcmBytes, bytes);
     if (InterlockedCompareExchange(&g_syncTranslatePcmRing.initState, 2, 2) != 2)
     {
         return 0;
     }
+
+    ULONG frames = bytes / SYNCTRANSLATE_VIRTUAL_AUDIO_BYTES_PER_FRAME;
+    SHORT* destinationSamples = (SHORT*)pcmBytes;
 
     ULONG framesRead = 0;
     KIRQL oldIrql;
@@ -169,7 +180,10 @@ SyncTranslatePcmRingReadFloat32Mono(
             break;
         }
 
-        samples[frame] = g_syncTranslatePcmRing.samples[g_syncTranslatePcmRing.readPos];
+        SIZE_T destinationIndex = (SIZE_T)frame * SYNCTRANSLATE_VIRTUAL_AUDIO_CHANNELS;
+        SIZE_T ringIndex = (SIZE_T)g_syncTranslatePcmRing.readPos * SYNCTRANSLATE_VIRTUAL_AUDIO_CHANNELS;
+        destinationSamples[destinationIndex] = g_syncTranslatePcmRing.samples[ringIndex];
+        destinationSamples[destinationIndex + 1] = g_syncTranslatePcmRing.samples[ringIndex + 1];
         g_syncTranslatePcmRing.readPos = (g_syncTranslatePcmRing.readPos + 1) % g_syncTranslatePcmRing.capacityFrames;
         g_syncTranslatePcmRing.bufferedFrames--;
         g_syncTranslatePcmRing.totalReadFrames++;
@@ -195,10 +209,10 @@ SyncTranslatePcmRingBytesPerSample(
 }
 
 static VOID
-SyncTranslatePcmRingWriteSampleFromFloat(
+SyncTranslatePcmRingWriteSampleFromPcm16(
     _Out_writes_bytes_(sampleBytes) BYTE* dst,
     _In_ ULONG sampleBytes,
-    _In_ FLOAT value,
+    _In_ SHORT value,
     _In_ USHORT formatTag,
     _In_opt_ const GUID* subFormat
 )
@@ -209,23 +223,13 @@ SyncTranslatePcmRingWriteSampleFromFloat(
                 subFormat != NULL &&
                 IsEqualGUID(*subFormat, KSDATAFORMAT_SUBTYPE_IEEE_FLOAT))))
     {
-        *(FLOAT*)dst = value;
+        *(FLOAT*)dst = (FLOAT)value / 32768.0f;
         return;
     }
 
     if (sampleBytes == sizeof(SHORT))
     {
-        FLOAT clamped = max(-1.0f, min(1.0f, value));
-        LONG scaled = (LONG)(clamped * 32767.0f);
-        if (scaled > 32767)
-        {
-            scaled = 32767;
-        }
-        if (scaled < -32768)
-        {
-            scaled = -32768;
-        }
-        *(SHORT*)dst = (SHORT)scaled;
+        *(SHORT*)dst = value;
         return;
     }
 
@@ -270,13 +274,17 @@ SyncTranslatePcmRingReadIntoDma(
 
     for (ULONG frame = 0; frame < frames; ++frame)
     {
-        FLOAT sample = 0.0f;
-        (void)SyncTranslatePcmRingReadFloat32Mono(&sample, 1);
+        SHORT stereoFrame[SYNCTRANSLATE_VIRTUAL_AUDIO_CHANNELS] = { 0, 0 };
+        (void)SyncTranslatePcmRingReadPcm16Stereo(
+            (BYTE*)stereoFrame,
+            SYNCTRANSLATE_VIRTUAL_AUDIO_BYTES_PER_FRAME
+        );
 
         BYTE* framePtr = dst + ((SIZE_T)frame * bytesPerFrame);
         for (ULONG channel = 0; channel < channels; ++channel)
         {
-            SyncTranslatePcmRingWriteSampleFromFloat(
+            SHORT sample = stereoFrame[min(channel, SYNCTRANSLATE_VIRTUAL_AUDIO_CHANNELS - 1u)];
+            SyncTranslatePcmRingWriteSampleFromPcm16(
                 framePtr + ((SIZE_T)channel * sampleBytes),
                 sampleBytes,
                 sample,

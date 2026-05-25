@@ -1,6 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import platform
+
+try:  # pragma: no cover - unavailable on non-Windows test runners.
+    import winreg
+except ImportError:  # pragma: no cover
+    winreg = None  # type: ignore[assignment]
 
 import soundcard as sc
 
@@ -41,6 +47,10 @@ class VirtualAudioInstallStatus:
     microphone_name: str
     render_endpoints: tuple[VirtualAudioEndpoint, ...]
     capture_endpoints: tuple[VirtualAudioEndpoint, ...]
+    speaker_interface_available: bool = False
+    microphone_interface_available: bool = False
+    speaker_interface_count: int = 0
+    microphone_interface_count: int = 0
 
 
 def detect_virtual_audio_install() -> VirtualAudioInstallStatus:
@@ -49,6 +59,7 @@ def detect_virtual_audio_install() -> VirtualAudioInstallStatus:
     capture_endpoints = tuple(endpoint for endpoint in endpoints if endpoint.is_capture)
     speaker = _best_render_endpoint(render_endpoints)
     microphone = _best_capture_endpoint(capture_endpoints)
+    speaker_interface_count, microphone_interface_count = _detect_windows_ks_interface_counts()
     return VirtualAudioInstallStatus(
         installed=bool(render_endpoints and capture_endpoints),
         speaker_available=speaker is not None,
@@ -59,7 +70,47 @@ def detect_virtual_audio_install() -> VirtualAudioInstallStatus:
         microphone_name=microphone.name if microphone else "",
         render_endpoints=render_endpoints,
         capture_endpoints=capture_endpoints,
+        speaker_interface_available=speaker_interface_count > 0,
+        microphone_interface_available=microphone_interface_count > 0,
+        speaker_interface_count=speaker_interface_count,
+        microphone_interface_count=microphone_interface_count,
     )
+
+
+def _detect_windows_ks_interface_counts() -> tuple[int, int]:
+    if platform.system().lower() != "windows" or winreg is None:
+        return 0, 0
+    speaker_count = 0
+    microphone_count = 0
+    try:
+        root = r"SYSTEM\CurrentControlSet\Control\DeviceClasses"
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, root) as device_classes:
+            for class_index in range(winreg.QueryInfoKey(device_classes)[0]):
+                try:
+                    class_name = winreg.EnumKey(device_classes, class_index)
+                    with winreg.OpenKey(device_classes, class_name) as class_key:
+                        subkey_count = winreg.QueryInfoKey(class_key)[0]
+                        for subkey_index in range(subkey_count):
+                            try:
+                                interface_name = winreg.EnumKey(class_key, subkey_index)
+                                with winreg.OpenKey(class_key, interface_name) as interface_key:
+                                    child_count = winreg.QueryInfoKey(interface_key)[0]
+                                    child_names = [winreg.EnumKey(interface_key, child_index) for child_index in range(child_count)]
+                            except OSError:
+                                continue
+                            normalized = interface_name.lower()
+                            if "root#media" not in normalized:
+                                continue
+                            normalized_children = " ".join(child.lower() for child in child_names)
+                            if "#wavespeaker" in normalized_children:
+                                speaker_count += 1
+                            if "#wavemicarray1" in normalized_children:
+                                microphone_count += 1
+                except OSError:
+                    continue
+    except OSError:
+        return 0, 0
+    return speaker_count, microphone_count
 
 
 def _sync_endpoints() -> tuple[VirtualAudioEndpoint, ...]:

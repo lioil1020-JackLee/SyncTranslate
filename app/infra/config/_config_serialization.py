@@ -9,6 +9,12 @@ from app.infra.config._config_migration import _normalize_asr_profile_legacy_fie
 
 def _normalize_external_config_keys(raw: dict[str, Any]) -> dict[str, Any]:
     data = deepcopy(raw)
+    def _fixed_language(value: object, default: str) -> str:
+        raw_value = str(value or "").strip()
+        if not raw_value or raw_value.lower() == "auto":
+            return default
+        normalized = "zh-TW" if raw_value.lower() in {"zh", "zh-tw", "zh_tw", "tw"} else raw_value
+        return normalized if normalized in {"zh-TW", "en", "ja", "ko", "th"} else default
     asr_profiles = data.get("asr_profiles")
     if isinstance(asr_profiles, dict):
         asr_channels = data.get("asr_channels")
@@ -105,9 +111,11 @@ def _normalize_external_config_keys(raw: dict[str, Any]) -> dict[str, Any]:
             runtime["local_translation_enabled"] = local_enabled_default
 
         if "remote_asr_language" not in runtime:
-            runtime["remote_asr_language"] = "auto"
+            runtime["remote_asr_language"] = "en"
         if "local_asr_language" not in runtime:
-            runtime["local_asr_language"] = "auto"
+            runtime["local_asr_language"] = "zh-TW"
+        runtime["remote_asr_language"] = _fixed_language(runtime.get("remote_asr_language"), "en")
+        runtime["local_asr_language"] = _fixed_language(runtime.get("local_asr_language"), "zh-TW")
 
         if "remote_translation_target" not in runtime:
             enabled = bool(runtime.get("remote_translation_enabled", remote_enabled_default))
@@ -121,7 +129,36 @@ def _normalize_external_config_keys(raw: dict[str, Any]) -> dict[str, Any]:
         if "local_tts_voice" not in runtime:
             runtime["local_tts_voice"] = "none"
 
-        runtime["asr_language_mode"] = "auto"
+        runtime["asr_language_mode"] = "fixed"
+        runtime["session_mode"] = "dialogue" if str(runtime.get("session_mode", "")).lower() in {"dialogue", "dialogue_voice"} else "meeting"
+        runtime["config_schema_version"] = 7
+    audio = data.get("audio")
+    if isinstance(audio, dict):
+        va = audio.setdefault("virtual_audio", {})
+        if isinstance(va, dict):
+            va["sample_rate"] = 48000
+            va["channels"] = 2
+            va["bit_depth"] = 16
+            va["dtype"] = "int16"
+    meeting = data.setdefault("meeting", {})
+    if isinstance(meeting, dict):
+        meeting["audio_source"] = str(meeting.get("audio_source") or meeting.get("source_kind") or "system_input")
+        meeting["asr_language"] = _fixed_language(meeting.get("asr_language"), "zh-TW")
+        meeting["translation_target"] = _fixed_language(meeting.get("translation_target"), "en")
+        meeting.setdefault("input_device", "")
+        meeting.setdefault("output_loopback_device", "")
+        meeting.setdefault("record_transcript", True)
+        meeting["tts_enabled"] = False
+    dialogue = data.setdefault("dialogue", {})
+    if isinstance(dialogue, dict) and isinstance(runtime, dict):
+        dialogue["remote_asr_language"] = _fixed_language(dialogue.get("remote_asr_language", runtime.get("remote_asr_language")), "en")
+        dialogue["local_asr_language"] = _fixed_language(dialogue.get("local_asr_language", runtime.get("local_asr_language")), "zh-TW")
+        dialogue["remote_translation_target"] = _fixed_language(dialogue.get("remote_translation_target", runtime.get("remote_translation_target")), "zh-TW")
+        dialogue["local_translation_target"] = _fixed_language(dialogue.get("local_translation_target", runtime.get("local_translation_target")), "en")
+        dialogue.setdefault("remote_tts_voice", runtime.get("remote_tts_voice", "none") or "none")
+        dialogue.setdefault("local_tts_voice", runtime.get("local_tts_voice", "none") or "none")
+        dialogue.setdefault("passthrough_mode", "direct")
+        dialogue.setdefault("passthrough_gain", runtime.get("passthrough_gain", 1.0))
     return data
 
 

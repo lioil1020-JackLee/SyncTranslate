@@ -6,7 +6,9 @@ from tempfile import TemporaryDirectory
 from unittest import TestCase
 from unittest.mock import patch
 
-from app.bootstrap.app_factory import _default_config_path, create_cli_parser
+from app.bootstrap.app_factory import _default_config_path, create_cli_parser, run_from_cli
+from app.infra.config.schema import AppConfig
+from tools.validation.common import ValidationItem, ValidationReport
 
 
 class AppFactoryTests(TestCase):
@@ -49,3 +51,48 @@ class AppFactoryTests(TestCase):
             self.assertEqual(resolved, target.resolve())
             self.assertTrue(target.exists())
             self.assertEqual(target.read_text(encoding="utf-8"), bundled.read_text(encoding="utf-8"))
+
+    def test_check_output_includes_v2_health_summary(self) -> None:
+        cfg = AppConfig()
+        report = ValidationReport(
+            "check",
+            "WARN",
+            [
+                ValidationItem("bridge_status", "WARN", "Bridge is not required in meeting mode."),
+                ValidationItem("driver_status", "WARN", "Driver missing; meeting mode still works."),
+                ValidationItem("audio_devices", "PASS", "devices", {"input_count": 2, "output_count": 3}),
+            ],
+            {
+                "config_schema_version": 7,
+                "session_mode": "meeting",
+                "meeting_audio_source": "system_input",
+                "selected_asr_backend": "faster-whisper",
+                "virtual_audio_required": False,
+                "bridge_required": False,
+                "config_migration_status": "current",
+                "validation_warnings": [],
+            },
+        )
+        with patch("app.bootstrap.app_factory.load_config", return_value=cfg):
+            with patch("app.bootstrap.app_factory.save_config"):
+                with patch("app.bootstrap.app_factory.AutoPopulateDevicesService"):
+                    with patch("app.bootstrap.app_factory.DeviceManager") as manager_cls:
+                        with patch("app.bootstrap.app_factory.build_check_report", return_value=report):
+                            manager_cls.return_value.list_all.return_value = [object(), object()]
+                            from io import StringIO
+                            import contextlib
+
+                            output = StringIO()
+                            with contextlib.redirect_stdout(output):
+                                exit_code = run_from_cli(["--check", "--config", "config.yaml"])
+
+        text = output.getvalue()
+        self.assertEqual(exit_code, 0)
+        self.assertIn("config_schema_version=7", text)
+        self.assertIn("session_mode=meeting", text)
+        self.assertIn("meeting_audio_source=system_input", text)
+        self.assertIn("selected_asr_backend=faster-whisper", text)
+        self.assertIn("virtual_audio_required=false", text)
+        self.assertIn("bridge_required=false", text)
+        self.assertIn("input_device_count=2", text)
+        self.assertIn("output_device_count=3", text)

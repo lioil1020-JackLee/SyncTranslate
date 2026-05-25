@@ -94,9 +94,9 @@ class ConfigMigrationTests(unittest.TestCase):
         self.assertNotIn("funasr", local)
         self.assertEqual(normalized["runtime"]["asr_v2_backend"], "faster_whisper_v2")
 
-    def test_runtime_defaults_prefer_auto_asr_language_mode(self) -> None:
+    def test_runtime_defaults_prefer_fixed_asr_language_mode(self) -> None:
         cfg = AppConfig()
-        self.assertEqual(cfg.runtime.asr_language_mode, "auto")
+        self.assertEqual(cfg.runtime.asr_language_mode, "fixed")
 
     def test_default_llm_backend_uses_local_llama_inprocess(self) -> None:
         cfg = AppConfig()
@@ -145,7 +145,8 @@ class ConfigMigrationTests(unittest.TestCase):
         self.assertEqual(migrated["audio"]["meeting_out"], "REMOTE_OUT")
         self.assertEqual(migrated["runtime"]["sample_rate"], 16000)
         self.assertEqual(migrated["runtime"]["chunk_ms"], 30)
-        self.assertEqual(migrated["runtime"]["config_schema_version"], 6)
+        self.assertEqual(migrated["runtime"]["config_schema_version"], 7)
+        self.assertEqual(migrated["runtime"]["session_mode"], "meeting")
         self.assertEqual(migrated["llm"]["backend"], "local_llama_inprocess")
         self.assertIn("local", migrated["asr_channels"])
         self.assertIn("remote", migrated["llm_channels"])
@@ -213,7 +214,7 @@ class ConfigMigrationTests(unittest.TestCase):
         self.assertEqual(normalized["runtime"]["tts_output_mode"], "tts")
         self.assertTrue(normalized["runtime"]["remote_translation_enabled"])
         self.assertTrue(normalized["runtime"]["local_translation_enabled"])
-        self.assertEqual(normalized["runtime"]["asr_language_mode"], "auto")
+        self.assertEqual(normalized["runtime"]["asr_language_mode"], "fixed")
 
     def test_present_external_keeps_canonical_and_drops_aliases(self) -> None:
         raw = {
@@ -509,7 +510,7 @@ class ConfigMigrationTests(unittest.TestCase):
         self.assertTrue(loaded.runtime.local_translation_enabled)
         self.assertEqual(loaded.runtime.tts_output_mode, "passthrough")
         self.assertEqual(loaded.runtime.passthrough_gain, 3.5)
-        self.assertEqual(loaded.runtime.asr_language_mode, "auto")
+        self.assertEqual(loaded.runtime.asr_language_mode, "fixed")
         self.assertTrue(loaded.runtime.local_echo_guard_enabled)
         self.assertEqual(loaded.runtime.local_echo_guard_resume_delay_ms, 420)
         self.assertEqual(loaded.runtime.remote_echo_guard_resume_delay_ms, 520)

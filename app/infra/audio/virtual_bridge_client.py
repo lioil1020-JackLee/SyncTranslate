@@ -11,7 +11,12 @@ from typing import Callable
 
 import numpy as np
 
-from app.infra.audio.bridge_protocol import decode_audio_packet, encode_audio_packet
+from app.infra.audio.bridge_protocol import (
+    VIRTUAL_AUDIO_V2_CHANNELS,
+    decode_audio_packet,
+    decode_pcm16_stereo_packet,
+    encode_pcm16_stereo_packet,
+)
 from app.infra.audio.bridge_ring_buffer import SharedMemoryPcmRingBuffer
 from app.infra.audio.synctranslate_driver_client import (
     SyncTranslateDriverAudioClient,
@@ -130,7 +135,7 @@ class VirtualAudioBridgeClient:
         self._request(
             {
                 "cmd": "write_virtual_microphone",
-                "packet": encode_audio_packet(audio, sample_rate=int(sample_rate)),
+                "packet": encode_pcm16_stereo_packet(audio, sample_rate=int(sample_rate)),
             }
         )
 
@@ -151,7 +156,7 @@ class VirtualAudioBridgeClient:
         self._request(
             {
                 "cmd": "inject_remote_input",
-                "packet": encode_audio_packet(audio, sample_rate=int(sample_rate)),
+                "packet": encode_pcm16_stereo_packet(audio, sample_rate=int(sample_rate)),
             }
         )
 
@@ -215,7 +220,13 @@ class VirtualAudioBridgeClient:
             frames = max(1, int(int(sample_rate) * max(10, int(duration_ms)) / 1000))
             t = np.arange(frames, dtype=np.float32) / float(sample_rate)
             tone = (np.sin(2.0 * np.pi * float(tone_hz) * t) * 0.2).reshape((-1, 1))
-            self.write_virtual_microphone(tone, sample_rate=int(sample_rate))
+            response = self._request(
+                {
+                    "cmd": "write_virtual_microphone",
+                    "packet": encode_pcm16_stereo_packet(tone, sample_rate=int(sample_rate)),
+                }
+            )
+            written_frames = int(response.get("written_frames", 0) or 0)
 
             event_signaled = False
             if before.virtual_microphone_event_name:
@@ -234,17 +245,24 @@ class VirtualAudioBridgeClient:
             shm_name = str(after.virtual_microphone_shared_memory_name or "")
             capacity = int(after.virtual_microphone_buffer_capacity_frames or 0)
             if shm_name and capacity > 0:
-                shared_buffer = SharedMemoryPcmRingBuffer.attach(name=shm_name, capacity_frames=capacity, channels=1)
+                shared_buffer = SharedMemoryPcmRingBuffer.attach(
+                    name=shm_name,
+                    capacity_frames=capacity,
+                    channels=VIRTUAL_AUDIO_V2_CHANNELS,
+                )
                 try:
                     shared_frames = int(shared_buffer.stats().buffered_frames)
                 finally:
                     shared_buffer.close()
 
             elapsed_ms = (time.perf_counter() - started) * 1000.0
-            ok = stats_delta >= frames and (shared_frames > 0 or event_signaled)
+            frames_written = written_frames if written_frames > 0 else frames
+            bridge_accepted_audio = frames_written >= frames or stats_delta >= frames
+            bridge_observed_audio = stats_delta >= frames or shared_frames > 0 or event_signaled
+            ok = bridge_accepted_audio and bridge_observed_audio
             return VirtualBridgePcmVerificationResult(
                 ok=bool(ok),
-                frames_written=frames,
+                frames_written=frames_written,
                 stats_delta_frames=stats_delta,
                 shared_memory_frames=shared_frames,
                 event_signaled=event_signaled,
@@ -382,7 +400,7 @@ class VirtualAudioBridgeClient:
                 packet = payload.get("packet")
                 if not isinstance(packet, dict):
                     continue
-                audio, sample_rate = decode_audio_packet(packet)
+                audio, sample_rate = _decode_bridge_audio_packet(packet)
                 if audio.size == 0:
                     continue
                 sample_rate_float = float(sample_rate or self._remote_input_sample_rate or 48000)
@@ -463,8 +481,8 @@ class VirtualAudioBridgeClient:
         if self._connection is not None:
             return self._connection
         self._ensure_process_locked()
-        # 縮短超時到 1.5 秒，防止 UI 卡住
-        deadline = time.monotonic() + 1.5
+        # Packaged PyInstaller bridge workers can take a few seconds to cold-start.
+        deadline = time.monotonic() + 8.0
         last_error = ""
         while time.monotonic() < deadline:
             try:
@@ -560,15 +578,18 @@ class InMemoryVirtualAudioBridgeClient:
                 return
             consumers = list(self._consumers)
             rate = float(sample_rate or self._remote_input_sample_rate or 48000)
-            self._remote_input_frames += int(audio.shape[0]) if audio.ndim else int(audio.size)
-        payload = audio.astype(np.float32, copy=True)
+        packet = encode_pcm16_stereo_packet(audio, sample_rate=int(rate))
+        payload, packet_sample_rate = decode_pcm16_stereo_packet(packet)
+        with self._lock:
+            self._remote_input_frames += int(payload.shape[0]) if payload.ndim else int(payload.size)
         for consumer in consumers:
-            consumer(payload, rate)
+            consumer(payload, float(packet_sample_rate))
 
     def write_virtual_microphone(self, audio: np.ndarray, *, sample_rate: int) -> None:
-        payload = audio.astype(np.float32, copy=True)
+        packet = encode_pcm16_stereo_packet(audio, sample_rate=int(sample_rate))
+        payload, packet_sample_rate = decode_pcm16_stereo_packet(packet)
         with self._lock:
-            self.virtual_microphone_packets.append((payload, int(sample_rate)))
+            self.virtual_microphone_packets.append((payload, int(packet_sample_rate)))
             self._virtual_microphone_frames += int(payload.shape[0]) if payload.ndim else int(payload.size)
 
     def flush_virtual_microphone(self) -> None:
@@ -621,6 +642,12 @@ class InMemoryVirtualAudioBridgeClient:
     def heartbeat(self, *, timeout_ms: int = 200) -> VirtualBridgeHeartbeatResult:
         del timeout_ms
         return VirtualBridgeHeartbeatResult(ok=True, roundtrip_ms=0.0, error="")
+
+
+def _decode_bridge_audio_packet(packet: dict[str, object]) -> tuple[np.ndarray, int]:
+    if int(packet.get("protocol_version", 1) or 1) == 2:
+        return decode_pcm16_stereo_packet(packet)  # type: ignore[arg-type]
+    return decode_audio_packet(packet)  # type: ignore[arg-type]
 
 
 __all__ = [

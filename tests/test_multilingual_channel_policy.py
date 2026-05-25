@@ -89,15 +89,15 @@ class MultiLingualChannelPolicyTests(unittest.TestCase):
         self.assertEqual(translator_manager._providers["local"]._client.model, "hy-mt1.5-7b")
         self.assertEqual(translator_manager._providers["remote"]._client.model, "hy-mt1.5-7b")
 
-    def test_asr_auto_mode_does_not_pin_language(self) -> None:
+    def test_asr_auto_mode_compatibility_resolves_to_fixed_runtime_languages(self) -> None:
         cfg = AppConfig()
         cfg.language.local_source = "ja"
         cfg.language.meeting_source = "th"
         cfg.runtime.asr_language_mode = "auto"
         manager = ASRManagerV2(cfg)
 
-        self.assertEqual(manager._asr_language_for_source("local"), "")
-        self.assertEqual(manager._asr_language_for_source("remote"), "")
+        self.assertEqual(manager._asr_language_for_source("local"), "zh-TW")
+        self.assertEqual(manager._asr_language_for_source("remote"), "en")
 
     def test_non_cjk_asr_ignores_cjk_initial_prompt_bias(self) -> None:
         self.assertEqual(

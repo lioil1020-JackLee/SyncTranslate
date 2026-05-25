@@ -1,4 +1,8 @@
 ﻿audio:
+  windows_io:
+    preferred_sample_rate: 48000
+    preferred_channels: 2
+    internal_dtype: float32
   meeting_in: ''
   microphone_in: ''
   speaker_out: ''
@@ -16,6 +20,9 @@
     bridge_enabled: true
     bridge_path: runtimes\audio\sync_audio_bridge.exe
     sample_rate: 48000
+    channels: 2
+    bit_depth: 16
+    dtype: int16
     frame_ms: 10
     target_latency_ms: 120
     require_driver: true
@@ -240,6 +247,8 @@ tts_channels:
   remote:
     voice_name: ko-KR-SunHiNeural
 runtime:
+  config_schema_version: 7
+  session_mode: meeting
   asr_pipeline: v2
   asr_v2_backend: faster_whisper_v2
   asr_v2_endpointing: neural_endpoint
@@ -299,6 +308,7 @@ runtime:
   local_echo_guard_resume_delay_ms: 300
   remote_echo_guard_resume_delay_ms: 300
   tts_output_mode: subtitle_only
+  asr_language_mode: fixed
   remote_asr_language: en
   local_asr_language: zh-TW
   remote_translation_target: zh-TW
@@ -332,3 +342,34 @@ runtime:
   asr_final_rescue_min_chars: 4
   asr_chinese_fallback_enabled: true
   asr_chinese_fallback_model: .\runtimes\models\belle-zh-ct2
+
+meeting:
+  audio_source: system_input
+  input_device: ''
+  output_loopback_device: ''
+  asr_language: zh-TW
+  translation_target: en
+  record_transcript: true
+  tts_enabled: false
+
+dialogue:
+  remote_asr_language: en
+  local_asr_language: zh-TW
+  remote_translation_target: zh-TW
+  local_translation_target: en
+  remote_tts_voice: none
+  local_tts_voice: none
+  passthrough_mode: direct
+  passthrough_gain: 1.0
+  remote_to_local:
+    asr_language: en
+    translation_target: zh-TW
+    tts_voice: none
+    output_policy: direct_passthrough
+    passthrough_gain: 1.0
+  local_to_remote:
+    asr_language: zh-TW
+    translation_target: en
+    tts_voice: none
+    output_policy: direct_passthrough
+    passthrough_gain: 1.0

@@ -17,6 +17,7 @@ from app.domain.constants import (
 )
 from app.domain.models import ErrorEvent
 from app.infra.audio.sinks import AudioSink
+from app.infra.audio.format_adapter import ensure_float32_frame, to_output_float32_stereo_48k
 from app.infra.tts.edge_tts_adapter import EdgeTtsProvider
 from app.infra.tts.voice_policy import resolve_tts_config_for_target
 from app.infra.config.schema import AppConfig, TtsConfig
@@ -357,6 +358,29 @@ class TTSManager:
                         source=key,
                         code="passthrough_stream_failed",
                         message="Passthrough streaming failed",
+                        detail=str(exc),
+                    )
+                )
+
+    def submit_direct_passthrough(self, channel: str, audio: np.ndarray, sample_rate: float) -> None:
+        """Write live audio directly to the sink, bypassing TTS and legacy passthrough queues."""
+        key = channel if channel in ("local", "remote") else "local"
+        if audio.size == 0 or sample_rate <= 0:
+            return
+        try:
+            frame = ensure_float32_frame(audio, int(sample_rate), source_id=key, role="direct_passthrough")
+            gain = max(0.0, float(getattr(self._config.runtime, "passthrough_gain", 1.0) or 1.0))
+            payload = to_output_float32_stereo_48k(frame, gain=gain)
+            self._sinks[key].push_passthrough(payload, 48000.0)
+        except Exception as exc:
+            if self._on_error:
+                self._on_error(
+                    ErrorEvent(
+                        level="warning",
+                        module="tts_manager",
+                        source=key,
+                        code="direct_passthrough_failed",
+                        message="Direct passthrough failed",
                         detail=str(exc),
                     )
                 )

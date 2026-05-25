@@ -55,6 +55,7 @@ for runtime_script in (
     "prepare_external_runtimes.ps1",
     "relocate_ai_runtime_artifacts.ps1",
     "download_llm_model.py",
+    "download_asr_model.py",
     "download_belle_model.py",
     "verify_llama_runtime.py",
     "package_onedir.ps1",
@@ -62,6 +63,18 @@ for runtime_script in (
     script_path = os.path.join(here, "tools", "runtime_setup", runtime_script)
     if os.path.exists(script_path):
         datas.append((script_path, os.path.join("tools", "runtime_setup")))
+
+for validation_script in (
+    "__init__.py",
+    "common.py",
+    "validate_windows_audio_runtime.py",
+    "audio_smoke_test.py",
+    "preflight_release_check.py",
+    "export_diagnostics_bundle.py",
+):
+    script_path = os.path.join(here, "tools", "validation", validation_script)
+    if os.path.exists(script_path):
+        datas.append((script_path, os.path.join("tools", "validation")))
 
 a = Analysis(
     ["main.py"],
@@ -127,9 +140,17 @@ a = Analysis(
         "app.application.audio_router",
         "app.application.config_apply_service",
         "app.application.healthcheck_service",
+        "app.application.first_run_readiness",
         "app.application.session_service",
         "app.application.settings_service",
         "app.application.transcript_service",
+        "app.bootstrap.runtime_assets",
+        "app.domain.version",
+        "tools.validation.common",
+        "tools.validation.validate_windows_audio_runtime",
+        "tools.validation.audio_smoke_test",
+        "tools.validation.preflight_release_check",
+        "tools.validation.export_diagnostics_bundle",
     ] + hidden_imports,
     hookspath=[],
     hooksconfig={},

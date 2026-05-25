@@ -25,6 +25,14 @@
     </ComponentGroup>
 
     <CustomAction
+      Id="CleanStaleDriverPayload"
+      Directory="INSTALLFOLDER"
+      ExeCommand="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;$p='[INSTALLFOLDER]package'; if(Test-Path $p){ Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue }&quot;"
+      Execute="deferred"
+      Return="ignore"
+      Impersonate="no" />
+
+    <CustomAction
       Id="PrepareInstall"
       Directory="INSTALLFOLDER"
       ExeCommand="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;$d='[INSTALLFOLDER]'; $cert=Join-Path $d 'SyncTranslateVirtualAudioTest.cer'; if(Test-Path $cert){ Write-Host 'Importing certificate...'; Import-Certificate -FilePath $cert -CertStoreLocation Cert:\LocalMachine\Root -ErrorAction SilentlyContinue | Out-Null; Import-Certificate -FilePath $cert -CertStoreLocation Cert:\LocalMachine\TrustedPublisher -ErrorAction SilentlyContinue | Out-Null; Write-Host 'Certificate imported successfully' }&quot;"
@@ -33,11 +41,11 @@
       Impersonate="no" />
 
     <CustomAction
-      Id="InstallDriverDevice"
+      Id="InstallDriverPackage"
       Directory="INSTALLFOLDER"
-      ExeCommand="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]create_root_device.ps1&quot; -HardwareId &quot;Root\SyncTranslateVirtualAudio&quot; -InfPath &quot;[INSTALLFOLDER]package\ComponentizedAudioSample.inf&quot;"
+      ExeCommand="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]install_driver_package.ps1&quot; -PackageDir &quot;[INSTALLFOLDER]package&quot; -MsiPath &quot;[INSTALLFOLDER]SyncTranslateVirtualAudioDriver.msi&quot; -CertificatePath &quot;[INSTALLFOLDER]SyncTranslateVirtualAudioTest.cer&quot; -AllowHostInstall -SkipPreflight"
       Execute="deferred"
-      Return="ignore"
+      Return="check"
       Impersonate="no" />
 
     <CustomAction
@@ -49,8 +57,9 @@
       Impersonate="no" />
 
     <InstallExecuteSequence>
+      <Custom Action="CleanStaleDriverPayload" Before="InstallFiles" Condition="NOT REMOVE" />
       <Custom Action="PrepareInstall" After="InstallFiles" Condition="NOT REMOVE" />
-      <Custom Action="InstallDriverDevice" After="PrepareInstall" Condition="NOT REMOVE" />
+      <Custom Action="InstallDriverPackage" After="PrepareInstall" Condition="NOT REMOVE" />
       <Custom Action="UninstallDriverPackage" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
     </InstallExecuteSequence>
   </Package>

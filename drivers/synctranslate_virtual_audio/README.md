@@ -1,5 +1,19 @@
 # SyncTranslate Virtual Audio Driver
 
+## v2 virtual audio boundary
+
+The v2 driver/app boundary is fixed to 48000 Hz / PCM16 / 2ch interleaved
+stereo. `IOCTL_SYNCTRANSLATE_AUDIO_WRITE_PCM` accepts raw PCM16 stereo bytes,
+and its input length must be aligned to 4 bytes per stereo frame. The kernel
+ring buffer stores and reports counts in stereo frames.
+
+App internal audio remains float32 `AudioFrame`; conversion to PCM16 stereo 48k
+happens only at the virtual audio boundary. Meeting mode does not require this
+driver or the bridge. Dialogue mode requires the virtual speaker/microphone and
+the bridge.
+
+See `format_contract_v2.md` for the detailed contract.
+
 這個目錄放的是 SyncTranslate 自有虛擬音效驅動的 build、overlay、package、安裝與驗證工具。
 
 目前目標是取代 Voicemeeter / VB-CABLE 的「TTS 送進會議麥克風」用途。
@@ -61,12 +75,13 @@ drivers/synctranslate_virtual_audio/scripts/setup_driver_verifier.ps1
 drivers/synctranslate_virtual_audio/scripts/vm_smoke_sequence.ps1
 ```
 
-尚未完成（需在 disposable VM 中執行）：
+目前驗證狀態：
 
-- VM 安裝驗證。
-- IOCTL sine injection 錄音驗證。
-- Driver Verifier gate。
-- 主機安裝驗證。
+- VM 可 build driver package。
+- MSI 可在無 `devcon.exe` 的主機上透過 SetupAPI fallback 建立並 bind root device。
+- 主機安裝驗證已確認 virtual speaker / virtual microphone endpoint 會出現在 Windows **Audio inputs and outputs**。
+- `verify_driver_format.ps1` 已確認 endpoint device format 為 48000Hz PCM16 2ch。
+- 仍需在 disposable VM / lab 環境長時間執行 Driver Verifier、真實通訊軟體與多版本 Windows smoke test。
 
 ## 重要安全規則
 
@@ -158,14 +173,14 @@ artifacts/driver/synctranslate_virtual_audio/package
 
 ## 重包 MSI
 
-目前 MSI 版本為 `2.1.2`。
+目前 MSI 版本為 `2.1.9`。
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File drivers/synctranslate_virtual_audio/scripts/package_driver_msi.ps1 `
   -PackageDir artifacts/driver/synctranslate_virtual_audio/package `
   -CertificatePath artifacts/driver/synctranslate_virtual_audio/SyncTranslateVirtualAudioTest.cer `
   -OutputMsi artifacts/driver/synctranslate_virtual_audio/SyncTranslateVirtualAudioDriver.msi `
-  -ProductVersion 2.1.2
+  -ProductVersion 2.1.9
 ```
 
 輸出：
@@ -218,3 +233,27 @@ powershell -ExecutionPolicy Bypass -File drivers/synctranslate_virtual_audio/scr
 結果 JSON 寫入 `logs/vm_smoke_sequence/`。
 
 只有上述全部通過後，才考慮主機安裝。
+## AudioEndpoint enumeration note
+
+The one-click MSI runs `install_driver_package.ps1`, creates a clean
+`Root\SyncTranslateVirtualAudio` device, removes stale SyncTranslate `ROOT\MEDIA`
+instances, and installs the base virtual audio endpoint package. If `devcon.exe`
+is unavailable, the MSI uses `create_root_device.ps1` as a SetupAPI fallback and
+then runs `pnputil /add-driver ... /install` again to bind the staged driver.
+APO/extension INFs are optional and are not installed by default for the product
+path.
+
+After install, reboot Windows so AudioEndpointBuilder refreshes the MMDevice
+default format. A healthy install shows exactly one healthy SyncTranslate MEDIA
+device plus two present AudioEndpoint devices:
+
+- `Speaker (SyncTranslate Virtual Audio Device)` or localized `喇叭 (...)`
+- `SyncTranslate Virtual Microphone (SyncTranslate Virtual Audio Device)`
+
+If Device Manager shows only `SyncTranslate Virtual Audio Device` under
+**Sound, video and game controllers**, but no SyncTranslate devices under
+**Audio inputs and outputs**, reinstall with the current MSI and reboot the VM.
+
+`verify_driver_format.ps1` validates `PKEY_AudioEngine_DeviceFormat` as
+48000Hz PCM16 2ch. WASAPI shared-mode mix can still appear as 48k float32; that
+is Windows Audio Engine behavior and is recorded separately in validation JSON.

@@ -12,12 +12,15 @@ from PySide6.QtGui import QFont, QFontDatabase, QIcon
 from PySide6.QtWidgets import QApplication
 
 from app.application.auto_populate_devices import AutoPopulateDevicesService
+from app.application.first_run_readiness import evaluate_first_run_readiness
+from app.domain.version import build_metadata
 from app.infra.audio.device_registry import DeviceManager
 from app.infra.config.schema import translation_enabled_for_source
 from app.infra.config.settings_store import load_config, save_config
 from app.infra.translation.engine import TranslatorManager
 from app.infra.translation.provider import create_translation_provider
 from app.ui.main_window import MainWindow
+from tools.validation.common import build_check_report
 
 
 def _default_config_path() -> str:
@@ -86,16 +89,61 @@ def run_from_cli(argv: list[str] | None = None) -> int:
 
     devices = DeviceManager().list_all()
     if args.check:
+        report = build_check_report(args.config, probe_bridge=True)
+        readiness = evaluate_first_run_readiness(config, probe_bridge=True)
+        metadata = build_metadata(
+            config_schema_version=int(getattr(config.runtime, "config_schema_version", 0) or 0),
+            runtime_mode=str(getattr(config.runtime, "session_mode", "meeting") or "meeting"),
+        )
+        details = report.details
+        bridge = next((item for item in report.items if item.name == "bridge_status"), None)
+        driver = next((item for item in report.items if item.name == "driver_status"), None)
+        audio_devices = next((item for item in report.items if item.name == "audio_devices"), None)
+        device_details = audio_devices.details if audio_devices else {}
         print(f"Config OK: {args.config}")
-        print(f"mode={config.direction.mode}")
+        print(f"app_version={metadata.app_version}")
+        print(f"git_commit={metadata.git_commit}")
+        print(f"build_timestamp={metadata.build_timestamp}")
+        print(f"packaged={str(metadata.packaged).lower()}")
+        print(f"config_schema_version={details.get('config_schema_version', getattr(config.runtime, 'config_schema_version', 0))}")
+        print(f"session_mode={details.get('session_mode', str(getattr(config.runtime, 'session_mode', 'meeting') or 'meeting'))}")
+        print(f"meeting_audio_source={details.get('meeting_audio_source', str(getattr(config.meeting, 'audio_source', 'system_input') or 'system_input'))}")
+        print(f"legacy_direction_mode={config.direction.mode}")
         print(f"audio_routing_mode={config.audio.routing_mode}")
         print(
             "runtime_modes="
             f"remote_translation_enabled={translation_enabled_for_source(config.runtime, 'remote')} "
             f"local_translation_enabled={translation_enabled_for_source(config.runtime, 'local')} "
-            "asr_language_mode=auto "
+            "asr_language_mode=fixed "
             f"tts_output_mode={str(getattr(config.runtime, 'tts_output_mode', 'subtitle_only') or 'subtitle_only')}"
         )
+        print("asr_language_mode=fixed")
+        print(f"selected_asr_backend={details.get('selected_asr_backend', config.asr.engine)}")
+        print(f"virtual_audio_required={str(bool(details.get('virtual_audio_required', False))).lower()}")
+        print(f"bridge_required={str(bool(details.get('bridge_required', False))).lower()}")
+        print(f"driver_format_expected={details.get('driver_format_expected', '48000Hz PCM16 2ch')}")
+        print(f"driver_format_status={details.get('driver_format_status', 'UNKNOWN')}")
+        print(f"wdk_environment_status={details.get('wdk_environment_status', 'UNKNOWN')}")
+        print(f"driver_build_tools_available={str(bool(details.get('driver_build_tools_available', False))).lower()}")
+        print(f"protocol_v2_ready={str(bool(details.get('protocol_v2_ready', False))).lower()}")
+        print(f"pcm16_stereo_boundary_ready={str(bool(details.get('pcm16_stereo_boundary_ready', False))).lower()}")
+        print(f"bridge_status={bridge.status if bridge else 'WARN'} {bridge.message if bridge else 'not checked'}")
+        print(f"driver_status={driver.status if driver else 'WARN'} {driver.message if driver else 'not checked'}")
+        print(f"input_device_count={int(device_details.get('input_count', 0) or 0)}")
+        print(f"output_device_count={int(device_details.get('output_count', 0) or 0)}")
+        print(f"config_migration_status={details.get('config_migration_status', 'current')}")
+        warnings = list(details.get("validation_warnings", []) or [])
+        print(f"validation_warnings={','.join(str(item) for item in warnings) if warnings else 'none'}")
+        print(
+            "readiness="
+            f"meeting_ready={readiness.summary.get('meeting_ready')} "
+            f"dialogue_ready={readiness.summary.get('dialogue_ready')} "
+            f"asr_model_ready={readiness.summary.get('asr_model_ready')} "
+            f"llm_model_ready={readiness.summary.get('llm_model_ready')} "
+            f"bridge_ready={readiness.summary.get('bridge_ready')} "
+            f"driver_ready={readiness.summary.get('driver_ready')}"
+        )
+        print(f"suggested_next_action={readiness.summary.get('suggested_next_action')}")
         print(f"sample_rate={config.runtime.sample_rate} chunk_ms={config.runtime.chunk_ms}")
         print(f"asr={config.asr.engine}:{config.asr.model} device={config.asr.device}")
         print(
@@ -112,7 +160,7 @@ def run_from_cli(argv: list[str] | None = None) -> int:
             f"{config.local_tts.engine} voice={config.local_tts.voice_name or config.local_tts.model_path}"
         )
         print(f"devices_found={len(devices)}")
-        return 0
+        return 0 if report.status in {"PASS", "WARN"} else 1
 
     _prewarm_translation_runtime(config)
 

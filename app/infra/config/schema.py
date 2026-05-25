@@ -34,6 +34,9 @@ class VirtualAudioConfig:
     bridge_enabled: bool = True
     bridge_path: str = r"runtimes\audio\sync_audio_bridge.exe"
     sample_rate: int = 48000
+    channels: int = 2
+    bit_depth: int = 16
+    dtype: str = "int16"
     frame_ms: int = 10
     target_latency_ms: int = 120
     require_driver: bool = True
@@ -57,6 +60,69 @@ class AudioRouteConfig:
     system_devices: AudioSystemDeviceConfig = field(default_factory=AudioSystemDeviceConfig)
     virtual_audio: VirtualAudioConfig = field(default_factory=VirtualAudioConfig)
     call_translation: CallTranslationConfig = field(default_factory=CallTranslationConfig)
+
+
+@dataclass(slots=True)
+class WindowsIoConfig:
+    preferred_sample_rate: int = 48000
+    preferred_channels: int = 2
+    internal_dtype: str = "float32"
+
+
+@dataclass(slots=True)
+class MeetingModeConfig:
+    audio_source: str = "system_input"
+    input_device: str = ""
+    output_loopback_device: str = ""
+    asr_language: str = "zh-TW"
+    translation_target: str = "en"
+    record_transcript: bool = True
+    tts_enabled: bool = False
+
+    @property
+    def source_kind(self) -> str:
+        return self.audio_source
+
+    @property
+    def source_device(self) -> str:
+        return self.output_loopback_device if self.audio_source == "system_output_loopback" else self.input_device
+
+
+@dataclass(slots=True)
+class DialogueDirectionConfig:
+    asr_language: str = "en"
+    translation_target: str = "zh-TW"
+    tts_voice: str = "none"
+    output_policy: str = "direct_passthrough"
+    passthrough_gain: float = 1.0
+
+
+@dataclass(slots=True)
+class DialogueModeConfig:
+    remote_asr_language: str = "en"
+    local_asr_language: str = "zh-TW"
+    remote_translation_target: str = "zh-TW"
+    local_translation_target: str = "en"
+    remote_tts_voice: str = "none"
+    local_tts_voice: str = "none"
+    passthrough_mode: str = "direct"
+    passthrough_gain: float = 1.0
+    remote_to_local: DialogueDirectionConfig = field(
+        default_factory=lambda: DialogueDirectionConfig(
+            asr_language="en",
+            translation_target="zh-TW",
+            tts_voice="none",
+            output_policy="direct_passthrough",
+        )
+    )
+    local_to_remote: DialogueDirectionConfig = field(
+        default_factory=lambda: DialogueDirectionConfig(
+            asr_language="zh-TW",
+            translation_target="en",
+            tts_voice="none",
+            output_policy="direct_passthrough",
+        )
+    )
 
 
 @dataclass(slots=True)
@@ -336,17 +402,20 @@ class RuntimeConfig:
     local_echo_guard_enabled: bool = False
     local_echo_guard_resume_delay_ms: int = 300
     remote_echo_guard_resume_delay_ms: int = 300
-    config_schema_version: int = 6
+    config_schema_version: int = 7
+    session_mode: str = "meeting"
+    language_config_version: int = 0
+    route_config_version: int = 0
     last_migration_note: str = ""
     warmup_on_start: bool = True
     remote_translation_enabled: bool = True
     local_translation_enabled: bool = True
     translation_enabled: bool = True
     tts_output_mode: str = "subtitle_only"
-    asr_language_mode: str = "auto"
+    asr_language_mode: str = "fixed"
     # 新增控制項：手動固定 ASR 來源語言（auto / zh-TW / en / ja / ko / th）
-    remote_asr_language: str = "auto"
-    local_asr_language: str = "auto"
+    remote_asr_language: str = "en"
+    local_asr_language: str = "zh-TW"
     # 新增控制項：翻譯目標語言（none / zh-TW / en / ja / ko / th）
     remote_translation_target: str = "zh-TW"
     local_translation_target: str = "en"
@@ -416,6 +485,9 @@ class DeviceInfo:
 @dataclass(slots=True)
 class AppConfig:
     audio: AudioRouteConfig = field(default_factory=AudioRouteConfig)
+    windows_io: WindowsIoConfig = field(default_factory=WindowsIoConfig)
+    meeting: MeetingModeConfig = field(default_factory=MeetingModeConfig)
+    dialogue: DialogueModeConfig = field(default_factory=DialogueModeConfig)
     direction: DirectionConfig = field(default_factory=DirectionConfig)
     language: LanguageConfig = field(default_factory=LanguageConfig)
     asr: AsrConfig = field(default_factory=AsrConfig)

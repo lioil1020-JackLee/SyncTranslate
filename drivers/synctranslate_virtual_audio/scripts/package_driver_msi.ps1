@@ -2,12 +2,29 @@ param(
     [string]$PackageDir = "artifacts/driver/synctranslate_virtual_audio/package",
     [string]$CertificatePath = "artifacts/driver/synctranslate_virtual_audio/SyncTranslateVirtualAudioTest.cer",
     [string]$OutputMsi = "artifacts/driver/synctranslate_virtual_audio/SyncTranslateVirtualAudioDriver.msi",
-    [string]$ProductVersion = "2.1.0",
+    [string]$ProductVersion = "2.1.7",
     [string]$WixToolPath = "artifacts/tools/wix5",
     [string]$WixVersion = "5.0.2"
 )
 
 $ErrorActionPreference = "Stop"
+
+$dotnetRootCandidates = @(
+    "C:\dotnet",
+    (Join-Path $env:ProgramFiles "dotnet"),
+    (Join-Path ${env:ProgramFiles(x86)} "dotnet")
+)
+$dotnetRoot = $dotnetRootCandidates | Where-Object { $_ -and (Test-Path (Join-Path $_ "dotnet.exe")) } | Select-Object -First 1
+if ($dotnetRoot) {
+    $env:DOTNET_ROOT = (Resolve-Path $dotnetRoot).Path
+    if ($env:PATH -notlike "*$env:DOTNET_ROOT*") {
+        $env:PATH = "$env:DOTNET_ROOT;$env:PATH"
+    }
+}
+$dotnetTools = Join-Path $env:USERPROFILE ".dotnet\tools"
+if ((Test-Path $dotnetTools) -and $env:PATH -notlike "*$dotnetTools*") {
+    $env:PATH = "$dotnetTools;$env:PATH"
+}
 
 if (!(Test-Path $PackageDir)) {
     throw "Missing signed driver package directory: $PackageDir. Build and sign the driver package first."
@@ -35,16 +52,19 @@ New-Item -ItemType Directory -Path (Join-Path $stagingDir "package") -Force | Ou
 Copy-Item -Path (Join-Path $PackageDir "*") -Destination (Join-Path $stagingDir "package") -Recurse -Force
 Copy-Item -Path (Join-Path $scriptRoot "install_driver_package.ps1") -Destination $stagingDir -Force
 Copy-Item -Path (Join-Path $scriptRoot "uninstall_driver_package.ps1") -Destination $stagingDir -Force
+Copy-Item -Path (Join-Path $scriptRoot "preflight_driver_install.ps1") -Destination $stagingDir -Force
 Copy-Item -Path (Join-Path $scriptRoot "verify_driver_install.ps1") -Destination $stagingDir -Force
 Copy-Item -Path (Join-Path $driverRoot "README.md") -Destination $stagingDir -Force
 Copy-Item -Path (Join-Path $driverRoot "driver_contract.md") -Destination $stagingDir -Force
 
-# Copy create_root_device.ps1 (devcon-free SetupAPI helper) into staging
+# Copy create_root_device.ps1 for the devcon-free MSI path. The MSI one-click
+# action runs install_driver_package.ps1; that script uses this SetupAPI helper
+# when devcon.exe is unavailable, then binds the staged driver with pnputil.
 $createRootDeviceScript = Join-Path $scriptRoot "create_root_device.ps1"
 if (Test-Path $createRootDeviceScript) {
     Copy-Item -Path $createRootDeviceScript -Destination (Join-Path $stagingDir "create_root_device.ps1") -Force
 } else {
-    Write-Warning "create_root_device.ps1 not found at $createRootDeviceScript. The MSI custom action may not create the virtual audio device."
+    Write-Warning "create_root_device.ps1 not found at $createRootDeviceScript. Manual fallback root-device creation will not be included."
 }
 
 # Copy devcon.exe if available from WDK (optional, no longer required by MSI)
@@ -74,15 +94,36 @@ else {
         $wixExe = $pathWix.Source
     }
     else {
-        if (!(Test-Path $WixToolPath)) {
-            New-Item -ItemType Directory -Path $WixToolPath -Force | Out-Null
+        $wixCandidates = @(
+            (Join-Path $env:USERPROFILE ".dotnet\tools\wix.exe"),
+            (Join-Path $env:USERPROFILE ".dotnet\tools\.store\wix\$WixVersion\wix\$WixVersion\tools\net8.0\any\wix.exe")
+        )
+        $existingWix = $wixCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+        if ($existingWix) {
+            $wixExe = (Resolve-Path $existingWix).Path
         }
-        $wixExe = Join-Path $WixToolPath "wix.exe"
+        else {
+            if (!(Test-Path $WixToolPath)) {
+                New-Item -ItemType Directory -Path $WixToolPath -Force | Out-Null
+            }
+            $wixExe = Join-Path $WixToolPath "wix.exe"
+        }
     }
 }
 
 if (!(Test-Path $wixExe)) {
     $dotnet = Get-Command dotnet -ErrorAction SilentlyContinue
+    if (!$dotnet) {
+        $dotnetCandidates = @(
+            "C:\dotnet\dotnet.exe",
+            (Join-Path $env:ProgramFiles "dotnet\dotnet.exe"),
+            (Join-Path ${env:ProgramFiles(x86)} "dotnet\dotnet.exe")
+        )
+        $existingDotnet = $dotnetCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+        if ($existingDotnet) {
+            $dotnet = [pscustomobject]@{ Source = (Resolve-Path $existingDotnet).Path }
+        }
+    }
     if (!$dotnet) {
         throw "WiX is required to build the MSI. Install wix.exe or install the .NET SDK so this script can run 'dotnet tool install wix'."
     }

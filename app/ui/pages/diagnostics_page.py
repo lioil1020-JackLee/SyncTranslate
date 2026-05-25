@@ -14,6 +14,8 @@ class DiagnosticsPage(QWidget):
         self._asr_runtime_text = ""
         self._llm_runtime_text = ""
         self._tts_runtime_text = ""
+        self._v2_runtime_summary = ""
+        self._readiness_summary = ""
 
         self.diagnostics_details = QPlainTextEdit()
         self.diagnostics_details.setReadOnly(True)
@@ -23,7 +25,7 @@ class DiagnosticsPage(QWidget):
         self.diagnostics_details.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.diagnostics_details.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         metrics = QFontMetrics(self.diagnostics_details.font())
-        self.diagnostics_details.setFixedHeight((metrics.lineSpacing() * 6) + 14)
+        self.diagnostics_details.setFixedHeight((metrics.lineSpacing() * 8) + 14)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -38,6 +40,8 @@ class DiagnosticsPage(QWidget):
                     f"ASR: {self._compose_line(self._asr_text, self._asr_runtime_text)}",
                     f"LLM: {self._compose_line(self._llm_text, self._llm_runtime_text)}",
                     f"TTS: {self._compose_line(self._tts_text, self._tts_runtime_text)}",
+                    f"Runtime: {self._v2_runtime_summary or '-'}",
+                    f"Readiness: {self._readiness_summary or '-'}",
                 ]
             )
         )
@@ -81,4 +85,12 @@ class DiagnosticsPage(QWidget):
 
     def set_tts_runtime_details(self, text: str) -> None:
         self._tts_runtime_text = text.strip()
+        self._refresh_diagnostics_text()
+
+    def set_v2_runtime_summary(self, text: str) -> None:
+        self._v2_runtime_summary = text.strip()
+        self._refresh_diagnostics_text()
+
+    def set_readiness_summary(self, text: str) -> None:
+        self._readiness_summary = text.strip()
         self._refresh_diagnostics_text()

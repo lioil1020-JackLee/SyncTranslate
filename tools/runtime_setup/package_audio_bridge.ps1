@@ -22,6 +22,17 @@ $pyInstaller = @(
     "--hidden-import", "app.infra.audio.bridge_ring_buffer",
     "--hidden-import", "app.infra.audio.windows_named_event",
     "--hidden-import", "soundcard",
+    "--exclude-module", "torch",
+    "--exclude-module", "torchaudio",
+    "--exclude-module", "onnxruntime",
+    "--exclude-module", "faster_whisper",
+    "--exclude-module", "ctranslate2",
+    "--exclude-module", "pytest",
+    "--exclude-module", "PySide6",
+    "--exclude-module", "edge_tts",
+    "--exclude-module", "matplotlib",
+    "--exclude-module", "pandas",
+    "--exclude-module", "scipy",
     "app/infra/audio/bridge_process.py"
 )
 

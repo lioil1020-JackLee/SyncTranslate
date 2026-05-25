@@ -17,7 +17,7 @@ SyncTranslate App / TTS
   -> virtual microphone capture stream
 ```
 
-後續里程碑：
+後續可選里程碑：
 
 ```text
 Windows app render
@@ -26,7 +26,9 @@ Windows app render
   -> SyncTranslate Virtual Microphone
 ```
 
-完整 virtual cable loopback 尚未完成。目前優先目標是讓 TTS 聲音安全送進 `SyncTranslate Virtual Microphone`。
+獨立於 App/bridge 的 kernel-only virtual cable loopback 不是目前 v2 產品主線。
+目前產品主線是 App/bridge 以 protocol v2 PCM16 stereo 48k 將翻譯 TTS 或 direct passthrough 音訊送進
+`SyncTranslate Virtual Microphone`，並由 healthcheck 驗證 speaker/microphone endpoint 與 driver boundary。
 
 ## 目前實作狀態
 
@@ -191,7 +193,7 @@ artifacts/driver/synctranslate_virtual_audio/SyncTranslateVirtualAudioDriver.msi
 目前 MSI 版本：
 
 ```text
-2.1.2
+2.1.7
 ```
 
 MSI 目前是使用者安裝包。正式使用時直接雙擊 MSI 即可；若需要手動驗證，先完成 Test Mode。

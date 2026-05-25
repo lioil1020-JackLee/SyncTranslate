@@ -296,7 +296,7 @@ class AudioRouterPolicyTests(unittest.TestCase):
         self.assertEqual(asr_manager.warmup_calls, ["local", "remote"])
         self.assertEqual(input_manager.start_calls, ["local", "remote"])
 
-    def test_passthrough_toggle_changes_capture_need_for_local_source(self) -> None:
+    def test_legacy_passthrough_toggle_does_not_enable_meeting_direct_passthrough(self) -> None:
         router, input_manager, asr_manager, translator, _ = _build_router(enabled_by_source={"remote": True, "local": True})
         config = type("Cfg", (), {"runtime": type("Rt", (), {"remote_asr_language": "en", "local_asr_language": "none"})()})()
         router.refresh_runtime_config(config)  # type: ignore[arg-type]
@@ -304,11 +304,11 @@ class AudioRouterPolicyTests(unittest.TestCase):
         router.start("meeting_to_local", routes, sample_rate=24000, chunk_ms=40)
 
         router.set_output_mode("remote", "passthrough")
-        self.assertIn("local", input_manager.start_calls)
+        self.assertNotIn("local", input_manager.start_calls)
         self.assertFalse(asr_manager.enabled["local"])
 
         router.set_output_mode("remote", "tts")
-        self.assertIn("local", input_manager.stop_calls)
+        self.assertNotIn("local", input_manager.stop_calls)
 
     def test_subtitle_only_mode_does_not_trigger_passthrough_capture(self) -> None:
         router, input_manager, asr_manager, translator, _ = _build_router(enabled_by_source={"remote": True, "local": True})
@@ -548,17 +548,16 @@ class AudioRouterPolicyTests(unittest.TestCase):
 
         self.assertIn(("local", 24000.0), tts.passthrough_calls)
 
-    def test_local_and_remote_chunk_handlers_follow_same_passthrough_then_asr_pattern(self) -> None:
+    def test_local_and_remote_chunk_handlers_submit_asr_without_legacy_passthrough_queue(self) -> None:
         router, _, asr_manager, _, tts = _build_router()
         routes = AudioRouteConfig(meeting_in="remote-dev", microphone_in="local-dev", speaker_out="spk", meeting_out="mtg")
         router.start("bidirectional", routes, sample_rate=24000, chunk_ms=40)
         router._on_local_audio_chunk(chunk=[0.0], sample_rate=16000.0)  # type: ignore[arg-type]
         router._on_remote_audio_chunk(chunk=[0.0], sample_rate=24000.0)  # type: ignore[arg-type]
 
-        self.assertIn(("remote", 16000.0), tts.passthrough_calls)
-        self.assertIn(("local", 24000.0), tts.passthrough_calls)
+        self.assertEqual(tts.passthrough_calls, [])
         self.assertIn(("local", 16000.0), asr_manager.submit_calls)
-        self.assertIn(("remote", 24000.0), asr_manager.submit_calls)
+        self.assertIn(("remote", 16000.0), asr_manager.submit_calls)
 
     def test_async_translation_keeps_asr_callback_non_blocking_per_direction(self) -> None:
         class _BlockingTranslator(_FakeTranslatorManager):

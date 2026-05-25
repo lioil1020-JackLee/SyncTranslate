@@ -1,9 +1,9 @@
 param(
     [string]$SamplesRoot = "downloads/driver_samples/Windows-driver-samples",
-    [string]$Configuration = "Debug",
+    [string]$Configuration = "Release",
     [string]$Platform = "x64",
     [string]$ArtifactsDir = "artifacts/driver/synctranslate_virtual_audio",
-    [string]$ProductVersion = "2.1.0",
+    [string]$ProductVersion = "2.1.7",
     [switch]$SkipFetch,
     [switch]$SkipSign
 )

@@ -679,6 +679,10 @@ class LocalAiPage(QWidget):
             self._refresh_asr_runtime_hints()
             self._notify_settings_changed()
 
+    def set_session_mode_preset(self, session_mode: str, *, notify: bool = False) -> None:
+        preset = "dialogue" if str(session_mode or "").strip().lower() == "dialogue" else "meeting_monitor"
+        self._apply_experience_preset(preset, notify=notify)
+
     def _preset_from_config(self, config: AppConfig) -> str:
         local_asr = str(getattr(config.runtime, "asr_profile_local", "") or "")
         remote_asr = str(getattr(config.runtime, "asr_profile_remote", "") or "")
@@ -704,6 +708,7 @@ class LocalAiPage(QWidget):
         for label, value in _EXPERIENCE_PRESET_OPTIONS:
             self.experience_preset_combo.addItem(label, value)
         self._configure_combo_popup(self.experience_preset_combo)
+        self.experience_preset_combo.hide()
         self.asr_accuracy_mode_combo = QComboBox()
         self.asr_accuracy_mode_combo.addItem("平衡", "balanced")
         self.asr_accuracy_mode_combo.addItem("低延遲", "low_latency")
@@ -717,7 +722,7 @@ class LocalAiPage(QWidget):
         self.optimized_profile_label = QLabel("模型可調整：中文預設 large-v3-turbo；belle-zh-ct2 保留為備選。")
         self.optimized_profile_label.setWordWrap(True)
         self.asr_routing_summary_label = QLabel(
-            "ASR 路由規則：中文使用左側模型，非中文與 auto 使用右側模型；兩者都可在進階設定中調整。"
+            "ASR 路由規則：中文使用左側模型，其他固定語言使用右側模型；兩者都可在進階設定中調整。"
         )
         self.asr_routing_summary_label.setWordWrap(True)
         self.asr_routing_summary_label.setStyleSheet("color: #b7bdc6;")
@@ -731,7 +736,6 @@ class LocalAiPage(QWidget):
 
         form = QFormLayout()
         self._configure_form_layout(form)
-        form.addRow("使用情境", self.experience_preset_combo)
         form.addRow("ASR 準確度", self.asr_accuracy_mode_combo)
         form.addRow("通道策略", self.channel_strategy_label)
         form.addRow("優化說明", self.optimized_profile_label)
@@ -799,7 +803,7 @@ class LocalAiPage(QWidget):
         self.asr_model_combo = QComboBox()
         self.remote_asr_model_combo = QComboBox()
         self.asr_model_combo.setToolTip("中文 ASR 模型；belle 較保守，large-v3-turbo 可改善部分小說/短影音辨識。")
-        self.remote_asr_model_combo.setToolTip("非中文與 auto ASR 模型；預設 large-v3-turbo。")
+        self.remote_asr_model_combo.setToolTip("非中文固定語言 ASR 模型；預設 large-v3-turbo。")
         self._reload_asr_model_options()
 
         self.asr_model_label = QLabel()

@@ -57,14 +57,18 @@ class SettingsContractTests(_QtTestCase):
         self.assertIn("遠端輸入: USB Mic", message)
         self.assertIn("遠端輸出: Missing Headset", message)
 
-    def test_diagnostics_page_is_three_line_summary_without_action_buttons(self) -> None:
+    def test_diagnostics_page_includes_v2_runtime_summary_without_action_buttons(self) -> None:
         page = DiagnosticsPage()
         page.set_asr_details("ready")
         page.set_llm_details("ready")
         page.set_tts_details("ready")
+        page.set_v2_runtime_summary("session_mode=meeting bridge_required=False")
+        page.set_readiness_summary("meeting_ready=True")
 
         text = page.diagnostics_details.toPlainText()
-        self.assertEqual(text.count("\n"), 2)
+        self.assertEqual(text.count("\n"), 4)
+        self.assertIn("Runtime: session_mode=meeting bridge_required=False", text)
+        self.assertIn("Readiness: meeting_ready=True", text)
         self.assertEqual(len(page.findChildren(QPushButton)), 0)
         self.assertEqual(page.diagnostics_details.verticalScrollBarPolicy(), Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
@@ -75,7 +79,7 @@ class SettingsContractTests(_QtTestCase):
 
         text = page.diagnostics_details.toPlainText()
 
-        self.assertEqual(text.count("\n"), 2)
+        self.assertEqual(text.count("\n"), 4)
         self.assertIn("ASR: ready | meeting:q=0 f=3 rej=1(markup-leak)", text)
 
 

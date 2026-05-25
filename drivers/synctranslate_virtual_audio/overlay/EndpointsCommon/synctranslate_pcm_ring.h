@@ -2,7 +2,14 @@
 
 #include <sysvad.h>
 
-#define SYNCTRANSLATE_PCM_RING_DEFAULT_FRAMES (48000u * 5u)
+#define SYNCTRANSLATE_VIRTUAL_AUDIO_SAMPLE_RATE 48000u
+#define SYNCTRANSLATE_VIRTUAL_AUDIO_CHANNELS 2u
+#define SYNCTRANSLATE_VIRTUAL_AUDIO_BITS_PER_SAMPLE 16u
+#define SYNCTRANSLATE_VIRTUAL_AUDIO_BYTES_PER_SAMPLE 2u
+#define SYNCTRANSLATE_VIRTUAL_AUDIO_BYTES_PER_FRAME \
+    (SYNCTRANSLATE_VIRTUAL_AUDIO_CHANNELS * SYNCTRANSLATE_VIRTUAL_AUDIO_BYTES_PER_SAMPLE)
+
+#define SYNCTRANSLATE_PCM_RING_DEFAULT_FRAMES (SYNCTRANSLATE_VIRTUAL_AUDIO_SAMPLE_RATE * 5u)
 
 typedef struct _SYNCTRANSLATE_PCM_RING_STATS
 {
@@ -26,15 +33,15 @@ VOID
 SyncTranslatePcmRingFlush();
 
 ULONG
-SyncTranslatePcmRingWriteFloat32Mono(
-    _In_reads_(frames) const FLOAT* samples,
-    _In_ ULONG frames
+SyncTranslatePcmRingWritePcm16Stereo(
+    _In_reads_bytes_(bytes) const BYTE* pcmBytes,
+    _In_ ULONG bytes
 );
 
 ULONG
-SyncTranslatePcmRingReadFloat32Mono(
-    _Out_writes_(frames) FLOAT* samples,
-    _In_ ULONG frames
+SyncTranslatePcmRingReadPcm16Stereo(
+    _Out_writes_bytes_(bytes) BYTE* pcmBytes,
+    _In_ ULONG bytes
 );
 
 VOID

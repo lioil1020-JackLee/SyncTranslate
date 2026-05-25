@@ -200,23 +200,22 @@ class TestIsTooShort:
 # Manager-level integration
 # ---------------------------------------------------------------------------
 
-class TestASRManagerAutoLanguage:
+class TestASRManagerFixedLanguageRuntime:
     def _make_manager(self):
         from app.infra.asr.manager_v2 import ASRManagerV2
         from app.infra.config.schema import AppConfig
         return ASRManagerV2(AppConfig())
 
-    def test_auto_initial_uses_neutral_profile(self):
+    def test_runtime_defaults_to_fixed_languages_not_auto(self):
         manager = self._make_manager()
-        assert manager._effective_language_for_source("local") == ""
-        assert manager._effective_language_for_source("remote") == ""
+        assert manager._effective_language_for_source("local") == "zh-TW"
+        assert manager._effective_language_for_source("remote") == "en"
 
-    def test_stats_after_switch_shows_requested_auto_effective_zh_tw(self):
+    def test_stats_show_fixed_requested_language_as_runtime_path(self):
         manager = self._make_manager()
         state = manager._auto_language_states["local"]
         for i in range(1, 4):
             observe_final_language(state, "zh", ZH_TEXT, now_ms=i * 1000)
         auto_lang = manager.stats()["local"]["auto_language"]
-        # requested="" is the canonical internal representation of "auto" mode
-        assert auto_lang["requested"] in ("", "auto")
-        assert auto_lang["effective"] == "zh-TW"
+        assert auto_lang["requested"] == "zh-TW"
+        assert auto_lang["effective"] == ""

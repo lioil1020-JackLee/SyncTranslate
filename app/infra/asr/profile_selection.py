@@ -20,12 +20,12 @@ def requested_asr_language_for_source(config: AppConfig, source: str) -> str:
     )
     if explicit:
         if explicit.lower() == "auto":
-            return ""
+            return "en" if source == "remote" else "zh-TW"
         return explicit
 
     language_mode = str(getattr(runtime, "asr_language_mode", "") or "").strip().lower()
     if language_mode == "auto":
-        return ""
+        return "en" if source == "remote" else "zh-TW"
     if source == "remote":
         return str(getattr(config.language, "meeting_source", "") or "").strip()
     return str(getattr(config.language, "local_source", "") or "").strip()
@@ -81,4 +81,3 @@ def iter_active_asr_profiles_for_sources(
             continue
         seen.add(key)
         yield source, language, profile
-

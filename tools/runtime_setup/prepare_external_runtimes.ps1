@@ -2,6 +2,7 @@ param(
     [string]$RuntimeRoot = "runtimes",
     [switch]$CpuOnly,
     [string]$BelleModelRepo = "",
+    [string]$AsrModelRepo = "Systran/faster-whisper-large-v3-turbo",
     [string]$LlmModelPath = "",
     [string]$LlmModelRepo = "tencent/HY-MT1.5-7B-GGUF",
     [string]$LlmModelFile = "HY-MT1.5-7B-Q4_K_M.gguf",
@@ -202,6 +203,16 @@ New-RuntimeVenv -Name "faster_whisper" -Packages @(
 $modelsRoot = Join-Path $RuntimeRoot "models"
 New-Item -ItemType Directory -Path $modelsRoot -Force | Out-Null
 
+$asrModelsRoot = Join-Path $modelsRoot "asr"
+New-Item -ItemType Directory -Path $asrModelsRoot -Force | Out-Null
+$targetAsrModel = Join-Path $asrModelsRoot "large-v3-turbo"
+if (-not (Test-Path $targetAsrModel)) {
+    Write-Host "[runtime:asr_model] download faster-whisper model snapshot"
+    uv run --group build python ".\tools\runtime_setup\download_asr_model.py" `
+        --repo-id $AsrModelRepo `
+        --local-dir $targetAsrModel
+}
+
 $downloadArgs = @(
     ".\tools\runtime_setup\download_belle_model.py",
     "--local-dir",
@@ -241,6 +252,7 @@ Write-Host "External runtimes prepared under: $RuntimeRoot"
 Write-Host "Expected structure:"
 Write-Host "  runtimes/shared/Lib/site-packages"
 Write-Host "  runtimes/faster_whisper/Lib/site-packages"
+Write-Host "  runtimes/models/asr/large-v3-turbo"
 Write-Host "  runtimes/models/belle-zh-ct2"
 Write-Host "  runtimes/models/llm/hy-mt1.5-7b.gguf"
 Write-Host "  runtimes/shared/Lib/site-packages/llama_cpp"
@@ -263,4 +275,8 @@ if (-not (Test-Path (Join-Path $RuntimeRoot "shared\Lib\site-packages\llama_cpp\
 
 if (-not (Test-Path $targetLlmModel)) {
     throw "LLM GGUF model is missing: $targetLlmModel"
+}
+
+if (-not (Test-Path $targetAsrModel)) {
+    throw "ASR faster-whisper model is missing: $targetAsrModel"
 }

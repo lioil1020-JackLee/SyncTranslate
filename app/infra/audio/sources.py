@@ -5,6 +5,7 @@ from typing import Callable, Protocol
 import numpy as np
 
 from app.infra.audio.capture import AudioCapture, CaptureStats
+from app.infra.audio.frame import ChannelPolicy
 
 
 AudioConsumer = Callable[[np.ndarray, float], None]
@@ -28,8 +29,19 @@ class SoundDeviceCaptureSource:
     def __init__(self, capture: AudioCapture | None = None) -> None:
         self._capture = capture or AudioCapture()
 
-    def start(self, device_name: str, sample_rate: int, chunk_ms: int) -> None:
-        self._capture.start(device_name, sample_rate=sample_rate, chunk_ms=chunk_ms)
+    def start(
+        self,
+        device_name: str,
+        sample_rate: int,
+        chunk_ms: int,
+        channels_policy: str = ChannelPolicy.MONO.value,
+    ) -> None:
+        self._capture.start(
+            device_name,
+            sample_rate=sample_rate,
+            chunk_ms=chunk_ms,
+            channels_policy=channels_policy,
+        )
 
     def stop(self) -> None:
         self._capture.stop()
@@ -60,7 +72,14 @@ class VirtualSpeakerSource:
         self._gain = 1.0
         self._pending = np.zeros((0, 1), dtype=np.float32)
 
-    def start(self, device_name: str, sample_rate: int, chunk_ms: int) -> None:
+    def start(
+        self,
+        device_name: str,
+        sample_rate: int,
+        chunk_ms: int,
+        channels_policy: str = ChannelPolicy.STEREO.value,
+    ) -> None:
+        del channels_policy
         import logging
         logger = logging.getLogger(__name__)
         
@@ -86,7 +105,7 @@ class VirtualSpeakerSource:
             )
             self._sample_rate = remote_sample_rate
             self._chunk_frames = max(1, int(self._sample_rate * max(5, int(chunk_ms)) / 1000))
-            self._pending = np.zeros((0, 1), dtype=np.float32)
+            self._pending = np.zeros((0, 2), dtype=np.float32)
             self._running = True
             self._last_error = ""
         except Exception as exc:

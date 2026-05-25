@@ -13,6 +13,7 @@ from app.infra.audio.default_devices import SystemDefaultDeviceResolver
 from app.infra.audio.playback import AudioPlayback
 from app.infra.audio.routing import AudioInputManager
 from app.infra.audio.sinks import SoundDevicePlaybackSink, VirtualMicrophoneSink
+from app.infra.audio.loopback_capture import WasapiLoopbackCaptureSource
 from app.infra.audio.sources import SoundDeviceCaptureSource, VirtualSpeakerSource
 from app.infra.audio.virtual_bridge_client import VirtualAudioBridgeClient
 from app.infra.asr.manager_v2 import create_asr_manager
@@ -42,15 +43,19 @@ def build_pipeline_bundle(
     on_asr_event: Callable[[object], None] | None = None,
     on_translation_event: Callable[[object], None] | None = None,
 ) -> PipelineBundle:
-    guard_result = ensure_virtual_audio_runtime_ready(config)
-    if on_diagnostic_event:
-        if guard_result.blocked:
-            on_diagnostic_event(
-                "virtual_audio_runtime_blocked "
-                f"reason={guard_result.reason} effective_mode={guard_result.effective_routing_mode}"
-            )
-        for warning in guard_result.warnings:
-            on_diagnostic_event(f"virtual_audio_runtime_warning {warning}")
+    session_mode = str(getattr(config.runtime, "session_mode", "meeting") or "meeting").strip().lower()
+    if session_mode == "dialogue":
+        guard_result = ensure_virtual_audio_runtime_ready(config)
+        if on_diagnostic_event:
+            if guard_result.blocked:
+                on_diagnostic_event(
+                    "virtual_audio_runtime_blocked "
+                    f"reason={guard_result.reason} effective_mode={guard_result.effective_routing_mode}"
+                )
+            for warning in guard_result.warnings:
+                on_diagnostic_event(f"virtual_audio_runtime_warning {warning}")
+    elif on_diagnostic_event:
+        on_diagnostic_event("virtual_audio_runtime_skipped session_mode=meeting")
 
     policy = resolve_call_translation_policy(config)
     resolver = SystemDefaultDeviceResolver(
@@ -61,9 +66,17 @@ def build_pipeline_bundle(
         return get_local_output_device() or resolver.default_render_name()
 
     local_source = SoundDeviceCaptureSource(local_capture)
-    bridge_client = VirtualAudioBridgeClient(bridge_path=config.audio.virtual_audio.bridge_path)
-    remote_source = VirtualSpeakerSource(bridge_client)
-    remote_sink = VirtualMicrophoneSink(bridge_client)
+    bridge_client = VirtualAudioBridgeClient(bridge_path=config.audio.virtual_audio.bridge_path) if session_mode == "dialogue" else None
+    if session_mode == "meeting":
+        remote_source = (
+            WasapiLoopbackCaptureSource()
+            if config.meeting.audio_source == "system_output_loopback"
+            else SoundDeviceCaptureSource(AudioCapture())
+        )
+        remote_sink = SoundDevicePlaybackSink(speaker_playback, lambda: "")
+    else:
+        remote_source = VirtualSpeakerSource(bridge_client)
+        remote_sink = VirtualMicrophoneSink(bridge_client)
     input_manager = AudioInputManager(local_source=local_source, remote_source=remote_source)
     asr_manager = create_asr_manager(config, on_error=on_error, pipeline_revision=pipeline_revision)
     translator_manager = TranslatorManager(config, on_error=on_error)
@@ -78,9 +91,14 @@ def build_pipeline_bundle(
         remote_sink=remote_sink,
         on_error=on_error,
     )
-    if policy.routing_mode == SYNC_VIRTUAL_AUDIO:
+    if session_mode == "meeting":
+        tts_manager.set_output_mode("local", "subtitle_only")
+        tts_manager.set_output_mode("remote", "subtitle_only")
+    elif policy.routing_mode == SYNC_VIRTUAL_AUDIO:
         tts_manager.set_output_mode("local", policy.local_channel_output_mode)
         tts_manager.set_output_mode("remote", policy.remote_channel_output_mode)
+        tts_manager.set_output_mode("local", config.dialogue.remote_to_local.output_policy.replace("translated_tts", "tts").replace("direct_passthrough", "passthrough"))
+        tts_manager.set_output_mode("remote", config.dialogue.local_to_remote.output_policy.replace("translated_tts", "tts").replace("direct_passthrough", "passthrough"))
     audio_router = AudioRouter(
         transcript_buffer=transcript_buffer,
         input_manager=input_manager,

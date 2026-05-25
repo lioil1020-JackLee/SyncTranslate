@@ -43,9 +43,12 @@ default-groups = ["dev"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "integration: tests that require real driver, bridge, named pipe, shared memory, or OS integration",
+]
 
 [tool.setuptools]
 py-modules = ["main"]
 
 [tool.setuptools.packages.find]
-include = ["app*"]
+include = ["app*", "tools*"]

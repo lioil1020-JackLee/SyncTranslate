@@ -7,6 +7,14 @@ from typing import Any
 from app.infra.config.schema import AppConfig
 
 
+def _fixed_language(value: object, default: str) -> str:
+    raw = str(value or "").strip()
+    if not raw or raw.lower() == "auto":
+        return default
+    normalized = "zh-TW" if raw.lower() in {"zh", "zh-tw", "zh_tw", "tw"} else raw
+    return normalized if normalized in {"zh-TW", "en", "ja", "ko", "th"} else default
+
+
 def _normalize_asr_engine_name(value: object) -> str:
     engine = str(value or "").strip().lower()
     if engine == "funasr":
@@ -69,6 +77,8 @@ def migrate_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
         result["audio"]["routing_mode"] = "synctranslate_virtual_audio"
         result["runtime"]["last_migration_note"] = "upgraded_to_virtual_audio_mode"
 
+    old_mode = str((raw.get("direction") or {}).get("mode") or raw.get("session_mode") or "").strip().lower()
+    result["runtime"]["session_mode"] = "dialogue" if old_mode in {"dialogue", "dialogue_voice", "bidirectional", "meeting_to_local", "local_to_meeting"} else "meeting"
     result["direction"]["mode"] = "bidirectional"
 
     language = raw.get("language") or {}
@@ -250,8 +260,41 @@ def migrate_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
         runtime.get("local_translation_enabled", legacy_translation_enabled)
     )
     result["runtime"]["translation_enabled"] = legacy_translation_enabled
-    result["runtime"]["asr_language_mode"] = "auto"
-    result["runtime"]["config_schema_version"] = 6
+    result["runtime"]["asr_language_mode"] = "fixed"
+    result["runtime"]["remote_asr_language"] = _fixed_language(runtime.get("remote_asr_language", result["language"]["meeting_source"]), "en")
+    result["runtime"]["local_asr_language"] = _fixed_language(runtime.get("local_asr_language", result["language"]["local_source"]), "zh-TW")
+    result["runtime"]["config_schema_version"] = 7
+    result["meeting"]["audio_source"] = "system_input"
+    result["meeting"]["input_device"] = result["audio"]["microphone_in"] or result["audio"]["meeting_in"]
+    result["meeting"]["output_loopback_device"] = result["audio"]["speaker_out"]
+    result["meeting"]["asr_language"] = _fixed_language(runtime.get("meeting_asr_language", result["runtime"]["remote_asr_language"]), "zh-TW")
+    result["meeting"]["translation_target"] = _fixed_language(runtime.get("meeting_translation_target", result["runtime"]["remote_translation_target"]), "en")
+    result["meeting"]["record_transcript"] = True
+    result["meeting"]["tts_enabled"] = False
+    remote_voice = str(runtime.get("remote_tts_voice", result["runtime"].get("remote_tts_voice", "none")) or "none")
+    local_voice = str(runtime.get("local_tts_voice", result["runtime"].get("local_tts_voice", "none")) or "none")
+    result["dialogue"]["remote_asr_language"] = result["runtime"]["remote_asr_language"]
+    result["dialogue"]["local_asr_language"] = result["runtime"]["local_asr_language"]
+    result["dialogue"]["remote_translation_target"] = _fixed_language(result["runtime"].get("remote_translation_target"), "zh-TW")
+    result["dialogue"]["local_translation_target"] = _fixed_language(result["runtime"].get("local_translation_target"), "en")
+    result["dialogue"]["remote_tts_voice"] = remote_voice
+    result["dialogue"]["local_tts_voice"] = local_voice
+    result["dialogue"]["passthrough_mode"] = "direct"
+    result["dialogue"]["passthrough_gain"] = float(result["runtime"].get("passthrough_gain", 1.0))
+    result["dialogue"]["remote_to_local"] = {
+        "asr_language": result["dialogue"]["remote_asr_language"],
+        "translation_target": result["dialogue"]["remote_translation_target"],
+        "tts_voice": remote_voice,
+        "output_policy": "direct_passthrough" if remote_voice.lower() == "none" else "translated_tts",
+        "passthrough_gain": result["dialogue"]["passthrough_gain"],
+    }
+    result["dialogue"]["local_to_remote"] = {
+        "asr_language": result["dialogue"]["local_asr_language"],
+        "translation_target": result["dialogue"]["local_translation_target"],
+        "tts_voice": local_voice,
+        "output_policy": "direct_passthrough" if local_voice.lower() == "none" else "translated_tts",
+        "passthrough_gain": result["dialogue"]["passthrough_gain"],
+    }
     # Set migration note if not already set (routing_mode migration may have set it)
     if result["runtime"].get("last_migration_note") != "upgraded_to_virtual_audio_mode":
         result["runtime"]["last_migration_note"] = "migrated_from_legacy"

@@ -13,12 +13,15 @@ from app.infra.config.schema import (
     AudioSystemDeviceConfig,
     AudioRouteConfig,
     CallTranslationConfig,
+    DialogueDirectionConfig,
+    DialogueModeConfig,
     DirectionConfig,
     HealthStateConfig,
     LanguageConfig,
     LlmChannelsConfig,
     LlmConfig,
     LlmRuntimeConfig,
+    MeetingModeConfig,
     RuntimeConfig,
     SlidingWindowConfig,
     TranslationProfileConfig,
@@ -28,6 +31,7 @@ from app.infra.config.schema import (
     TtsConfig,
     VadSettings,
     VirtualAudioConfig,
+    WindowsIoConfig,
     merge_tts_configs,
 )
 
@@ -93,6 +97,28 @@ def _as_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+_SUPPORTED_LANGUAGES = {"zh-TW", "en", "ja", "ko", "th"}
+
+
+def _fixed_language(value: object, default: str) -> str:
+    raw = str(value or "").strip()
+    if raw.lower() == "auto" or not raw:
+        return default
+    normalized = "zh-TW" if raw.lower() in {"zh", "zh-tw", "zh_tw", "tw"} else raw
+    return normalized if normalized in _SUPPORTED_LANGUAGES else default
+
+
+def _session_mode(value: object) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"dialogue", "dialogue_voice", "voice"}:
+        return "dialogue"
+    return "meeting"
+
+
+def _output_policy_from_voice(value: object) -> str:
+    return "direct_passthrough" if str(value or "none").strip().lower() == "none" else "translated_tts"
+
+
 def _parse_audio_route_config(raw: dict[str, Any]) -> AudioRouteConfig:
     defaults = AudioRouteConfig()
     data = _as_dict(raw)
@@ -121,6 +147,9 @@ def _parse_audio_route_config(raw: dict[str, Any]) -> AudioRouteConfig:
         bridge_enabled=bool(virtual_audio_raw.get("bridge_enabled", defaults.virtual_audio.bridge_enabled)),
         bridge_path=str(virtual_audio_raw.get("bridge_path", defaults.virtual_audio.bridge_path)),
         sample_rate=int(virtual_audio_raw.get("sample_rate", defaults.virtual_audio.sample_rate)),
+        channels=int(virtual_audio_raw.get("channels", defaults.virtual_audio.channels)),
+        bit_depth=int(virtual_audio_raw.get("bit_depth", defaults.virtual_audio.bit_depth)),
+        dtype=str(virtual_audio_raw.get("dtype", defaults.virtual_audio.dtype)),
         frame_ms=int(virtual_audio_raw.get("frame_ms", defaults.virtual_audio.frame_ms)),
         target_latency_ms=int(
             virtual_audio_raw.get("target_latency_ms", defaults.virtual_audio.target_latency_ms)
@@ -154,6 +183,9 @@ def _parse_audio_route_config(raw: dict[str, Any]) -> AudioRouteConfig:
     if routing_mode != "synctranslate_virtual_audio":
         routing_mode = "synctranslate_virtual_audio"
     virtual_audio.sample_rate = max(8000, min(192000, int(virtual_audio.sample_rate)))
+    virtual_audio.channels = 2
+    virtual_audio.bit_depth = 16
+    virtual_audio.dtype = "int16"
     virtual_audio.frame_ms = max(5, min(100, int(virtual_audio.frame_ms)))
     virtual_audio.target_latency_ms = max(20, min(2000, int(virtual_audio.target_latency_ms)))
     return AudioRouteConfig(
@@ -174,6 +206,13 @@ def parse_app_config(raw: dict[str, Any]) -> AppConfig:  # noqa: PLR0912,PLR0915
     _llm_d = LlmConfig()
 
     audio = _parse_audio_route_config(raw.get("audio") or {})
+    windows_raw = _as_dict((raw.get("audio") or {}).get("windows_io"))
+    windows_io = WindowsIoConfig(
+        preferred_sample_rate=int(windows_raw.get("preferred_sample_rate", 48000)),
+        preferred_channels=int(windows_raw.get("preferred_channels", 2)),
+        internal_dtype=str(windows_raw.get("internal_dtype", "float32")),
+    )
+    meeting_raw = _as_dict(raw.get("meeting"))
     direction = DirectionConfig(**(raw.get("direction") or {}))
     language = LanguageConfig(**(raw.get("language") or {}))
 
@@ -232,6 +271,64 @@ def parse_app_config(raw: dict[str, Any]) -> AppConfig:  # noqa: PLR0912,PLR0915
     if "local_tts" not in raw:
         local_tts = merge_tts_configs(tts, local_tts, tts_channels.remote)
     runtime = RuntimeConfig(**(raw.get("runtime") or {}))
+    runtime.session_mode = _session_mode(getattr(runtime, "session_mode", "meeting"))
+    runtime.asr_language_mode = "fixed"
+    runtime.remote_asr_language = _fixed_language(getattr(runtime, "remote_asr_language", "en"), "en")
+    runtime.local_asr_language = _fixed_language(getattr(runtime, "local_asr_language", "zh-TW"), "zh-TW")
+    runtime.config_schema_version = 7
+    meeting = MeetingModeConfig(
+        audio_source=str(meeting_raw.get("audio_source", meeting_raw.get("source_kind", "system_input")) or "system_input"),
+        input_device=str(meeting_raw.get("input_device", audio.microphone_in or "")),
+        output_loopback_device=str(meeting_raw.get("output_loopback_device", audio.speaker_out or "")),
+        asr_language=_fixed_language(meeting_raw.get("asr_language", runtime.remote_asr_language), "zh-TW"),
+        translation_target=_fixed_language(meeting_raw.get("translation_target", runtime.remote_translation_target), "en"),
+        record_transcript=bool(meeting_raw.get("record_transcript", meeting_raw.get("transcript_enabled", True))),
+        tts_enabled=bool(meeting_raw.get("tts_enabled", False)),
+    )
+    if meeting.audio_source not in {"system_input", "system_output_loopback"}:
+        meeting.audio_source = "system_input"
+    dialogue_raw = _as_dict(raw.get("dialogue"))
+    remote_voice = str(dialogue_raw.get("remote_tts_voice", runtime.remote_tts_voice or "none") or "none")
+    local_voice = str(dialogue_raw.get("local_tts_voice", runtime.local_tts_voice or "none") or "none")
+    r2l_raw = _as_dict(dialogue_raw.get("remote_to_local"))
+    l2r_raw = _as_dict(dialogue_raw.get("local_to_remote"))
+    remote_to_local = DialogueDirectionConfig(
+        asr_language=_fixed_language(r2l_raw.get("asr_language", dialogue_raw.get("remote_asr_language", runtime.remote_asr_language)), "en"),
+        translation_target=_fixed_language(r2l_raw.get("translation_target", dialogue_raw.get("remote_translation_target", runtime.remote_translation_target)), "zh-TW"),
+        tts_voice=str(r2l_raw.get("tts_voice", remote_voice) or "none"),
+        output_policy=str(r2l_raw.get("output_policy") or _output_policy_from_voice(r2l_raw.get("tts_voice", remote_voice))),
+        passthrough_gain=float(r2l_raw.get("passthrough_gain", dialogue_raw.get("passthrough_gain", runtime.passthrough_gain))),
+    )
+    local_to_remote = DialogueDirectionConfig(
+        asr_language=_fixed_language(l2r_raw.get("asr_language", dialogue_raw.get("local_asr_language", runtime.local_asr_language)), "zh-TW"),
+        translation_target=_fixed_language(l2r_raw.get("translation_target", dialogue_raw.get("local_translation_target", runtime.local_translation_target)), "en"),
+        tts_voice=str(l2r_raw.get("tts_voice", local_voice) or "none"),
+        output_policy=str(l2r_raw.get("output_policy") or _output_policy_from_voice(l2r_raw.get("tts_voice", local_voice))),
+        passthrough_gain=float(l2r_raw.get("passthrough_gain", dialogue_raw.get("passthrough_gain", runtime.passthrough_gain))),
+    )
+    for direction_cfg in (remote_to_local, local_to_remote):
+        if direction_cfg.tts_voice.strip().lower() == "none":
+            direction_cfg.output_policy = "direct_passthrough"
+        elif direction_cfg.output_policy not in {"translated_tts", "direct_passthrough", "subtitle_only"}:
+            direction_cfg.output_policy = "translated_tts"
+    dialogue = DialogueModeConfig(
+        remote_asr_language=remote_to_local.asr_language,
+        local_asr_language=local_to_remote.asr_language,
+        remote_translation_target=remote_to_local.translation_target,
+        local_translation_target=local_to_remote.translation_target,
+        remote_tts_voice=remote_to_local.tts_voice,
+        local_tts_voice=local_to_remote.tts_voice,
+        passthrough_mode=str(dialogue_raw.get("passthrough_mode", "direct") or "direct"),
+        passthrough_gain=float(dialogue_raw.get("passthrough_gain", runtime.passthrough_gain)),
+        remote_to_local=remote_to_local,
+        local_to_remote=local_to_remote,
+    )
+    runtime.remote_asr_language = dialogue.remote_asr_language
+    runtime.local_asr_language = dialogue.local_asr_language
+    runtime.remote_translation_target = dialogue.remote_translation_target
+    runtime.local_translation_target = dialogue.local_translation_target
+    runtime.remote_tts_voice = dialogue.remote_tts_voice
+    runtime.local_tts_voice = dialogue.local_tts_voice
     health_last_success = HealthStateConfig(**(raw.get("health_last_success") or {}))
 
     direction.mode = "bidirectional"
@@ -256,8 +353,7 @@ def parse_app_config(raw: dict[str, Any]) -> AppConfig:  # noqa: PLR0912,PLR0915
             tts_config.style_preset = "balanced"
     if runtime.tts_output_mode not in {"subtitle_only", "tts", "passthrough"}:
         runtime.tts_output_mode = "subtitle_only"
-    if runtime.asr_language_mode != "auto":
-        runtime.asr_language_mode = "auto"
+    runtime.asr_language_mode = "fixed"
     runtime.use_channel_specific_asr = True
     runtime.use_channel_specific_llm = True
 
@@ -288,6 +384,9 @@ def parse_app_config(raw: dict[str, Any]) -> AppConfig:  # noqa: PLR0912,PLR0915
 
     return AppConfig(
         audio=audio,
+        windows_io=windows_io,
+        meeting=meeting,
+        dialogue=dialogue,
         direction=direction,
         language=language,
         asr=asr,
@@ -301,3 +400,4 @@ def parse_app_config(raw: dict[str, Any]) -> AppConfig:  # noqa: PLR0912,PLR0915
         runtime=runtime,
         health_last_success=health_last_success,
     )
+    MeetingModeConfig,

@@ -109,7 +109,7 @@ $principal = New-Object Security.Principal.WindowsPrincipal($identity)
 Add-Check "administrator" ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) "Driver preflight should run from an elevated PowerShell."
 
 Add-Check "package_exists" ([bool]$packageDirResolved) "Package directory: $PackageDir"
-Add-Check "msi_exists" ([bool]$msiResolved) "MSI: $MsiPath"
+Add-Check "msi_exists" ([bool]$msiResolved) "MSI: $MsiPath" "warning"
 Add-Check "certificate_exists" ([bool]$certificateResolved) "Certificate: $CertificatePath" "warning"
 
 if ($packageDirResolved) {
@@ -222,7 +222,7 @@ if ($msiResolved) {
             $_[0] -eq "InstallDriverPackage" -or
             (($_[3] -match "install_driver_package\.ps1") -and ($_[3] -notmatch "uninstall_driver_package\.ps1"))
         })
-        Add-Check "msi_no_install_custom_action" (($installActions.Count -eq 0) -or $AllowMsiInstallCustomAction) "MSI must not auto-install the driver package." "error" $installActions
+        Add-Check "msi_has_install_custom_action" ($installActions.Count -gt 0) "Driver MSI must provide a one-click elevated install custom action." "error" $installActions
 
         $sequenceRows = @(Get-MsiRows $msiResolved "SELECT Action, Condition, Sequence FROM InstallExecuteSequence")
         $rebootRows = @($sequenceRows | Where-Object { $_[0] -eq "ScheduleReboot" -or $_[0] -eq "ForceReboot" })

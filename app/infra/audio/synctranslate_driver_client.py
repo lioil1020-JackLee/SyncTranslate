@@ -7,6 +7,11 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from app.infra.audio.bridge_protocol import (
+    VIRTUAL_AUDIO_V2_CHANNELS,
+    encode_pcm16_stereo_packet,
+)
+
 
 class SyncTranslateDriverUnavailable(RuntimeError):
     pass
@@ -102,12 +107,11 @@ class SyncTranslateDriverAudioClient:
             return False
 
     def write_virtual_microphone(self, audio: np.ndarray, *, sample_rate: int) -> int:
-        del sample_rate
-        payload = self._to_float32_mono(audio)
-        if payload.size == 0:
+        payload, frames = self._to_pcm16_stereo_bytes(audio, sample_rate=int(sample_rate))
+        if not payload:
             return 0
         written = self._device_io_control(self.IOCTL_WRITE_PCM, payload, None)
-        return int(written // np.dtype(np.float32).itemsize)
+        return int(written // (np.dtype("<i2").itemsize * VIRTUAL_AUDIO_V2_CHANNELS)) or frames
 
     def flush_virtual_microphone(self) -> None:
         self._device_io_control(self.IOCTL_FLUSH, None, None)
@@ -152,14 +156,22 @@ class SyncTranslateDriverAudioClient:
         self._handle = handle_value
         return handle_value
 
-    def _device_io_control(self, control_code: int, input_data: np.ndarray | None, output_struct) -> int:
+    def _device_io_control(self, control_code: int, input_data: np.ndarray | bytes | bytearray | memoryview | None, output_struct) -> int:
         handle = self._ensure_handle()
         input_ptr = None
         input_bytes = 0
+        keepalive = None
         if input_data is not None:
-            contiguous = np.ascontiguousarray(input_data, dtype=np.float32)
-            input_ptr = contiguous.ctypes.data_as(wintypes.LPVOID)
-            input_bytes = int(contiguous.nbytes)
+            if isinstance(input_data, (bytes, bytearray, memoryview)):
+                raw = bytes(input_data)
+                keepalive = ctypes.create_string_buffer(raw)
+                input_ptr = ctypes.cast(keepalive, wintypes.LPVOID)
+                input_bytes = int(len(raw))
+            else:
+                contiguous = np.ascontiguousarray(input_data)
+                keepalive = contiguous
+                input_ptr = contiguous.ctypes.data_as(wintypes.LPVOID)
+                input_bytes = int(contiguous.nbytes)
         output_ptr = None
         output_bytes = 0
         if output_struct is not None:
@@ -185,17 +197,12 @@ class SyncTranslateDriverAudioClient:
         return int(bytes_returned.value)
 
     @staticmethod
-    def _to_float32_mono(audio: np.ndarray) -> np.ndarray:
-        payload = np.asarray(audio, dtype=np.float32)
-        if payload.size == 0:
-            return np.empty((0,), dtype=np.float32)
-        if payload.ndim == 1:
-            mono = payload
-        else:
-            mono = np.mean(payload, axis=1, dtype=np.float32)
-        mono = np.ascontiguousarray(mono.reshape(-1), dtype=np.float32)
-        np.clip(mono, -1.0, 1.0, out=mono)
-        return mono
+    def _to_pcm16_stereo_bytes(audio: np.ndarray, *, sample_rate: int) -> tuple[bytes, int]:
+        packet = encode_pcm16_stereo_packet(audio, sample_rate=int(sample_rate))
+        frames = int(packet.get("frames", 0) or 0)
+        import base64
+
+        return base64.b64decode(str(packet.get("data_b64") or ""), validate=True), frames
 
 
 __all__ = [

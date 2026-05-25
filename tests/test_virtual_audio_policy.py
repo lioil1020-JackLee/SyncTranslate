@@ -6,6 +6,9 @@ from app.infra.config.schema import AppConfig
 
 def test_virtual_audio_policy_maps_acer_style_toggles_to_output_modes() -> None:
     cfg = AppConfig()
+    cfg.runtime.session_mode = "dialogue"
+    cfg.dialogue.remote_to_local.output_policy = "translated_tts"
+    cfg.dialogue.local_to_remote.output_policy = "translated_tts"
     cfg.audio.routing_mode = "synctranslate_virtual_audio"
     cfg.audio.call_translation.listen_remote_original = True
     cfg.audio.call_translation.listen_remote_translation = True
@@ -21,6 +24,8 @@ def test_virtual_audio_policy_maps_acer_style_toggles_to_output_modes() -> None:
 
 def test_call_translation_policy_can_disable_local_output_to_meeting() -> None:
     cfg = AppConfig()
+    cfg.runtime.session_mode = "dialogue"
+    cfg.dialogue.local_to_remote.output_policy = "subtitle_only"
     cfg.audio.routing_mode = "synctranslate_virtual_audio"
     cfg.audio.call_translation.output_local_original = False
     cfg.audio.call_translation.output_local_translation = False

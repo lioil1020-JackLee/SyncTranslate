@@ -19,7 +19,7 @@ class SettingsPage(QWidget):
         content_layout.addWidget(
             self._build_section(
                 "音訊裝置",
-                "設定會議端與本地端的輸入與輸出裝置，使用固定雙向音源線。",
+                "設定雙向語音需要的本地輸入、本地輸出與 SyncTranslate 虛擬音效裝置。會議字幕音源請在主選單選擇。",
                 audio_routing_page,
             )
         )

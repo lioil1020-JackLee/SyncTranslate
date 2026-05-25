@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import json
+import os
 from multiprocessing.connection import Listener
 import sys
 import time
@@ -43,9 +44,16 @@ from app.infra.audio.bridge_protocol import (
     audio_frame_count,
     audio_peak,
     decode_audio_packet,
+    decode_pcm16_stereo_packet,
     encode_audio_packet,
+    encode_pcm16_stereo_packet,
 )
 from app.infra.audio.windows_named_event import WindowsNamedEvent
+
+
+def _debug_log(message: str) -> None:
+    if os.environ.get("SYNCTRANSLATE_BRIDGE_DEBUG") == "1":
+        print(message, file=sys.stderr, flush=True)
 
 
 @dataclass(slots=True)
@@ -69,18 +77,22 @@ class BridgeCommandHandler:
         self.state = BridgeState()
         self.remote_input_event = WindowsNamedEvent(r"Local\SyncTranslateRemoteInputReady")
         self.remote_input_buffer = self._create_or_attach_ring_buffer(
-            name=self.REMOTE_INPUT_SHARED_MEMORY_NAME,
+            name=self._scoped_shared_memory_name(self.REMOTE_INPUT_SHARED_MEMORY_NAME),
             capacity_frames=48000 * 10,
             channels=2,
         )
         self.remote_input_stop = Event()
         self.remote_input_thread: Thread | None = None
         self.virtual_microphone_buffer = self._create_or_attach_ring_buffer(
-            name=self.VIRTUAL_MIC_SHARED_MEMORY_NAME,
+            name=self._scoped_shared_memory_name(self.VIRTUAL_MIC_SHARED_MEMORY_NAME),
             capacity_frames=48000 * 10,
-            channels=1,
+            channels=2,
         )
         self.virtual_microphone_event = WindowsNamedEvent(r"Local\SyncTranslateVirtualMicrophoneReady")
+
+    @staticmethod
+    def _scoped_shared_memory_name(base_name: str) -> str:
+        return f"{base_name}_{os.getpid()}"
 
     @staticmethod
     def _create_or_attach_ring_buffer(*, name: str, capacity_frames: int, channels: int) -> SharedMemoryPcmRingBuffer:
@@ -91,17 +103,41 @@ class BridgeCommandHandler:
                 channels=int(channels),
             )
         except FileExistsError:
-            buffer = SharedMemoryPcmRingBuffer.attach(
-                name=name,
-                capacity_frames=int(capacity_frames),
-                channels=int(channels),
-            )
-            buffer.clear()
-            return buffer
+            try:
+                buffer = SharedMemoryPcmRingBuffer.attach(
+                    name=name,
+                    capacity_frames=int(capacity_frames),
+                    channels=int(channels),
+                )
+                buffer.clear()
+                return buffer
+            except ValueError:
+                try:
+                    stale = SharedMemoryPcmRingBuffer.attach(
+                        name=name,
+                        capacity_frames=int(capacity_frames),
+                        channels=1,
+                    )
+                    stale.memory.unlink()
+                    stale.close()
+                except Exception:
+                    pass
+                try:
+                    return SharedMemoryPcmRingBuffer.create(
+                        name=name,
+                        capacity_frames=int(capacity_frames),
+                        channels=int(channels),
+                    )
+                except FileExistsError:
+                    return SharedMemoryPcmRingBuffer.create(
+                        name=f"{name}_{int(time.time() * 1000)}",
+                        capacity_frames=int(capacity_frames),
+                        channels=int(channels),
+                    )
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
         cmd = str(request.get("cmd") or "").strip()
-        print(f"[BRIDGE HANDLER] cmd='{cmd}', request_keys={list(request.keys())}", flush=True)
+        _debug_log(f"[BRIDGE HANDLER] cmd='{cmd}', request_keys={list(request.keys())}")
         try:
             if cmd == "hello":
                 return self._ok(
@@ -120,10 +156,12 @@ class BridgeCommandHandler:
                 return self._ok(configured=True)
             if cmd == "start_remote_input":
                 requested_rate = int(request.get("sample_rate", 48000) or 48000)
-                print(f"[BRIDGE] START_REMOTE_INPUT: old_rate={self.state.remote_input_sample_rate}, new_rate={requested_rate}", flush=True)
+                _debug_log(
+                    f"[BRIDGE] START_REMOTE_INPUT: old_rate={self.state.remote_input_sample_rate}, new_rate={requested_rate}"
+                )
                 self.state.remote_input_running = True
                 self.state.remote_input_sample_rate = requested_rate
-                print(f"[BRIDGE] START_REMOTE_INPUT: state now has rate={self.state.remote_input_sample_rate}", flush=True)
+                _debug_log(f"[BRIDGE] START_REMOTE_INPUT: state now has rate={self.state.remote_input_sample_rate}")
                 self._start_remote_input_capture(
                     device_name=str(request.get("device_name") or ""),
                     sample_rate=self.state.remote_input_sample_rate,
@@ -140,8 +178,11 @@ class BridgeCommandHandler:
                 packet = request.get("packet")
                 if not isinstance(packet, dict):
                     raise ValueError("packet is required")
-                audio, packet_sample_rate = decode_audio_packet(packet)
-                print(f"[BRIDGE] INJECT: packet_sample_rate={packet_sample_rate}, state.remote_input_sample_rate={self.state.remote_input_sample_rate}", flush=True)
+                audio, packet_sample_rate = self._decode_packet(packet)
+                _debug_log(
+                    f"[BRIDGE] INJECT: packet_sample_rate={packet_sample_rate}, "
+                    f"state.remote_input_sample_rate={self.state.remote_input_sample_rate}"
+                )
                 written_frames = self.remote_input_buffer.write(audio)
                 # NOTE: Do NOT update state.remote_input_sample_rate from injected audio.
                 # The sample rate is set by start_remote_input() and should remain stable.
@@ -156,13 +197,16 @@ class BridgeCommandHandler:
                 self.remote_input_buffer.clear()
                 self.remote_input_event.reset()
                 sample_rate = int(self.state.remote_input_sample_rate or request.get("sample_rate", 48000) or 48000)
-                print(f"[BRIDGE] READ_REMOTE_INPUT: state_rate={self.state.remote_input_sample_rate}, returning_rate={sample_rate}, frames={audio.shape[0] if audio.ndim > 0 else 0}", flush=True)
-                return self._ok(packet=encode_audio_packet(audio, sample_rate=sample_rate))
+                _debug_log(
+                    f"[BRIDGE] READ_REMOTE_INPUT: state_rate={self.state.remote_input_sample_rate}, "
+                    f"returning_rate={sample_rate}, frames={audio.shape[0] if audio.ndim > 0 else 0}"
+                )
+                return self._ok(packet=encode_pcm16_stereo_packet(audio, sample_rate=sample_rate))
             if cmd == "write_virtual_microphone":
                 packet = request.get("packet")
                 if not isinstance(packet, dict):
                     raise ValueError("packet is required")
-                audio, _sample_rate = decode_audio_packet(packet)
+                audio, _sample_rate = self._decode_packet(packet)
                 written_frames = self.virtual_microphone_buffer.write(audio)
                 self.virtual_microphone_event.set()
                 self.state.virtual_microphone_frames += written_frames
@@ -208,11 +252,18 @@ class BridgeCommandHandler:
             "virtual_microphone_buffered_frames": virtual_microphone_buffer.buffered_frames,
             "virtual_microphone_dropped_frames": virtual_microphone_buffer.dropped_frames,
             "virtual_microphone_buffer_capacity_frames": virtual_microphone_buffer.capacity_frames,
+            "virtual_microphone_channels": self.virtual_microphone_buffer.channels,
             "virtual_microphone_shared_memory_name": virtual_microphone_buffer.shared_memory_name,
             "virtual_microphone_event_name": self.virtual_microphone_event.name,
             "last_virtual_microphone_peak": self.state.last_virtual_microphone_peak,
             "last_error": self.state.last_error,
         }
+
+    @staticmethod
+    def _decode_packet(packet: dict[str, Any]) -> tuple[np.ndarray, int]:
+        if int(packet.get("protocol_version", 1) or 1) == 2:
+            return decode_pcm16_stereo_packet(packet)
+        return decode_audio_packet(packet)
 
     def _start_remote_input_capture(self, *, device_name: str, sample_rate: int, chunk_ms: int) -> None:
         self._stop_remote_input_capture()
@@ -409,7 +460,9 @@ class BridgeCommandHandler:
     def close(self) -> None:
         self._stop_remote_input_capture()
         self.remote_input_event.close()
-        close_buffer = getattr(self.remote_input_buffer, "close", None)
+        close_buffer = getattr(self.remote_input_buffer, "close_and_unlink", None)
+        if not callable(close_buffer):
+            close_buffer = getattr(self.remote_input_buffer, "close", None)
         if callable(close_buffer):
             close_buffer()
         self.virtual_microphone_event.close()

@@ -14,6 +14,7 @@ from app.infra.audio.device_registry import (
     parse_device_selector,
     preferred_hostapi_index_for_platform,
 )
+from app.infra.audio.frame import ChannelPolicy
 
 
 @dataclass(slots=True)
@@ -24,6 +25,7 @@ class CaptureStats:
     frame_count: int
     level: float
     last_error: str
+    channels: int = 0
 
 
 class AudioCapture:
@@ -39,9 +41,18 @@ class AudioCapture:
         self._gain = 1.0
         self._current_device_name = ""
         self._current_sample_rate: int | None = None
+        self._channels = 0
         self._consumers: list[Callable[[np.ndarray, float], None]] = []
 
-    def start(self, device_name: str, sample_rate: int | None = None, chunk_ms: int | None = None) -> None:
+    def start(
+        self,
+        device_name: str,
+        sample_rate: int | None = None,
+        chunk_ms: int | None = None,
+        channels_policy: str = ChannelPolicy.MONO.value,
+        loopback: bool = False,
+    ) -> None:
+        del loopback
         if not device_name:
             raise ValueError("Input device name is required.")
 
@@ -50,7 +61,7 @@ class AudioCapture:
         errors: list[str] = []
         for device_index, device_info in self._rank_input_devices(device_name):
             max_input_channels = int(device_info["max_input_channels"])
-            channels = self._preferred_input_channels(device_name, max_input_channels)
+            channels = self._preferred_input_channels(device_name, max_input_channels, channels_policy=channels_policy)
             if channels <= 0:
                 continue
             default_sample_rate = float(device_info["default_samplerate"])
@@ -65,6 +76,7 @@ class AudioCapture:
                     self._frame_count = 0
                     self._level = 0.0
                     self._sample_rate = resolved_sample_rate
+                    self._channels = int(channels)
                     self._last_error = ""
                     self._current_device_name = device_name
                     self._current_sample_rate = int(round(resolved_sample_rate))
@@ -93,11 +105,21 @@ class AudioCapture:
             + " | ".join(errors[:6])
         )
 
-    def preview_resolved_sample_rate(self, device_name: str, requested_sample_rate: int | None = None) -> float:
+    def preview_resolved_sample_rate(
+        self,
+        device_name: str,
+        requested_sample_rate: int | None = None,
+        *,
+        channels_policy: str = ChannelPolicy.MONO.value,
+    ) -> float:
         requested = float(requested_sample_rate) if requested_sample_rate else None
         errors: list[str] = []
         for device_index, device_info in self._rank_input_devices(device_name):
-            channels = self._preferred_input_channels(device_name, int(device_info["max_input_channels"]))
+            channels = self._preferred_input_channels(
+                device_name,
+                int(device_info["max_input_channels"]),
+                channels_policy=channels_policy,
+            )
             if channels <= 0:
                 continue
             default_rate = float(device_info["default_samplerate"])
@@ -153,6 +175,7 @@ class AudioCapture:
                 frame_count=self._frame_count,
                 level=self._level,
                 last_error=self._last_error,
+                channels=self._channels,
             )
 
     def add_consumer(self, consumer: Callable[[np.ndarray, float], None]) -> None:
@@ -275,13 +298,23 @@ class AudioCapture:
         return max(256, frames)
 
     @staticmethod
-    def _preferred_input_channels(device_name: str, max_input_channels: int) -> int:
+    def _preferred_input_channels(
+        device_name: str,
+        max_input_channels: int,
+        *,
+        channels_policy: str = ChannelPolicy.MONO.value,
+    ) -> int:
         if max_input_channels <= 0:
             return 0
-        # Desktop dictation stacks are typically more stable when the capture
-        # path is forced to mono before VAD/ASR. Virtual devices often expose
-        # duplicated or weakly decorrelated stereo channels, which makes speech
-        # boundary detection and transcription less stable.
+        policy = str(channels_policy or ChannelPolicy.MONO.value).strip().lower()
+        if policy == ChannelPolicy.MONO.value:
+            return 1
+        if policy == ChannelPolicy.STEREO.value:
+            return 2 if max_input_channels >= 2 else 1
+        if policy == ChannelPolicy.STEREO_OR_MONO.value:
+            return 2 if max_input_channels >= 2 else 1
+        if policy == ChannelPolicy.NATIVE.value:
+            return max(1, min(int(max_input_channels), 8))
         return 1
 
 

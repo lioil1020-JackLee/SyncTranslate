@@ -16,6 +16,7 @@ class _DummyWindow:
 
     def __init__(self) -> None:
         self.config = AppConfig()
+        self.config.runtime.session_mode = "dialogue"
         self._bridge_probe_cache = None
         self._bridge_probe_cache_ts = 0.0
 

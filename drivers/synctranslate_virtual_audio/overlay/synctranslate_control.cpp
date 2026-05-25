@@ -2,30 +2,16 @@
 #include "synctranslate_pcm_ring.h"
 
 static PDEVICE_OBJECT g_syncTranslateControlDevice = NULL;
+static PDRIVER_DISPATCH g_syncTranslatePreviousCreate = NULL;
+static PDRIVER_DISPATCH g_syncTranslatePreviousClose = NULL;
+static PDRIVER_DISPATCH g_syncTranslatePreviousCleanup = NULL;
 static PDRIVER_DISPATCH g_syncTranslatePreviousDeviceControl = NULL;
 
 static NTSTATUS
-SyncTranslateForwardDeviceControl(
+SyncTranslateForwardIrp(
+    _In_opt_ PDRIVER_DISPATCH previousDispatch,
     _In_ PDEVICE_OBJECT deviceObject,
     _Inout_ PIRP irp
-)
-{
-    if (g_syncTranslatePreviousDeviceControl != NULL)
-    {
-        return g_syncTranslatePreviousDeviceControl(deviceObject, irp);
-    }
-
-    irp->IoStatus.Status = STATUS_INVALID_DEVICE_REQUEST;
-    irp->IoStatus.Information = 0;
-    IoCompleteRequest(irp, IO_NO_INCREMENT);
-    return STATUS_INVALID_DEVICE_REQUEST;
-}
-
-static NTSTATUS
-SyncTranslateForwardIrp(
-    _In_ PDEVICE_OBJECT deviceObject,
-    _Inout_ PIRP irp,
-    _In_opt_ PDRIVER_DISPATCH previousDispatch
 )
 {
     if (previousDispatch != NULL)
@@ -46,7 +32,11 @@ SyncTranslateControlDispatchCreateClose(
     _Inout_ PIRP irp
 )
 {
-    UNREFERENCED_PARAMETER(deviceObject);
+    if (deviceObject != g_syncTranslateControlDevice)
+    {
+        return SyncTranslateForwardIrp(g_syncTranslatePreviousCreate, deviceObject, irp);
+    }
+
     irp->IoStatus.Status = STATUS_SUCCESS;
     irp->IoStatus.Information = 0;
     IoCompleteRequest(irp, IO_NO_INCREMENT);
@@ -60,7 +50,11 @@ SyncTranslateControlDispatchClose(
     _Inout_ PIRP irp
 )
 {
-    UNREFERENCED_PARAMETER(deviceObject);
+    if (deviceObject != g_syncTranslateControlDevice)
+    {
+        return SyncTranslateForwardIrp(g_syncTranslatePreviousClose, deviceObject, irp);
+    }
+
     irp->IoStatus.Status = STATUS_SUCCESS;
     irp->IoStatus.Information = 0;
     IoCompleteRequest(irp, IO_NO_INCREMENT);
@@ -74,7 +68,11 @@ SyncTranslateControlDispatchCleanup(
     _Inout_ PIRP irp
 )
 {
-    UNREFERENCED_PARAMETER(deviceObject);
+    if (deviceObject != g_syncTranslateControlDevice)
+    {
+        return SyncTranslateForwardIrp(g_syncTranslatePreviousCleanup, deviceObject, irp);
+    }
+
     irp->IoStatus.Status = STATUS_SUCCESS;
     irp->IoStatus.Information = 0;
     IoCompleteRequest(irp, IO_NO_INCREMENT);
@@ -90,7 +88,7 @@ SyncTranslateControlDispatchDeviceControl(
 {
     if (deviceObject != g_syncTranslateControlDevice)
     {
-        return SyncTranslateForwardDeviceControl(deviceObject, irp);
+        return SyncTranslateForwardIrp(g_syncTranslatePreviousDeviceControl, deviceObject, irp);
     }
 
     NTSTATUS status = STATUS_SUCCESS;
@@ -104,7 +102,8 @@ SyncTranslateControlDispatchDeviceControl(
     case IOCTL_SYNCTRANSLATE_AUDIO_WRITE_PCM:
     {
         ULONG inputBytes = stack->Parameters.DeviceIoControl.InputBufferLength;
-        if (systemBuffer == NULL || inputBytes == 0 || (inputBytes % sizeof(FLOAT)) != 0)
+        if (systemBuffer == NULL || inputBytes == 0 ||
+            (inputBytes % SYNCTRANSLATE_VIRTUAL_AUDIO_BYTES_PER_FRAME) != 0)
         {
             status = STATUS_INVALID_PARAMETER;
             break;
@@ -116,9 +115,8 @@ SyncTranslateControlDispatchDeviceControl(
             break;
         }
 
-        ULONG frames = inputBytes / sizeof(FLOAT);
-        ULONG written = SyncTranslatePcmRingWriteFloat32Mono((const FLOAT*)systemBuffer, frames);
-        information = (ULONG_PTR)written * sizeof(FLOAT);
+        ULONG written = SyncTranslatePcmRingWritePcm16Stereo((const BYTE*)systemBuffer, inputBytes);
+        information = (ULONG_PTR)written * SYNCTRANSLATE_VIRTUAL_AUDIO_BYTES_PER_FRAME;
         status = STATUS_SUCCESS;
         break;
     }
@@ -195,6 +193,9 @@ SyncTranslateControlInitialize(
     }
 
     g_syncTranslateControlDevice = deviceObject;
+    g_syncTranslatePreviousCreate = driverObject->MajorFunction[IRP_MJ_CREATE];
+    g_syncTranslatePreviousClose = driverObject->MajorFunction[IRP_MJ_CLOSE];
+    g_syncTranslatePreviousCleanup = driverObject->MajorFunction[IRP_MJ_CLEANUP];
     g_syncTranslatePreviousDeviceControl = driverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL];
     driverObject->MajorFunction[IRP_MJ_CREATE] = SyncTranslateControlDispatchCreateClose;
     driverObject->MajorFunction[IRP_MJ_CLOSE] = SyncTranslateControlDispatchClose;
@@ -212,10 +213,28 @@ SyncTranslateControlShutdown(
     PAGED_CODE();
 
     if (driverObject != NULL &&
+        driverObject->MajorFunction[IRP_MJ_CREATE] == SyncTranslateControlDispatchCreateClose)
+    {
+        driverObject->MajorFunction[IRP_MJ_CREATE] = g_syncTranslatePreviousCreate;
+    }
+    if (driverObject != NULL &&
+        driverObject->MajorFunction[IRP_MJ_CLOSE] == SyncTranslateControlDispatchClose)
+    {
+        driverObject->MajorFunction[IRP_MJ_CLOSE] = g_syncTranslatePreviousClose;
+    }
+    if (driverObject != NULL &&
+        driverObject->MajorFunction[IRP_MJ_CLEANUP] == SyncTranslateControlDispatchCleanup)
+    {
+        driverObject->MajorFunction[IRP_MJ_CLEANUP] = g_syncTranslatePreviousCleanup;
+    }
+    if (driverObject != NULL &&
         driverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] == SyncTranslateControlDispatchDeviceControl)
     {
         driverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = g_syncTranslatePreviousDeviceControl;
     }
+    g_syncTranslatePreviousCreate = NULL;
+    g_syncTranslatePreviousClose = NULL;
+    g_syncTranslatePreviousCleanup = NULL;
     g_syncTranslatePreviousDeviceControl = NULL;
 
     UNICODE_STRING symbolicLink;

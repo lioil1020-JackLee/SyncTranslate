@@ -8,7 +8,7 @@ from app.infra.audio.capture import AudioCapture, CaptureStats
 
 
 class _AudioInputEndpoint:
-    def start(self, device_name: str, sample_rate: int, chunk_ms: int) -> None: ...
+    def start(self, device_name: str, sample_rate: int, chunk_ms: int, channels_policy: str = "mono") -> None: ...
 
     def stop(self) -> None: ...
 
@@ -39,9 +39,16 @@ class AudioInputManager:
             "remote": remote_endpoint,
         }
 
-    def start(self, source: str, device_name: str, sample_rate: int, chunk_ms: int) -> None:
+    def start(
+        self,
+        source: str,
+        device_name: str,
+        sample_rate: int,
+        chunk_ms: int,
+        channels_policy: str = "mono",
+    ) -> None:
         capture = self._capture_of(source)
-        capture.start(device_name, sample_rate=sample_rate, chunk_ms=chunk_ms)
+        capture.start(device_name, sample_rate=sample_rate, chunk_ms=chunk_ms, channels_policy=channels_policy)
 
     def stop(self, source: str) -> None:
         self._capture_of(source).stop()

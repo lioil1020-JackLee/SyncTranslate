@@ -46,6 +46,22 @@ def normalize_routing_mode(value: object) -> str:
 
 def resolve_call_translation_policy(config: AppConfig | AudioRouteConfig) -> CallTranslationPolicy:
     audio = config.audio if isinstance(config, AppConfig) else config
+    if isinstance(config, AppConfig) and str(getattr(config.runtime, "session_mode", "meeting") or "meeting") == "meeting":
+        return CallTranslationPolicy(
+            routing_mode=normalize_routing_mode(getattr(audio, "routing_mode", SYNC_VIRTUAL_AUDIO)),
+            listen_remote_original=False,
+            listen_remote_translation=False,
+            output_local_original=False,
+            output_local_translation=False,
+        )
+    if isinstance(config, AppConfig) and str(getattr(config.runtime, "session_mode", "meeting") or "meeting") == "dialogue":
+        return CallTranslationPolicy(
+            routing_mode=normalize_routing_mode(getattr(audio, "routing_mode", SYNC_VIRTUAL_AUDIO)),
+            listen_remote_original=config.dialogue.remote_to_local.output_policy == "direct_passthrough",
+            listen_remote_translation=config.dialogue.remote_to_local.output_policy == "translated_tts",
+            output_local_original=config.dialogue.local_to_remote.output_policy == "direct_passthrough",
+            output_local_translation=config.dialogue.local_to_remote.output_policy == "translated_tts",
+        )
     toggles = getattr(audio, "call_translation", CallTranslationConfig())
     return CallTranslationPolicy(
         routing_mode=normalize_routing_mode(getattr(audio, "routing_mode", SYNC_VIRTUAL_AUDIO)),

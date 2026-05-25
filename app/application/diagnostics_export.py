@@ -8,6 +8,7 @@ from app.infra.audio.virtual_bridge_probe import probe_virtual_audio_bridge
 from app.infra.audio.bridge_protocol import BRIDGE_PROTOCOL_VERSION
 from app.infra.audio.virtual_devices import detect_virtual_audio_install
 from app.infra.config.schema import AppConfig, translation_enabled_for_source
+from app.domain.version import build_metadata
 from app.version import app_version
 
 
@@ -52,6 +53,10 @@ def export_runtime_diagnostics(
     now = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_path = Path(f"diagnostics_{now}.txt")
     virtual_audio_status = detect_virtual_audio_install()
+    metadata = build_metadata(
+        config_schema_version=int(getattr(config.runtime, "config_schema_version", 0) or 0),
+        runtime_mode=str(getattr(config.runtime, "session_mode", "meeting") or "meeting"),
+    )
     bridge_probe = (
         probe_virtual_audio_bridge(config.audio.virtual_audio.bridge_path)
         if bool(config.audio.virtual_audio.bridge_enabled)
@@ -115,8 +120,13 @@ def export_runtime_diagnostics(
         [
             "SyncTranslate Diagnostics",
             f"timestamp: {datetime.now().isoformat()}",
+            f"app_version: {metadata.app_version}",
+            f"git_commit: {metadata.git_commit}",
+            f"build_timestamp: {metadata.build_timestamp}",
+            f"packaged: {metadata.packaged}",
             f"config_path: {config_path}",
-            f"mode: {config.direction.mode}",
+            f"session_mode: {str(getattr(config.runtime, 'session_mode', 'meeting') or 'meeting')}",
+            f"legacy_direction_mode: {config.direction.mode}",
             f"audio_routing_mode: {config.audio.routing_mode}",
             f"virtual_speaker_name: {config.audio.virtual_audio.speaker_name}",
             f"virtual_microphone_name: {config.audio.virtual_audio.microphone_name}",
@@ -151,6 +161,21 @@ def export_runtime_diagnostics(
             f"microphone_in: {routes.microphone_in}",
             f"speaker_out: {routes.speaker_out}",
             f"meeting_out: {routes.meeting_out}",
+            f"meeting_source_type: {str(getattr(config.meeting, 'audio_source', 'system_input') or 'system_input')}",
+            f"meeting_asr_language: {str(getattr(config.meeting, 'asr_language', 'zh-TW') or 'zh-TW')}",
+            f"dialogue_remote_asr_language: {str(getattr(config.dialogue, 'remote_asr_language', 'en') or 'en')}",
+            f"dialogue_local_asr_language: {str(getattr(config.dialogue, 'local_asr_language', 'zh-TW') or 'zh-TW')}",
+            f"direct_passthrough_remote_to_local: {config.dialogue.remote_to_local.output_policy == 'direct_passthrough'}",
+            f"direct_passthrough_local_to_remote: {config.dialogue.local_to_remote.output_policy == 'direct_passthrough'}",
+            f"capture_kind: {'output_loopback' if str(getattr(config.meeting, 'audio_source', 'system_input') or '') == 'system_output_loopback' else 'input'}",
+            f"capture_sample_rate: {int(float(((router_stats or {}).get('capture') or {}).get('remote', {}).get('sample_rate', 0) or 0))}",
+            f"capture_channels: {int(((router_stats or {}).get('capture') or {}).get('remote', {}).get('channels', 0) or 0)}",
+            "asr_input_sample_rate: 16000",
+            "asr_input_channels: 1",
+            f"bridge_required: {str(getattr(config.runtime, 'session_mode', 'meeting') or 'meeting') == 'dialogue' and bool(config.audio.virtual_audio.bridge_enabled)}",
+            f"bridge_connected: {bool(getattr(bridge_probe, 'connected', False))}",
+            f"driver_available: {bool(virtual_audio_status.speaker_available and virtual_audio_status.microphone_available)}",
+            f"last_route_policy_reason: {'meeting_monitor_no_virtual_audio' if str(getattr(config.runtime, 'session_mode', 'meeting') or 'meeting') == 'meeting' else 'dialogue_virtual_audio_routes'}",
             f"asr_model: {config.asr.model}",
             f"asr_device: {config.asr.device}",
             f"asr_compute_type: {config.asr.compute_type}",
@@ -162,7 +187,7 @@ def export_runtime_diagnostics(
             f"llm_threads: {config.llm.runtime.threads}",
             f"remote_translation_enabled: {translation_enabled_for_source(config.runtime, 'remote')}",
             f"local_translation_enabled: {translation_enabled_for_source(config.runtime, 'local')}",
-            "asr_language_mode: auto",
+            "asr_language_mode: fixed",
             f"tts_output_mode: {str(getattr(config.runtime, 'tts_output_mode', 'subtitle_only') or 'subtitle_only')}",
             f"meeting_tts_engine: {config.meeting_tts.engine}",
             f"meeting_tts_model: {config.meeting_tts.model_path}",
@@ -221,7 +246,8 @@ def export_session_report(
             "msi": "",
         },
         "config_path": config_path,
-        "mode": config.direction.mode,
+        "session_mode": str(getattr(config.runtime, "session_mode", "meeting") or "meeting"),
+        "legacy_direction_mode": config.direction.mode,
         "selected_devices": {
             "meeting_in": routes.meeting_in,
             "microphone_in": routes.microphone_in,
@@ -286,12 +312,21 @@ def export_session_report(
                 "voice": config.local_tts.voice_name,
             },
         },
-        "runtime": {
-            "sample_rate": config.runtime.sample_rate,
-            "chunk_ms": config.runtime.chunk_ms,
+            "runtime": {
+                "sample_rate": config.runtime.sample_rate,
+                "session_mode": str(getattr(config.runtime, "session_mode", "meeting") or "meeting"),
+                "meeting_audio_source": str(getattr(config.meeting, "audio_source", "system_input") or "system_input"),
+                "capture_kind": "output_loopback"
+                if str(getattr(config.meeting, "audio_source", "system_input") or "") == "system_output_loopback"
+                else "input",
+                "asr_input_sample_rate": 16000,
+                "asr_input_channels": 1,
+                "direct_passthrough_active_remote": config.dialogue.remote_to_local.output_policy == "direct_passthrough",
+                "direct_passthrough_active_local": config.dialogue.local_to_remote.output_policy == "direct_passthrough",
+                "chunk_ms": config.runtime.chunk_ms,
             "remote_translation_enabled": translation_enabled_for_source(config.runtime, "remote"),
             "local_translation_enabled": translation_enabled_for_source(config.runtime, "local"),
-            "asr_language_mode": "auto",
+            "asr_language_mode": "fixed",
             "tts_output_mode": str(getattr(config.runtime, "tts_output_mode", "subtitle_only") or "subtitle_only"),
             "max_pipeline_latency_ms": config.runtime.max_pipeline_latency_ms,
             "display_partial_strategy": config.runtime.display_partial_strategy,

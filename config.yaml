@@ -16,6 +16,9 @@ audio:
     bridge_enabled: true
     bridge_path: runtimes\audio\sync_audio_bridge.exe
     sample_rate: 48000
+    channels: 2
+    bit_depth: 16
+    dtype: int16
     frame_ms: 10
     target_latency_ms: 120
     require_driver: true
@@ -24,6 +27,41 @@ audio:
     listen_remote_translation: true
     output_local_original: false
     output_local_translation: true
+windows_io:
+  preferred_sample_rate: 48000
+  preferred_channels: 2
+  internal_dtype: float32
+meeting:
+  audio_source: system_input
+  input_device: ''
+  output_loopback_device: Voicemeeter Input (VB-Audio Voicemeeter VAIO)
+  asr_language: zh-TW
+  translation_target: en
+  record_transcript: true
+  tts_enabled: false
+dialogue:
+  remote_asr_language: zh-TW
+  local_asr_language: zh-TW
+  remote_translation_target: en
+  local_translation_target: en
+  remote_tts_voice: none
+  local_tts_voice: none
+  passthrough_mode: direct
+  passthrough_gain: 1.0
+  remote_to_local:
+    asr_language: zh-TW
+    translation_target: en
+    tts_voice: none
+    output_policy: subtitle_only
+    passthrough_gain: 1.0
+  local_to_remote:
+    asr_language: zh-TW
+    translation_target: en
+    tts_voice: none
+    output_policy: subtitle_only
+    passthrough_gain: 1.0
+direction:
+  mode: dialogue
 language:
   meeting_source: en
   meeting_target: en
@@ -40,15 +78,15 @@ llm_channels:
       threads: 8
       batch_size: 512
     temperature: 0.0
-    top_p: 0.78
-    max_output_tokens: 96
-    repeat_penalty: 1.1
+    top_p: 0.7
+    max_output_tokens: 80
+    repeat_penalty: 1.06
     stop_tokens: '</target>,Translation:'
     request_timeout_sec: 9
     sliding_window:
       enabled: true
-      trigger_tokens: 18
-      max_context_items: 4
+      trigger_tokens: 10
+      max_context_items: 3
     profiles:
       live_caption_fast:
         name: live_caption_fast
@@ -95,8 +133,8 @@ llm_channels:
         preserve_terms: true
         naturalize_tone: false
         allow_subject_completion: false
-    caption_profile: live_caption_fast
-    speech_profile: speech_output_natural
+    caption_profile: dialogue_fast
+    speech_profile: dialogue_fast
   remote:
     backend: local_llama_inprocess
     model: hy-mt1.5-7b
@@ -107,15 +145,15 @@ llm_channels:
       threads: 8
       batch_size: 512
     temperature: 0.0
-    top_p: 0.78
-    max_output_tokens: 128
-    repeat_penalty: 1.1
+    top_p: 0.7
+    max_output_tokens: 80
+    repeat_penalty: 1.06
     stop_tokens: '</target>,Translation:'
     request_timeout_sec: 12
     sliding_window:
       enabled: true
-      trigger_tokens: 18
-      max_context_items: 4
+      trigger_tokens: 10
+      max_context_items: 3
     profiles:
       live_caption_fast:
         name: live_caption_fast
@@ -162,17 +200,17 @@ llm_channels:
         preserve_terms: true
         naturalize_tone: false
         allow_subject_completion: false
-    caption_profile: live_caption_fast
-    speech_profile: speech_output_natural
+    caption_profile: dialogue_fast
+    speech_profile: dialogue_fast
 tts:
   engine: edge_tts
   executable_path: ''
   model_path: ''
   config_path: ''
   voice_name: zh-TW-HsiaoChenNeural
-  style_preset: conversational
+  style_preset: fast_response
   speaker_id: 0
-  length_scale: 1.0
+  length_scale: 1.02
   noise_scale: 0.6
   noise_w: 0.65
   sample_rate: 24000
@@ -189,33 +227,33 @@ runtime:
   passthrough_gain: 4.0
   adaptive_asr_enabled: true
   adaptive_llm_enabled: true
-  asr_pre_roll_ms: 360
-  latency_mode: balanced
+  asr_pre_roll_ms: 180
+  latency_mode: low_latency
   display_partial_strategy: stable_only
-  stable_partial_min_repeats: 3
-  partial_stability_max_delta_chars: 6
-  asr_partial_min_audio_ms: 360
-  asr_partial_interval_floor_ms: 280
-  llm_partial_interval_floor_ms: 280
-  early_final_enabled: false
+  stable_partial_min_repeats: 1
+  partial_stability_max_delta_chars: 8
+  asr_partial_min_audio_ms: 220
+  asr_partial_interval_floor_ms: 200
+  llm_partial_interval_floor_ms: 180
+  early_final_enabled: true
   tts_accept_stable_partial: false
-  tts_partial_min_chars: 12
+  tts_partial_min_chars: 8
   tts_use_speech_profile: false
   asr_queue_maxsize_local: 256
   asr_queue_maxsize_remote: 256
-  llm_queue_maxsize_local: 24
-  llm_queue_maxsize_remote: 24
-  tts_queue_maxsize_local: 16
-  tts_queue_maxsize_remote: 16
+  llm_queue_maxsize_local: 16
+  llm_queue_maxsize_remote: 16
+  tts_queue_maxsize_local: 12
+  tts_queue_maxsize_remote: 12
   translation_exact_cache_size: 256
   translation_prefix_min_delta_chars: 6
   tts_cancel_pending_on_new_final: true
   tts_cancel_policy: older_only
-  tts_max_wait_ms: 2200
-  tts_max_chars: 160
-  tts_drop_backlog_threshold: 3
-  llm_streaming_tokens: 16
-  max_pipeline_latency_ms: 3200
+  tts_max_wait_ms: 1200
+  tts_max_chars: 96
+  tts_drop_backlog_threshold: 2
+  llm_streaming_tokens: 12
+  max_pipeline_latency_ms: 2200
   asr_frontend_enabled: true
   asr_frontend_target_rms: 0.06
   asr_frontend_max_gain: 3.5
@@ -239,6 +277,9 @@ runtime:
   local_echo_guard_enabled: false
   local_echo_guard_resume_delay_ms: 300
   remote_echo_guard_resume_delay_ms: 300
+  session_mode: dialogue
+  language_config_version: 0
+  route_config_version: 0
   tts_output_mode: passthrough
   remote_asr_language: zh-TW
   local_asr_language: zh-TW
@@ -256,8 +297,8 @@ runtime:
   enable_partial_stabilization: true
   enable_structured_logging: true
   runtime_log_format: jsonl
-  asr_profile_local: meeting_room
-  asr_profile_remote: meeting_room
+  asr_profile_local: turn_taking
+  asr_profile_remote: turn_taking
   degradation_policy_enabled: true
   asr_final_priority_enabled: true
   asr_final_priority_queue_ratio: 0.45
@@ -282,7 +323,7 @@ asr_profiles:
     model: large-v3-turbo
     device: cuda
     compute_type: float16
-    beam_size: 2
+    beam_size: 1
     final_beam_size: 4
     condition_on_previous_text: false
     final_condition_on_previous_text: false
@@ -291,23 +332,23 @@ asr_profiles:
     speculative_draft_model: ''
     speculative_num_beams: 1
     temperature_fallback: '0.0'
-    no_speech_threshold: 0.4
+    no_speech_threshold: 0.32
     hallucination_filter: true
     vad:
       enabled: true
       backend: silero_vad
-      min_speech_duration_ms: 220
-      min_silence_duration_ms: 600
-      max_speech_duration_s: 16.0
-      speech_pad_ms: 360
-      rms_threshold: 0.022
-      neural_threshold: 0.45
-      startup_suppress_ms: 400
+      min_speech_duration_ms: 140
+      min_silence_duration_ms: 280
+      max_speech_duration_s: 12.0
+      speech_pad_ms: 220
+      rms_threshold: 0.021
+      neural_threshold: 0.4
+      startup_suppress_ms: 200
     streaming:
-      partial_interval_ms: 520
-      partial_history_seconds: 2
-      final_history_seconds: 20
-      soft_final_audio_ms: 4000
+      partial_interval_ms: 240
+      partial_history_seconds: 1
+      final_history_seconds: 10
+      soft_final_audio_ms: 1800
   non_chinese:
     engine: faster_whisper
     model: large-v3-turbo
@@ -322,20 +363,20 @@ asr_profiles:
     speculative_draft_model: ''
     speculative_num_beams: 1
     temperature_fallback: '0.0'
-    no_speech_threshold: 0.32
+    no_speech_threshold: 0.28
     hallucination_filter: true
     vad:
       enabled: true
       backend: silero_vad
-      min_speech_duration_ms: 200
-      min_silence_duration_ms: 520
-      max_speech_duration_s: 16.0
-      speech_pad_ms: 320
-      rms_threshold: 0.02
-      neural_threshold: 0.35
+      min_speech_duration_ms: 140
+      min_silence_duration_ms: 260
+      max_speech_duration_s: 12.0
+      speech_pad_ms: 200
+      rms_threshold: 0.019
+      neural_threshold: 0.34
       startup_suppress_ms: 0
     streaming:
-      partial_interval_ms: 480
-      partial_history_seconds: 2
-      final_history_seconds: 14
-      soft_final_audio_ms: 3400
+      partial_interval_ms: 220
+      partial_history_seconds: 1
+      final_history_seconds: 10
+      soft_final_audio_ms: 1800

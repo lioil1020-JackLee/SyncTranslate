@@ -11,6 +11,7 @@ import sys
 import numpy as np
 
 from app.infra.asr.resampling import resample_audio
+from app.bootstrap.runtime_assets import resolve_asr_model_path
 
 # ---------------------------------------------------------------------------
 # Hallucination filter
@@ -473,21 +474,14 @@ class FasterWhisperEngine:
         return self._draft_model
 
     def _resolved_model_path(self) -> str:
+        resolved = resolve_asr_model_path(str(self.model or "large-v3-turbo"))
+        if resolved.exists:
+            return str(resolved.resolved)
         raw = str(self.model or "large-v3-turbo").strip() or "large-v3-turbo"
         candidate = Path(raw)
-        if candidate.is_absolute() and candidate.exists():
-            return str(candidate)
-        base_dirs: list[Path] = [Path.cwd()]
-        if getattr(sys, "frozen", False):
-            base_dirs.append(Path(sys.executable).resolve().parent)
-        meipass = getattr(sys, "_MEIPASS", None)
-        if meipass:
-            base_dirs.append(Path(meipass))
-        for base in base_dirs:
-            resolved = (base / candidate).resolve()
-            if resolved.exists():
-                return str(resolved)
-        return raw
+        # Preserve faster-whisper's built-in model-name behavior for developer
+        # machines, but provide a precise error in health/preflight checks.
+        return str(candidate) if candidate.is_absolute() else raw
 
 
 def _clear_model_cache_for_tests() -> None:

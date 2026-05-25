@@ -48,7 +48,7 @@ class LiveCaptionLabelTests(_QtTestCase):
 
         self.assertIn("large-v3-turbo", page.remote_original_label.text())
 
-    def test_auto_asr_label_reflects_configured_runtime_profile_not_detection(self) -> None:
+    def test_legacy_auto_asr_config_is_normalized_to_fixed_ui_choice(self) -> None:
         page = LiveCaptionPage()
         config = AppConfig()
         config.runtime.remote_asr_language = "auto"
@@ -58,9 +58,10 @@ class LiveCaptionLabelTests(_QtTestCase):
         page.apply_config(config)
         page.set_detected_asr_language("remote", "zh")
 
+        self.assertEqual(page.remote_asr_combo.currentData(), "en")
         self.assertIn("large-v3-turbo", page.remote_original_label.text())
 
-    def test_auto_asr_language_round_trips_through_ui(self) -> None:
+    def test_legacy_auto_asr_language_does_not_round_trip_through_product_ui(self) -> None:
         page = LiveCaptionPage()
         config = AppConfig()
         config.runtime.remote_asr_language = "auto"
@@ -69,11 +70,12 @@ class LiveCaptionLabelTests(_QtTestCase):
         updated = AppConfig()
         page.update_config(updated)
 
-        self.assertEqual(updated.runtime.remote_asr_language, "auto")
+        self.assertEqual(updated.runtime.remote_asr_language, "en")
 
     def test_tts_mode_keeps_translated_panel_labels(self) -> None:
         page = LiveCaptionPage()
         config = AppConfig()
+        config.runtime.session_mode = "dialogue"
         config.runtime.remote_translation_target = "ja"
         config.runtime.local_translation_target = "ko"
         config.runtime.remote_tts_voice = "ja-JP-NanamiNeural"
@@ -88,6 +90,7 @@ class LiveCaptionLabelTests(_QtTestCase):
     def test_voice_choice_alone_no_longer_switches_panel_into_translation_mode(self) -> None:
         page = LiveCaptionPage()
         config = AppConfig()
+        config.runtime.session_mode = "dialogue"
         config.runtime.remote_translation_target = "none"
         config.runtime.local_translation_target = "none"
         config.runtime.remote_tts_voice = "ja-JP-NanamiNeural"
@@ -101,15 +104,18 @@ class LiveCaptionLabelTests(_QtTestCase):
         self.assertEqual(page.remote_translated_label.text(), _CHANNEL_DEFAULTS["remote"]["output_label"])
         self.assertEqual(page.local_translated_label.text(), _CHANNEL_DEFAULTS["local"]["output_label"])
 
-    def test_passthrough_mode_survives_config_round_trip(self) -> None:
+    def test_subtitle_output_survives_config_round_trip(self) -> None:
         page = LiveCaptionPage()
         config = AppConfig()
+        config.runtime.session_mode = "dialogue"
         config.runtime.remote_translation_target = "zh-TW"
         config.runtime.remote_tts_voice = "zh-TW-HsiaoChenNeural"
         config.runtime.remote_translation_enabled = True
         config.runtime.remote_tts_enabled = True
+        config.dialogue.remote_to_local.output_policy = "translated_tts"
 
         page.apply_config(config)
+        page.remote_output_mode_combo.setCurrentIndex(page.remote_output_mode_combo.findData("subtitle_only"))
         page.remote_tts_voice_combo.setCurrentIndex(page.remote_tts_voice_combo.findData("none"))
 
         updated = AppConfig()
@@ -120,7 +126,8 @@ class LiveCaptionLabelTests(_QtTestCase):
 
         self.assertEqual(updated.runtime.remote_translation_enabled, True)
         self.assertEqual(updated.runtime.remote_tts_enabled, False)
-        self.assertEqual(reloaded.selected_tts_output_mode_for_channel("remote"), "passthrough")
+        self.assertEqual(updated.dialogue.remote_to_local.output_policy, "subtitle_only")
+        self.assertEqual(reloaded.selected_tts_output_mode_for_channel("remote"), "subtitle_only")
 
 
 if __name__ == "__main__":

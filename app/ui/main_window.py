@@ -21,6 +21,7 @@ except Exception:
 from app.application.audio_router import AudioRouter
 from app.application.auto_populate_devices import AutoPopulateDevicesService
 from app.application.export_service import ExportService
+from app.application.first_run_readiness import evaluate_first_run_readiness
 from app.application.healthcheck_service import HealthCheckService
 from app.application.session_service import RuntimeFacade
 from app.application.session_service import SessionController
@@ -33,6 +34,7 @@ from app.infra.audio.capture import AudioCapture
 from app.infra.audio.device_registry import DeviceManager, canonical_device_name
 from app.infra.audio.playback import AudioPlayback
 from app.infra.audio.virtual_bridge_probe import probe_virtual_audio_bridge
+from app.infra.audio.virtual_devices import detect_virtual_audio_install
 from app.infra.config.schema import AppConfig, translation_enabled_for_source
 from app.application.transcript_service import TranscriptBuffer
 from app.ui.pages.audio_routing_page import AudioRoutingPage
@@ -164,11 +166,18 @@ class MainWindow(QMainWindow):
 
         # 調整角落按鈕大小與即時字幕/設定分頁按鈕一致
         tab_height = self.tabs.tabBar().sizeHint().height() or 40
-        for btn in (self._clear_caption_btn, self._start_session_btn):
+        for btn in (
+            self.live_caption_page.meeting_mode_btn,
+            self.live_caption_page.dialogue_mode_btn,
+            self._clear_caption_btn,
+            self._start_session_btn,
+        ):
             btn.setFixedHeight(tab_height)
             btn.setMinimumWidth(96)
             btn.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
 
+        tab_corner_layout.addWidget(self.live_caption_page.meeting_mode_btn)
+        tab_corner_layout.addWidget(self.live_caption_page.dialogue_mode_btn)
         tab_corner_layout.addWidget(self._clear_caption_btn)
         tab_corner_layout.addWidget(self._start_session_btn)
         self.tabs.setCornerWidget(self._tab_corner_widget, Qt.TopRightCorner)
@@ -237,6 +246,10 @@ class MainWindow(QMainWindow):
             self.audio_routing_page.set_devices(input_devices, output_devices)
             self.audio_routing_page.apply_config(self.config)
             self.live_caption_page.apply_config(self.config)
+            self.live_caption_page.set_meeting_devices(
+                self._meeting_device_names(input_devices),
+                self._meeting_device_names(output_devices),
+            )
             self.local_ai_page.apply_config(self.config)
             self._apply_audio_route_levels()
         finally:
@@ -246,6 +259,32 @@ class MainWindow(QMainWindow):
             f"Config: {self.config_path} | input={len(input_devices)} output={len(output_devices)}"
         )
         self.validate_current_routes()
+        self._refresh_first_run_readiness()
+
+    def _refresh_first_run_readiness(self) -> None:
+        try:
+            readiness = evaluate_first_run_readiness(self.config, probe_bridge=False)
+        except Exception as exc:
+            self.statusBar().showMessage(f"Readiness check failed: {exc}")
+            return
+        summary = readiness.summary
+        session_mode = str(getattr(self.config.runtime, "session_mode", "meeting") or "meeting")
+        current_ready = bool(summary.get("meeting_ready")) if session_mode == "meeting" else bool(summary.get("dialogue_ready"))
+        models_ready = bool(summary.get("asr_model_ready")) and bool(summary.get("llm_model_ready"))
+        can_start = bool(current_ready and models_ready)
+        self.live_caption_page.set_start_enabled(can_start)
+        self._start_session_btn.setEnabled(can_start)
+        if getattr(self, "diagnostics_page", None):
+            self.diagnostics_page.set_readiness_summary(
+                f"meeting_ready={summary.get('meeting_ready')} dialogue_ready={summary.get('dialogue_ready')} "
+                f"asr_model_ready={summary.get('asr_model_ready')} llm_model_ready={summary.get('llm_model_ready')} "
+                f"bridge_ready={summary.get('bridge_ready')} driver_ready={summary.get('driver_ready')} "
+                f"suggested_next_action={summary.get('suggested_next_action')}"
+            )
+        if session_mode == "meeting" and can_start:
+            self.statusBar().showMessage("會議字幕模式可用，不需要虛擬音效裝置")
+        elif not can_start:
+            self.statusBar().showMessage(str(summary.get("suggested_next_action") or "Runtime readiness incomplete"))
 
     def _auto_populate_devices(self) -> None:
         before = asdict(self.config.audio)
@@ -306,7 +345,31 @@ class MainWindow(QMainWindow):
         self._schedule_live_apply()
 
     def _on_live_caption_settings_changed(self) -> None:
+        if not hasattr(self, "live_caption_page"):
+            return
+        selected_mode = self.live_caption_page.selected_session_mode()
+        running = self.session_controller.is_running() if self.session_controller else False
+        current_mode = str(getattr(self.config.runtime, "session_mode", "meeting") or "meeting")
+        if running and selected_mode != current_mode:
+            self.live_caption_page.set_session_mode(current_mode)
+            self.statusBar().showMessage("請先停止目前 session，再切換會議字幕 / 雙向語音模式。")
+            return
+        self.local_ai_page.set_session_mode_preset(selected_mode, notify=False)
         self._schedule_live_caption_apply()
+
+    @staticmethod
+    def _meeting_device_names(devices: list[object]) -> list[str]:
+        blocked = ("synctranslate", "voicemeeter", "vb-audio", "virtual cable")
+        names: list[str] = []
+        for device in devices:
+            name = str(getattr(device, "name", "") or "").strip()
+            if not name:
+                continue
+            lowered = name.lower()
+            if any(token in lowered for token in blocked):
+                continue
+            names.append(name)
+        return names
 
     def _schedule_live_apply(self) -> None:
         if not self._live_apply_ready or self._suspend_live_apply:
@@ -398,14 +461,14 @@ class MainWindow(QMainWindow):
             self._run_session_action("stop")
             return
 
-        route = self.audio_routing_page.selected_audio_routes()
         try:
-            self._validate_route_devices_or_raise(route)
-            self._validate_virtual_bridge_runtime_or_raise()
             config_changed = self._sync_ui_to_config_and_detect_changes()
             if config_changed:
                 self._runtime_facade.mark_dirty()
                 self._ensure_pipelines_ready()
+            route = self.audio_routing_page.selected_audio_routes()
+            self._validate_route_devices_or_raise(route)
+            self._validate_virtual_bridge_runtime_or_raise()
             self.clear_live_caption()
             
             # 診斷輸出
@@ -466,6 +529,8 @@ class MainWindow(QMainWindow):
         return f"Bridge 未連線或 PCM loopback 未就緒：{detail}", True
 
     def _validate_virtual_bridge_runtime_or_raise(self) -> None:
+        if MainWindow._selected_session_mode_for_validation(self) == "meeting":
+            return
         if not bool(getattr(self.config.audio.virtual_audio, "bridge_enabled", True)):
             return
         message, has_error = self._describe_bridge_validation_message()
@@ -477,6 +542,26 @@ class MainWindow(QMainWindow):
         return self._describe_route_validation(route)
 
     def _describe_route_validation(self, route) -> tuple[str, bool]:
+        if MainWindow._selected_session_mode_for_validation(self) == "meeting":
+            live_caption_page = getattr(self, "live_caption_page", None)
+            source_kind = (
+                live_caption_page.selected_meeting_source()
+                if live_caption_page is not None and hasattr(live_caption_page, "selected_meeting_source")
+                else "system_input"
+            )
+            device = (
+                live_caption_page.selected_meeting_device()
+                if live_caption_page is not None and hasattr(live_caption_page, "selected_meeting_device")
+                else ""
+            )
+            if not device:
+                return "會議字幕模式可用，將使用目前系統預設音源。", False
+            existing = self.output_device_names if source_kind == "system_output_loopback" else self.input_device_names
+            label = "系統輸出 loopback" if source_kind == "system_output_loopback" else "系統輸入"
+            resolved = canonical_device_name(device).strip()
+            if resolved and resolved not in existing:
+                return f"找不到會議{label}裝置：{resolved}", True
+            return f"會議字幕模式可用，音源：{label} / {resolved or device}", False
         missing: list[str] = []
         unavailable: list[str] = []
         checks = (
@@ -503,6 +588,17 @@ class MainWindow(QMainWindow):
         if unavailable:
             details.append("找不到裝置：" + "；".join(unavailable))
         return "；".join(details), True
+
+    def _selected_session_mode_for_validation(self) -> str:
+        live_caption_page = getattr(self, "live_caption_page", None)
+        if live_caption_page is not None and hasattr(live_caption_page, "selected_session_mode"):
+            mode = str(live_caption_page.selected_session_mode() or "").strip()
+            if mode:
+                return mode
+        config = getattr(self, "config", None)
+        runtime = getattr(config, "runtime", None)
+        mode = str(getattr(runtime, "session_mode", "dialogue") or "dialogue").strip()
+        return mode or "dialogue"
 
     def clear_live_caption(self) -> None:
         self.live_caption_page.clear()
@@ -747,6 +843,38 @@ class MainWindow(QMainWindow):
         self.diagnostics_page.set_asr_runtime_details(self._build_asr_diagnostics_summary(router_stats))
         self.diagnostics_page.set_llm_runtime_details(self._build_llm_diagnostics_summary(router_stats))
         self.diagnostics_page.set_tts_runtime_details(self._build_tts_diagnostics_summary(router_stats))
+        self.diagnostics_page.set_v2_runtime_summary(self._build_v2_runtime_summary(self.config, router_stats))
+
+    @staticmethod
+    def _build_v2_runtime_summary(config: AppConfig, router_stats) -> str:
+        state = getattr(router_stats, "state", {}) or {}
+        capture = getattr(router_stats, "capture", {}) or {}
+        bridge = getattr(router_stats, "bridge", {}) or {}
+        session_mode = str(state.get("session_mode") or getattr(config.runtime, "session_mode", "meeting") or "meeting")
+        meeting_source = str(getattr(config.meeting, "audio_source", "system_input") or "system_input")
+        capture_kind = "output_loopback" if session_mode == "meeting" and meeting_source == "system_output_loopback" else "input"
+        active_capture = capture.get("remote") or capture.get("local") or {}
+        capture_rate = int(float(active_capture.get("sample_rate", 0) or 0))
+        capture_channels = int(active_capture.get("channels", 0) or 0)
+        remote_direct = config.dialogue.remote_to_local.output_policy == "direct_passthrough"
+        local_direct = config.dialogue.local_to_remote.output_policy == "direct_passthrough"
+        bridge_required = session_mode == "dialogue" and bool(config.audio.virtual_audio.bridge_enabled)
+        try:
+            driver = detect_virtual_audio_install()
+            driver_available = bool(driver.speaker_available and driver.microphone_available)
+        except Exception:
+            driver_available = False
+        route_reason = "meeting_monitor_no_virtual_audio" if session_mode == "meeting" else "dialogue_virtual_audio_routes"
+        if session_mode == "dialogue" and (remote_direct or local_direct):
+            route_reason = "dialogue_direct_passthrough_voice_none"
+        return (
+            f"session_mode={session_mode} meeting_audio_source={meeting_source} capture_kind={capture_kind} "
+            f"capture_sample_rate={capture_rate or '-'} capture_channels={capture_channels or '-'} "
+            "asr_input_sample_rate=16000 asr_input_channels=1 "
+            f"direct_passthrough_active_local={local_direct} direct_passthrough_active_remote={remote_direct} "
+            f"bridge_required={bridge_required} bridge_connected={bool(bridge.get('connected', False))} "
+            f"driver_available={driver_available} last_route_policy_reason={route_reason}"
+        )
 
     @staticmethod
     def _build_asr_diagnostics_summary(router_stats) -> str:
@@ -787,10 +915,6 @@ class MainWindow(QMainWindow):
         soft_count = int(endpointing.get("soft_endpoint_count", 0) or 0)
         hard_count = int(endpointing.get("hard_endpoint_count", 0) or 0)
         speech_started = int(endpointing.get("speech_started_count", 0) or 0)
-        auto_lang = asr.get("auto_language") or {}
-        req_lang = str(auto_lang.get("requested", "") or "").strip().lower()
-        eff_lang = str(auto_lang.get("effective", "") or "").strip()
-        pending_rebuild = bool(auto_lang.get("pending_rebuild", False))
         fp_active = bool(asr.get("final_priority_active", False))
         rescue_count = int(asr.get("final_rescue_count", 0) or 0)
         fallback_count = int(asr.get("final_fallback_count", 0) or 0)
@@ -815,6 +939,9 @@ class MainWindow(QMainWindow):
             fragment += f" rescue={rescue_count}/{fallback_count}"
             if rescue_reason:
                 fragment += f"({rescue_reason})"
+        req_lang = ""
+        eff_lang = ""
+        pending_rebuild = False
         if req_lang == "auto":
             lang_tag = f"auto→{eff_lang}" if eff_lang else "auto"
             if pending_rebuild:
@@ -932,7 +1059,14 @@ class MainWindow(QMainWindow):
 
         try:
             stats = self.audio_router.stats()
-            return set(stats.active_sources)
+            resolved: set[str] = set()
+            for source in stats.active_sources:
+                normalized = str(source or "").strip()
+                if normalized in {"remote", "meeting", "dialogue_remote"}:
+                    resolved.add("remote")
+                elif normalized in {"local", "dialogue_local"}:
+                    resolved.add("local")
+            return resolved
         except Exception:
             return set()
 
@@ -1383,11 +1517,16 @@ class MainWindow(QMainWindow):
             or self.config.language.local_target
         )
         lines = [
+            f"session_mode: {str(getattr(self.config.runtime, 'session_mode', 'meeting') or 'meeting')}",
+            f"meeting_source_type: {str(getattr(self.config.meeting, 'audio_source', 'system_input') or 'system_input')}",
+            f"meeting_asr_language: {str(getattr(self.config.meeting, 'asr_language', 'zh-TW') or 'zh-TW')}",
+            f"direct_passthrough_remote_to_local: {self.config.dialogue.remote_to_local.output_policy == 'direct_passthrough'}",
+            f"direct_passthrough_local_to_remote: {self.config.dialogue.local_to_remote.output_policy == 'direct_passthrough'}",
             f"remote_translation_target: {remote_target}",
             f"local_translation_target: {local_target}",
             f"remote_translation_enabled: {translation_enabled_for_source(self.config.runtime, 'remote')}",
             f"local_translation_enabled: {translation_enabled_for_source(self.config.runtime, 'local')}",
-            "asr_language_mode: auto",
+            "asr_language_mode: fixed",
             f"tts_output_mode: {str(getattr(self.config.runtime, 'tts_output_mode', 'subtitle_only') or 'subtitle_only')}",
             f"meeting_tts: {self.config.meeting_tts.engine} voice={self.config.meeting_tts.voice_name or self.config.meeting_tts.model_path}",
             f"local_tts: {self.config.local_tts.engine} voice={self.config.local_tts.voice_name or self.config.local_tts.model_path}",

@@ -1,6 +1,6 @@
 param(
     [string]$SamplesRoot = "downloads/driver_samples/Windows-driver-samples",
-    [string]$Configuration = "Debug",
+    [string]$Configuration = "Release",
     [string]$Platform = "x64",
     [string]$ArtifactsDir = "artifacts/driver/synctranslate_virtual_audio",
     [switch]$EnableSpectreMitigation
@@ -23,6 +23,16 @@ if (!(Test-Path $solution)) {
 New-Item -ItemType Directory -Path $ArtifactsDir -Force | Out-Null
 
 & (Join-Path $scriptRoot "apply_sysvad_overlay.ps1") -SysvadDir $sysvadDir
+
+Write-Host "[driver-build] removing stale SysVAD intermediate outputs"
+Get-ChildItem -Path $sysvadDir -Directory -Recurse -ErrorAction SilentlyContinue |
+    Where-Object {
+        $_.FullName -match "\\$([Regex]::Escape($Platform))\\$([Regex]::Escape($Configuration))$" -or
+        $_.FullName -match "\\$([Regex]::Escape($Configuration))\\$([Regex]::Escape($Platform))$"
+    } |
+    ForEach-Object {
+        Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+    }
 
 Write-Host "[driver-build] building SysVAD-based SyncTranslate driver"
 $spectreMitigation = if ($EnableSpectreMitigation) { "Spectre" } else { "false" }
