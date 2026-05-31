@@ -268,8 +268,12 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Readiness check failed: {exc}")
             return
         summary = readiness.summary
-        session_mode = str(getattr(self.config.runtime, "session_mode", "meeting") or "meeting")
-        current_ready = bool(summary.get("meeting_ready")) if session_mode == "meeting" else bool(summary.get("dialogue_ready"))
+        session_mode = (
+            self.live_caption_page.selected_session_mode()
+            if hasattr(self, "live_caption_page")
+            else str(getattr(self.config.runtime, "session_mode", "meeting") or "meeting")
+        )
+        current_ready = bool(summary.get("meeting_ready")) if session_mode == "meeting" else True
         models_ready = bool(summary.get("asr_model_ready")) and bool(summary.get("llm_model_ready"))
         can_start = bool(current_ready and models_ready)
         self.live_caption_page.set_start_enabled(can_start)
@@ -283,6 +287,8 @@ class MainWindow(QMainWindow):
             )
         if session_mode == "meeting" and can_start:
             self.statusBar().showMessage("會議字幕模式可用，不需要虛擬音效裝置")
+        elif session_mode == "dialogue" and can_start and not bool(summary.get("dialogue_ready")):
+            self.statusBar().showMessage("雙向語音可嘗試啟動；若 driver/bridge 未就緒，啟動時會顯示明確錯誤")
         elif not can_start:
             self.statusBar().showMessage(str(summary.get("suggested_next_action") or "Runtime readiness incomplete"))
 
@@ -355,19 +361,21 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("請先停止目前 session，再切換會議字幕 / 雙向語音模式。")
             return
         self.local_ai_page.set_session_mode_preset(selected_mode, notify=False)
+        self._refresh_first_run_readiness()
         self._schedule_live_caption_apply()
 
     @staticmethod
     def _meeting_device_names(devices: list[object]) -> list[str]:
-        blocked = ("synctranslate", "voicemeeter", "vb-audio", "virtual cable")
         names: list[str] = []
+        seen: set[str] = set()
         for device in devices:
             name = str(getattr(device, "name", "") or "").strip()
             if not name:
                 continue
-            lowered = name.lower()
-            if any(token in lowered for token in blocked):
+            key = name.casefold()
+            if key in seen:
                 continue
+            seen.add(key)
             names.append(name)
         return names
 
@@ -439,8 +447,34 @@ class MainWindow(QMainWindow):
 
         try:
             self._pending_live_caption_apply = False
+            old_session_mode = str(getattr(self.config.runtime, "session_mode", "meeting") or "meeting")
+            old_meeting_source = str(getattr(self.config.meeting, "audio_source", "system_input") or "system_input")
             self._config_apply_service.sync_live_caption_to_config(self.config)
             self.live_caption_page.apply_config(self.config)
+            new_session_mode = str(getattr(self.config.runtime, "session_mode", "meeting") or "meeting")
+            new_meeting_source = str(getattr(self.config.meeting, "audio_source", "system_input") or "system_input")
+            if (
+                old_session_mode == "meeting"
+                and new_session_mode == "meeting"
+                and old_meeting_source != new_meeting_source
+            ):
+                if self.session_controller:
+                    self.session_controller.stop()
+                self._runtime_facade.mark_dirty()
+                self._ensure_pipelines_ready()
+                route = self.audio_routing_page.selected_audio_routes()
+                result = self.session_controller.start(
+                    route,
+                    sample_rate=self.config.runtime.sample_rate,
+                    chunk_ms=self.config.runtime.chunk_ms,
+                    mode=self.live_caption_page.selected_mode(),
+                ) if self.session_controller else None
+                if result is not None and not result.ok:
+                    raise RuntimeError(result.message)
+                self._apply_output_switches_to_router()
+                self.validate_current_routes()
+                self.statusBar().showMessage("會議音源已切換並重新啟動")
+                return
             if self.audio_router:
                 self.audio_router.refresh_runtime_config(self.config)
             self._apply_output_switches_to_router()
@@ -1103,6 +1137,7 @@ class MainWindow(QMainWindow):
                     "capture_running": running,
                     "capture_ready": running and frame_count > 0,
                     "asr_ready": not init_failure and (init_mode == "warm" or partial_count > 0 or final_count > 0),
+                    "asr_init_failure": bool(init_failure),
                     "translation_ready": bool(translation_enabled_for_source(self.config.runtime, source)),
                 }
             return ready
@@ -1151,7 +1186,9 @@ class MainWindow(QMainWindow):
             if not enabled:
                 return "idle"
             state = runtime_state.get(source, {})
-            source_ready = bool(state.get("capture_running", False) and state.get("asr_ready", False))
+            capture_running = bool(state.get("capture_running", False))
+            init_failure = bool(state.get("asr_init_failure", False))
+            source_ready = capture_running and not init_failure
             if is_preparing or not source_ready:
                 return "preparing"
             if has_output or source_ready:

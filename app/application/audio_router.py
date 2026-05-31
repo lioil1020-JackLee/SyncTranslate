@@ -77,6 +77,7 @@ class AudioRouter:
         self._sample_rate: int = 0
         self._chunk_ms: int = ASR_DEFAULT_CHUNK_MS
         self._capture_running: dict[str, bool] = {"local": False, "remote": False}
+        self._capture_bindings: dict[str, tuple[str, str]] = {"local": ("", ""), "remote": ("", "")}
         self._asr_running: dict[str, bool] = {"local": False, "remote": False}
         self._source_roles: dict[str, str] = {"local": "dialogue_local", "remote": "dialogue_remote"}
         self._async_translation = bool(async_translation)
@@ -147,6 +148,7 @@ class AudioRouter:
         self._sample_rate = 0
         self._chunk_ms = ASR_DEFAULT_CHUNK_MS
         self._capture_running = {"local": False, "remote": False}
+        self._capture_bindings = {"local": ("", ""), "remote": ("", "")}
         self._asr_running = {"local": False, "remote": False}
         self._partial_display_policy.reset()
         self._latency_tracker.reset()
@@ -549,6 +551,7 @@ class AudioRouter:
         runtime = getattr(config, "runtime", None)
         if bool(getattr(runtime, "warmup_on_start", True)) and getattr(sys, "frozen", False):
             self.prewarm_asr()
+        self._reconcile_runtime_sources()
 
     def prewarm_asr(self, sources: tuple[str, ...] = ("local", "remote")) -> None:
         with self._warmup_lock:
@@ -640,6 +643,16 @@ class AudioRouter:
             self._asr_running[source] = False
 
         running = self._capture_running.get(source, False)
+        desired_device = self._device_of(source)
+        desired_policy = self._channel_policy_of(source)
+        current_binding = self._capture_bindings.get(source, ("", ""))
+        if capture_needed and running and current_binding != (desired_device, desired_policy):
+            consumer = self._consumer_of(source)
+            self._input_manager.remove_consumer(source, consumer)
+            self._input_manager.stop(source)
+            self._capture_running[source] = False
+            self._capture_bindings[source] = ("", "")
+            running = False
         if capture_needed and not running:
             consumer = self._consumer_of(source)
             self._input_manager.add_consumer(source, consumer)
@@ -647,15 +660,15 @@ class AudioRouter:
                 try:
                     self._input_manager.start(
                         source,
-                        self._device_of(source),
+                        desired_device,
                         sample_rate=self._sample_rate,
                         chunk_ms=self._chunk_ms,
-                        channels_policy=self._channel_policy_of(source),
+                        channels_policy=desired_policy,
                     )
                 except TypeError:
                     self._input_manager.start(
                         source,
-                        self._device_of(source),
+                        desired_device,
                         sample_rate=self._sample_rate,
                         chunk_ms=self._chunk_ms,
                     )
@@ -666,10 +679,12 @@ class AudioRouter:
                     pass
                 raise
             self._capture_running[source] = True
+            self._capture_bindings[source] = (desired_device, desired_policy)
         elif not capture_needed and running:
             self._input_manager.remove_consumer(source, self._consumer_of(source))
             self._input_manager.stop(source)
             self._capture_running[source] = False
+            self._capture_bindings[source] = ("", "")
 
     def _desired_source_state(self) -> dict[str, dict[str, bool]]:
         return {

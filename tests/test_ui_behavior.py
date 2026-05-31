@@ -56,16 +56,24 @@ class LiveCaptionPageUiTests(_QtTestCase):
         self.assertTrue(page.local_tts_voice_combo.isHidden())
         self.assertLess(page.remote_asr_combo.findData("auto"), 0)
 
-    def test_meeting_device_menu_filters_virtual_audio_helpers(self) -> None:
+    def test_meeting_device_menu_preserves_windows_input_device_names(self) -> None:
         names = MainWindow._meeting_device_names(
             [
                 SimpleNamespace(name="USB Microphone"),
                 SimpleNamespace(name="Voicemeeter Out B1 (VB-Audio Voicemeeter VAIO)"),
                 SimpleNamespace(name="SyncTranslate Virtual Microphone"),
+                SimpleNamespace(name="USB Microphone"),
             ]
         )
 
-        self.assertEqual(names, ["USB Microphone"])
+        self.assertEqual(
+            names,
+            [
+                "USB Microphone",
+                "Voicemeeter Out B1 (VB-Audio Voicemeeter VAIO)",
+                "SyncTranslate Virtual Microphone",
+            ],
+        )
 
     def test_session_mode_selector_lives_in_main_menu_bar(self) -> None:
         window = MainWindow("config.yaml", device_volume_controller=_DummyDeviceVolumeController())
@@ -92,6 +100,34 @@ class LiveCaptionPageUiTests(_QtTestCase):
         self.assertTrue(page.meeting_mode_btn.isChecked())
         self.assertFalse(page.meeting_source_combo.isHidden())
         self.assertTrue(page.local_original.isHidden())
+
+    def test_meeting_source_and_device_combos_fit_long_names(self) -> None:
+        page = LiveCaptionPage()
+        long_device = "Realtek USB Audio Microphone Array With Very Long Friendly Name"
+
+        page.set_meeting_devices([long_device], [])
+
+        metrics = page.meeting_device_combo.fontMetrics()
+        self.assertGreaterEqual(
+            page.meeting_device_combo.minimumWidth(),
+            metrics.horizontalAdvance(long_device) + 40,
+        )
+        self.assertGreaterEqual(
+            page.meeting_source_combo.minimumWidth(),
+            page.meeting_source_combo.fontMetrics().horizontalAdvance("系統輸出 loopback") + 40,
+        )
+
+    def test_dialogue_notice_follows_tts_voice_rule(self) -> None:
+        page = LiveCaptionPage()
+        page.set_session_mode("dialogue")
+        page.remote_lang_combo.setCurrentIndex(page.remote_lang_combo.findData("zh-TW"))
+
+        page.remote_tts_voice_combo.setCurrentIndex(page.remote_tts_voice_combo.findData("zh-TW-HsiaoChenNeural"))
+        self.assertIn("TTS 輸出", page.remote_policy_notice_label.text())
+
+        page.remote_tts_voice_combo.setCurrentIndex(page.remote_tts_voice_combo.findData("none"))
+        self.assertIn("TTS語音=無", page.remote_policy_notice_label.text())
+        self.assertIn("不辨識、不翻譯", page.remote_policy_notice_label.text())
 
     def test_main_window_asr_diagnostics_summary_surfaces_validator_rejections(self) -> None:
         router_stats = SimpleNamespace(
@@ -175,7 +211,33 @@ class LiveCaptionPageUiTests(_QtTestCase):
         self.assertIn("bridge_required=True", text)
         self.assertIn("bridge_connected=True", text)
 
-    def test_main_window_panel_status_waits_for_asr_model_readiness(self) -> None:
+    def test_dialogue_readiness_warning_does_not_disable_start_button(self) -> None:
+        window = MainWindow("config.yaml", device_volume_controller=_DummyDeviceVolumeController())
+        window.live_caption_page.set_session_mode("dialogue")
+
+        class _Readiness:
+            summary = {
+                "meeting_ready": True,
+                "dialogue_ready": False,
+                "asr_model_ready": True,
+                "llm_model_ready": True,
+                "bridge_ready": False,
+                "driver_ready": False,
+                "suggested_next_action": "Install driver",
+            }
+
+        import app.ui.main_window as main_window_module
+
+        original = main_window_module.evaluate_first_run_readiness
+        try:
+            main_window_module.evaluate_first_run_readiness = lambda *args, **kwargs: _Readiness()
+            window._refresh_first_run_readiness()
+        finally:
+            main_window_module.evaluate_first_run_readiness = original
+
+        self.assertTrue(window._start_session_btn.isEnabled())
+
+    def test_main_window_panel_status_uses_capture_running_as_started_state(self) -> None:
         captured: dict[str, str] = {}
         config = AppConfig()
         stats = SimpleNamespace(
@@ -224,7 +286,7 @@ class LiveCaptionPageUiTests(_QtTestCase):
             local_translated_active=False,
         )
 
-        self.assertEqual(captured["remote_original"], "preparing")
+        self.assertEqual(captured["remote_original"], "running")
         self.assertEqual(captured["remote_translated"], "preparing")
 
     def test_main_window_translation_panel_runs_only_after_translation_output(self) -> None:
@@ -349,7 +411,6 @@ class LiveCaptionPageUiTests(_QtTestCase):
         config.runtime.local_tts_enabled = True
         config.runtime.session_mode = "dialogue"
         config.dialogue.local_to_remote.output_policy = "translated_tts"
-        config.dialogue.remote_to_local.output_policy = "subtitle_only"
         config.language.meeting_target = "ja"
         config.language.local_target = "ko"
 
@@ -364,7 +425,7 @@ class LiveCaptionPageUiTests(_QtTestCase):
         self.assertIn("Translation target language", page.remote_lang_combo.toolTip())
         self.assertEqual(page.remote_translated_label.text(), "遠端輸出")
         self.assertEqual(page.local_translated_label.text(), "本地翻譯")
-        self.assertEqual(page.selected_tts_output_mode_for_channel("remote"), "subtitle_only")
+        self.assertEqual(page.selected_tts_output_mode_for_channel("remote"), "passthrough")
         self.assertEqual(page.selected_tts_output_mode_for_channel("local"), "tts")
         self.assertEqual(page.selected_tts_output_mode(), "tts")
         self.assertFalse(hasattr(page, "asr_language_mode_combo"))
@@ -408,15 +469,24 @@ class LiveCaptionPageUiTests(_QtTestCase):
         self.assertGreater(page.remote_tts_voice_combo.count(), 1)
         self.assertEqual(page.remote_tts_voice_combo.itemData(0), "none")
 
-    def test_subtitle_mode_keeps_asr_translation_without_tts(self) -> None:
+    def test_tts_none_enters_direct_passthrough(self) -> None:
         page = LiveCaptionPage()
         page.session_mode_combo.setCurrentIndex(page.session_mode_combo.findData("dialogue"))
-        page.remote_output_mode_combo.setCurrentIndex(page.remote_output_mode_combo.findData("subtitle_only"))
         page.remote_lang_combo.setCurrentIndex(page.remote_lang_combo.findData("zh-TW"))
         page.remote_tts_voice_combo.setCurrentIndex(page.remote_tts_voice_combo.findData("none"))
 
-        self.assertEqual(page.selected_tts_output_mode_for_channel("remote"), "subtitle_only")
-        self.assertTrue(page.translation_enabled("remote"))
+        self.assertEqual(page.selected_tts_output_mode_for_channel("remote"), "passthrough")
+        self.assertFalse(page.translation_enabled("remote"))
+
+    def test_dialogue_controls_remain_editable_while_tts_none_direct_passthrough(self) -> None:
+        page = LiveCaptionPage()
+        page.set_session_mode("dialogue")
+        page.remote_lang_combo.setCurrentIndex(page.remote_lang_combo.findData("zh-TW"))
+        page.remote_tts_voice_combo.setCurrentIndex(page.remote_tts_voice_combo.findData("none"))
+
+        self.assertTrue(page.remote_asr_combo.isEnabled())
+        self.assertTrue(page.remote_lang_combo.isEnabled())
+        self.assertTrue(page.remote_tts_voice_combo.isEnabled())
 
     def test_asr_none_disables_translation_chain_for_channel(self) -> None:
         page = LiveCaptionPage()
@@ -428,11 +498,25 @@ class LiveCaptionPageUiTests(_QtTestCase):
         self.assertFalse(page.local_lang_combo.isEnabled())
         self.assertFalse(page.local_tts_voice_combo.isEnabled())
 
-    def test_update_config_preserves_translation_when_subtitle_output_is_selected(self) -> None:
+    def test_update_config_maps_tts_none_to_direct_passthrough(self) -> None:
         page = LiveCaptionPage()
         page.session_mode_combo.setCurrentIndex(page.session_mode_combo.findData("dialogue"))
-        page.remote_output_mode_combo.setCurrentIndex(page.remote_output_mode_combo.findData("subtitle_only"))
         page.remote_lang_combo.setCurrentIndex(page.remote_lang_combo.findData("zh-TW"))
+        page.remote_tts_voice_combo.setCurrentIndex(page.remote_tts_voice_combo.findData("none"))
+
+        updated = AppConfig()
+        page.update_config(updated)
+
+        self.assertFalse(updated.runtime.remote_translation_enabled)
+        self.assertFalse(updated.runtime.remote_tts_enabled)
+        self.assertEqual(updated.runtime.remote_translation_target, "zh-TW")
+        self.assertEqual(updated.dialogue.remote_to_local.output_policy, "direct_passthrough")
+
+    def test_meeting_tts_none_still_enables_translation_to_selected_target(self) -> None:
+        page = LiveCaptionPage()
+        page.set_session_mode("meeting")
+        page.remote_asr_combo.setCurrentIndex(page.remote_asr_combo.findData("zh-TW"))
+        page.remote_lang_combo.setCurrentIndex(page.remote_lang_combo.findData("en"))
         page.remote_tts_voice_combo.setCurrentIndex(page.remote_tts_voice_combo.findData("none"))
 
         updated = AppConfig()
@@ -440,7 +524,9 @@ class LiveCaptionPageUiTests(_QtTestCase):
 
         self.assertTrue(updated.runtime.remote_translation_enabled)
         self.assertFalse(updated.runtime.remote_tts_enabled)
-        self.assertEqual(updated.runtime.remote_translation_target, "zh-TW")
+        self.assertEqual(updated.runtime.remote_translation_target, "en")
+        self.assertEqual(updated.language.meeting_target, "en")
+        self.assertEqual(updated.meeting.translation_target, "en")
         self.assertEqual(updated.dialogue.remote_to_local.output_policy, "subtitle_only")
 
     def test_update_config_with_asr_none_disables_channel_pipeline(self) -> None:
@@ -486,8 +572,6 @@ class LiveCaptionPageUiTests(_QtTestCase):
     def test_direction_controls_can_stay_enabled_while_session_running(self) -> None:
         page = LiveCaptionPage()
         page.session_mode_combo.setCurrentIndex(page.session_mode_combo.findData("dialogue"))
-        page.remote_output_mode_combo.setCurrentIndex(page.remote_output_mode_combo.findData("translated_tts"))
-        page.local_output_mode_combo.setCurrentIndex(page.local_output_mode_combo.findData("translated_tts"))
         page.remote_lang_combo.setCurrentIndex(page.remote_lang_combo.findData("zh-TW"))
         page.remote_tts_voice_combo.setCurrentIndex(page.remote_tts_voice_combo.findData("zh-TW-HsiaoChenNeural"))
         page.local_lang_combo.setCurrentIndex(page.local_lang_combo.findData("en"))
@@ -496,7 +580,7 @@ class LiveCaptionPageUiTests(_QtTestCase):
         page.set_direction_controls_enabled(True)
 
         self.assertTrue(page.remote_asr_combo.isEnabled())
-        self.assertFalse(page.remote_output_mode_combo.isHidden())
+        self.assertTrue(page.remote_output_mode_combo.isHidden())
         self.assertTrue(page.local_tts_voice_combo.isEnabled())
 
     def test_four_panels_have_same_size(self) -> None:
@@ -520,12 +604,6 @@ class LiveCaptionPageUiTests(_QtTestCase):
         window.audio_router = router  # type: ignore[assignment]
         window.live_caption_page.session_mode_combo.setCurrentIndex(
             window.live_caption_page.session_mode_combo.findData("dialogue")
-        )
-        window.live_caption_page.remote_output_mode_combo.setCurrentIndex(
-            window.live_caption_page.remote_output_mode_combo.findData("translated_tts")
-        )
-        window.live_caption_page.local_output_mode_combo.setCurrentIndex(
-            window.live_caption_page.local_output_mode_combo.findData("direct_passthrough")
         )
 
         remote_asr_zh_index = window.live_caption_page.remote_asr_combo.findData("zh-TW")
@@ -577,12 +655,6 @@ class LiveCaptionPageUiTests(_QtTestCase):
         window = MainWindow("config.yaml", device_volume_controller=_DummyDeviceVolumeController())
         window.config.runtime.session_mode = "dialogue"
         window.live_caption_page.set_session_mode("dialogue")
-        window.live_caption_page.remote_output_mode_combo.setCurrentIndex(
-            window.live_caption_page.remote_output_mode_combo.findData("translated_tts")
-        )
-        window.live_caption_page.local_output_mode_combo.setCurrentIndex(
-            window.live_caption_page.local_output_mode_combo.findData("translated_tts")
-        )
 
         class _RunningSession:
             def is_running(self) -> bool:
@@ -607,7 +679,7 @@ class LiveCaptionPageUiTests(_QtTestCase):
         window.validate_current_routes()
 
         self.assertTrue(window.live_caption_page.remote_asr_combo.isEnabled())
-        self.assertFalse(window.live_caption_page.remote_output_mode_combo.isHidden())
+        self.assertTrue(window.live_caption_page.remote_output_mode_combo.isHidden())
         self.assertTrue(window.live_caption_page.local_tts_voice_combo.isEnabled())
 
 
@@ -629,9 +701,6 @@ class AudioRoutingPageUiTests(_QtTestCase):
         window = MainWindow("config.yaml", device_volume_controller=_DummyDeviceVolumeController())
         window.config.runtime.session_mode = "dialogue"
         window.live_caption_page.set_session_mode("dialogue")
-        window.live_caption_page.remote_output_mode_combo.setCurrentIndex(
-            window.live_caption_page.remote_output_mode_combo.findData("translated_tts")
-        )
 
         class _RunningSession:
             def is_running(self) -> bool:

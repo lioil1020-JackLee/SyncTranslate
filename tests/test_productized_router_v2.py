@@ -11,6 +11,7 @@ from app.infra.config.schema import AppConfig
 class _InputManager:
     def __init__(self) -> None:
         self.started: list[tuple[str, str, str]] = []
+        self.stopped: list[str] = []
         self.consumers = {}
 
     def add_consumer(self, source, consumer) -> None:
@@ -23,7 +24,7 @@ class _InputManager:
         self.started.append((source, device_name, channels_policy))
 
     def stop(self, source) -> None:
-        pass
+        self.stopped.append(source)
 
     def stop_all(self) -> None:
         pass
@@ -122,6 +123,29 @@ def test_meeting_mode_starts_only_monitor_source_and_keeps_asr_on_with_tts_none(
     assert len(asr.submits) == 1
     assert asr.submits[0][1].ndim == 1
     assert asr.submits[0][2] == 16000.0
+
+
+def test_meeting_running_device_change_rebinds_capture_source() -> None:
+    cfg = AppConfig.from_dict(
+        {
+            "runtime": {"session_mode": "meeting"},
+            "meeting": {
+                "audio_source": "system_output_loopback",
+                "output_loopback_device": "Speakers A",
+            },
+        }
+    )
+    router, inputs, _asr, _tts = _router(cfg)
+
+    router.start("meeting", cfg.audio, sample_rate=48000, chunk_ms=40)
+    cfg.meeting.output_loopback_device = "Speakers B"
+    router.refresh_runtime_config(cfg)
+
+    assert inputs.started == [
+        ("remote", "Speakers A", "stereo_or_mono"),
+        ("remote", "Speakers B", "stereo_or_mono"),
+    ]
+    assert inputs.stopped == ["remote"]
 
 
 def test_dialogue_voice_none_uses_direct_passthrough_and_skips_asr() -> None:

@@ -104,7 +104,7 @@ class LiveCaptionLabelTests(_QtTestCase):
         self.assertEqual(page.remote_translated_label.text(), _CHANNEL_DEFAULTS["remote"]["output_label"])
         self.assertEqual(page.local_translated_label.text(), _CHANNEL_DEFAULTS["local"]["output_label"])
 
-    def test_subtitle_output_survives_config_round_trip(self) -> None:
+    def test_tts_none_round_trips_as_direct_passthrough(self) -> None:
         page = LiveCaptionPage()
         config = AppConfig()
         config.runtime.session_mode = "dialogue"
@@ -115,7 +115,6 @@ class LiveCaptionLabelTests(_QtTestCase):
         config.dialogue.remote_to_local.output_policy = "translated_tts"
 
         page.apply_config(config)
-        page.remote_output_mode_combo.setCurrentIndex(page.remote_output_mode_combo.findData("subtitle_only"))
         page.remote_tts_voice_combo.setCurrentIndex(page.remote_tts_voice_combo.findData("none"))
 
         updated = AppConfig()
@@ -124,10 +123,10 @@ class LiveCaptionLabelTests(_QtTestCase):
         reloaded = LiveCaptionPage()
         reloaded.apply_config(updated)
 
-        self.assertEqual(updated.runtime.remote_translation_enabled, True)
+        self.assertEqual(updated.runtime.remote_translation_enabled, False)
         self.assertEqual(updated.runtime.remote_tts_enabled, False)
-        self.assertEqual(updated.dialogue.remote_to_local.output_policy, "subtitle_only")
-        self.assertEqual(reloaded.selected_tts_output_mode_for_channel("remote"), "subtitle_only")
+        self.assertEqual(updated.dialogue.remote_to_local.output_policy, "direct_passthrough")
+        self.assertEqual(reloaded.selected_tts_output_mode_for_channel("remote"), "passthrough")
 
 
 if __name__ == "__main__":
