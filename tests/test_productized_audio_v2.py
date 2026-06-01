@@ -27,6 +27,17 @@ def test_asr_branch_converts_48k_stereo_to_16k_mono_float32() -> None:
     assert abs(converted.shape[0] - 1600) <= 2
 
 
+def test_asr_branch_does_not_cancel_phase_inverted_loopback_stereo() -> None:
+    left = np.sin(np.linspace(0, np.pi * 8, 4800, dtype=np.float32)) * 0.25
+    right = -left
+    frame = ensure_float32_frame(np.column_stack((left, right)), 48000, "test", "meeting_monitor")
+
+    converted = to_asr_mono_16k(frame)
+
+    assert converted.dtype == np.float32
+    assert float(np.sqrt(np.mean(np.square(converted)))) > 0.05
+
+
 def test_direct_passthrough_stereo_remains_stereo_until_boundary() -> None:
     audio = np.zeros((480, 2), dtype=np.float32)
     audio[:, 0] = 0.25
@@ -88,4 +99,3 @@ def test_config_auto_languages_migrate_to_fixed_values() -> None:
     assert cfg.runtime.local_asr_language == "zh-TW"
     assert cfg.dialogue.remote_asr_language == "en"
     assert cfg.dialogue.local_asr_language == "zh-TW"
-

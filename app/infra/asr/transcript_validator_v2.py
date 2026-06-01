@@ -20,7 +20,7 @@ class AsrTranscriptValidatorV2:
         *,
         enabled: bool = True,
         max_chars_per_second: float = 14.0,
-        max_repeat_span: int = 2,
+        max_repeat_span: int = 6,
         min_speech_ratio_for_long_text: float = 0.18,
     ) -> None:
         self._enabled = bool(enabled)
@@ -56,6 +56,8 @@ class AsrTranscriptValidatorV2:
             return TranscriptValidationResult(text="", accepted=False, reason="markup-leak", score=0.0)
         if self._looks_like_non_speech_overlay(value):
             return TranscriptValidationResult(text="", accepted=False, reason="non-speech-overlay", score=0.0)
+        if self._looks_like_song_credit_overlay(value):
+            return TranscriptValidationResult(text="", accepted=False, reason="song-credit-overlay", score=0.0)
         # Non-CJK transcripts naturally need more characters to represent the same content.
         # Relax density threshold to avoid over-filtering English/Japanese/Korean outputs.
         density_limit = self._max_chars_per_second if is_cjk_language else self._max_chars_per_second * 2.2
@@ -96,7 +98,7 @@ class AsrTranscriptValidatorV2:
         return value.strip()
 
     def _looks_like_loop(self, text: str) -> bool:
-        compact = re.sub(r"\s+", "", text)
+        compact = re.sub(r"[\s，,。.!！?？、；;：:「」『』（）()]+", "", text)
         if len(compact) < 6:
             return False
         for span in range(1, min(self._max_repeat_span + 1, len(compact) // 2 + 1)):
@@ -104,6 +106,19 @@ class AsrTranscriptValidatorV2:
             repeated = unit * (len(compact) // span)
             if compact.startswith(repeated[: len(compact)]) and compact.count(unit) >= 3:
                 return True
+        return False
+
+    @staticmethod
+    def _looks_like_song_credit_overlay(text: str) -> bool:
+        compact = re.sub(r"[\s，,。.!！?？、；;：:「」『』（）()：:-]+", "", (text or "").strip())
+        if not compact or len(compact) > 24:
+            return False
+        credit_tokens = ("詞曲", "作詞", "作曲", "編曲", "演唱", "原唱", "字幕", "翻譯")
+        hits = sum(1 for token in credit_tokens if token in compact)
+        if hits >= 2:
+            return True
+        if compact in {"詞曲編曲", "作詞作曲", "詞曲演唱"}:
+            return True
         return False
 
     @staticmethod

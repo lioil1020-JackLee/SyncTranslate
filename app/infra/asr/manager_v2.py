@@ -408,8 +408,7 @@ class ASRManagerV2:
             speech_end_finalize_audio_ms=_ep_kwargs.get("speech_end_finalize_audio_ms"),
             frontend_enabled=bool(getattr(self._config.runtime, "asr_frontend_enabled", True)),
             frontend_target_rms=float(getattr(self._config.runtime, "asr_frontend_target_rms", 0.05)),
-            # AGC 已禁用，max_gain 強制為 1.0
-            frontend_max_gain=1.0,
+            frontend_max_gain=self._frontend_max_gain(),
             frontend_highpass_alpha=float(
                 getattr(self._config.runtime, "asr_frontend_highpass_alpha", ASR_DEFAULT_FRONTEND_HIGHPASS_ALPHA)
             ),
@@ -431,6 +430,14 @@ class ASRManagerV2:
             setattr(runtime, "_fallback_model_label", str(getattr(fallback_profile, "model", "")))
         self._runtimes[source] = runtime
         return runtime
+
+    def _frontend_max_gain(self) -> float:
+        """Return bounded ASR frontend gain from config."""
+        try:
+            configured = float(getattr(self._config.runtime, "asr_frontend_max_gain", 3.0))
+        except (TypeError, ValueError):
+            configured = 3.0
+        return max(1.0, min(8.0, configured))
 
     def _stream_of(self, source: str) -> SourceRuntimeV2:
         return self._runtime_of(source)

@@ -31,7 +31,12 @@ from app.infra.audio.device_volume_controller import SystemDeviceVolumeControlle
 from app.bootstrap.dependency_container import build_pipeline_bundle
 from app.domain.models import ErrorEvent
 from app.infra.audio.capture import AudioCapture
-from app.infra.audio.device_registry import DeviceManager, canonical_device_name
+from app.infra.audio.device_registry import (
+    DeviceManager,
+    canonical_device_name,
+    encode_device_selector,
+    hostapi_sort_key,
+)
 from app.infra.audio.playback import AudioPlayback
 from app.infra.audio.virtual_bridge_probe import probe_virtual_audio_bridge
 from app.infra.audio.virtual_devices import detect_virtual_audio_install
@@ -235,11 +240,12 @@ class MainWindow(QMainWindow):
     def refresh_from_system(self) -> None:
         input_devices = self.device_manager.list_input_devices()
         output_devices = self.device_manager.list_output_devices()
-        self.input_device_names = {d.name for d in input_devices}
-        self.output_device_names = {d.name for d in output_devices}
+        self.input_device_names = self._device_validation_names(input_devices)
+        self.output_device_names = self._device_validation_names(output_devices)
 
         # Keep route config aligned with current OS defaults before applying UI state.
         self._auto_populate_devices()
+        self._normalize_meeting_device_selectors(input_devices, output_devices)
 
         self._suspend_live_apply = True
         try:
@@ -308,6 +314,61 @@ class MainWindow(QMainWindow):
         summary = self._device_populator.get_device_summary()
         self.audio_routing_page.update_device_summary(summary)
 
+    def _normalize_meeting_device_selectors(self, input_devices: list[object], output_devices: list[object]) -> None:
+        changed = False
+        meeting = self.config.meeting
+        normalized_input = self._normalize_device_selector(
+            str(getattr(meeting, "input_device", "") or ""),
+            input_devices,
+            fallback=str(getattr(self.config.audio, "microphone_in", "") or ""),
+        )
+        if normalized_input and normalized_input != getattr(meeting, "input_device", ""):
+            meeting.input_device = normalized_input
+            changed = True
+        normalized_output = self._normalize_device_selector(
+            str(getattr(meeting, "output_loopback_device", "") or ""),
+            output_devices,
+            fallback=str(getattr(self.config.audio, "speaker_out", "") or ""),
+        )
+        if normalized_output and normalized_output != getattr(meeting, "output_loopback_device", ""):
+            meeting.output_loopback_device = normalized_output
+            changed = True
+        if changed:
+            try:
+                self._save_config_to_disk()
+            except Exception as exc:
+                self._report_error(f"meeting device selector normalization save failed: {exc}")
+            try:
+                self._runtime_facade.mark_dirty()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _normalize_device_selector(value: str, devices: list[object], *, fallback: str = "") -> str:
+        raw = (value or "").strip()
+        raw_hostapi, _ = raw.split("::", 1) if "::" in raw else ("", raw)
+        device_name = canonical_device_name(raw).strip()
+        if not device_name:
+            return raw
+        selectors = MainWindow._meeting_device_names(devices)
+        selector_names = {canonical_device_name(selector).strip(): selector for selector in selectors}
+        preferred_selector = selector_names.get(device_name)
+        if raw_hostapi and preferred_selector and preferred_selector != raw:
+            return preferred_selector
+        fallback_name = canonical_device_name(fallback).strip()
+        if not raw_hostapi and fallback_name and (fallback_name.startswith(device_name) or device_name.startswith(fallback_name)):
+            fallback_selector = MainWindow._normalize_device_selector(fallback, devices, fallback="")
+            if fallback_selector:
+                return fallback_selector
+        if device_name in selector_names:
+            return selector_names[device_name]
+        prefix_matches = [
+            selector for selector in selectors if canonical_device_name(selector).strip().startswith(device_name)
+        ]
+        if prefix_matches:
+            return prefix_matches[0]
+        return raw
+
     def persist_config(self) -> None:
         try:
             self._apply_live_config_now()
@@ -368,15 +429,41 @@ class MainWindow(QMainWindow):
     def _meeting_device_names(devices: list[object]) -> list[str]:
         names: list[str] = []
         seen: set[str] = set()
+        any_hostapi = any(str(getattr(device, "hostapi_name", "") or "").strip() for device in devices)
+        if any_hostapi:
+            sorted_devices = sorted(
+                devices,
+                key=lambda device: (
+                    hostapi_sort_key(str(getattr(device, "hostapi_name", "") or "")),
+                    str(getattr(device, "name", "") or "").casefold(),
+                ),
+            )
+        else:
+            sorted_devices = devices
+        for device in sorted_devices:
+            name = str(getattr(device, "name", "") or "").strip()
+            if not name:
+                continue
+            hostapi_name = str(getattr(device, "hostapi_name", "") or "").strip()
+            selector = encode_device_selector(hostapi_name=hostapi_name, device_name=name) if hostapi_name else name
+            key = name.casefold() if any_hostapi else selector.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            names.append(selector)
+        return names
+
+    @staticmethod
+    def _device_validation_names(devices: list[object]) -> set[str]:
+        names: set[str] = set()
         for device in devices:
             name = str(getattr(device, "name", "") or "").strip()
             if not name:
                 continue
-            key = name.casefold()
-            if key in seen:
-                continue
-            seen.add(key)
-            names.append(name)
+            names.add(name)
+            hostapi_name = str(getattr(device, "hostapi_name", "") or "").strip()
+            if hostapi_name:
+                names.add(encode_device_selector(hostapi_name=hostapi_name, device_name=name))
         return names
 
     def _schedule_live_apply(self) -> None:

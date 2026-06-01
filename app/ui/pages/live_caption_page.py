@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.infra.config.schema import AppConfig
+from app.infra.audio.device_registry import hostapi_label, parse_device_selector
 from app.infra.asr.profile_selection import asr_profile_family_for_language
 from app.infra.tts.voice_policy import default_voice_for_language
 from app.ui.pages._live_caption_config import _LiveCaptionConfigMixin, _CHANNEL_DEFAULTS
@@ -949,7 +950,7 @@ class LiveCaptionPage(_LiveCaptionConfigMixin, QWidget):
             self.meeting_device_combo.clear()
             self.meeting_device_combo.addItem("", "")
             for name in devices:
-                self.meeting_device_combo.addItem(name, name)
+                self.meeting_device_combo.addItem(self._device_display_text(name), name)
             self._set_target_combo(self.meeting_device_combo, current)
             self._fit_combo_to_longest_item(self.meeting_source_combo, min_width=150, max_width=260)
             self._fit_combo_to_longest_item(self.meeting_device_combo, min_width=320, max_width=1200)
@@ -960,9 +961,16 @@ class LiveCaptionPage(_LiveCaptionConfigMixin, QWidget):
         if not value:
             return
         if self.meeting_device_combo.findData(value) < 0:
-            self.meeting_device_combo.addItem(value, value)
+            self.meeting_device_combo.addItem(self._device_display_text(value), value)
         self._set_target_combo(self.meeting_device_combo, value)
         self._fit_combo_to_longest_item(self.meeting_device_combo, min_width=320, max_width=1200)
+
+    @staticmethod
+    def _device_display_text(value: str) -> str:
+        hostapi_name, device_name = parse_device_selector(value)
+        if hostapi_name:
+            return f"{device_name} [{hostapi_label(hostapi_name)}]"
+        return value
 
     def _refresh_dialogue_policy_notices(self) -> None:
         meeting_mode = self.selected_session_mode() == "meeting"

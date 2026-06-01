@@ -31,8 +31,33 @@ def to_asr_mono_16k(frame: AudioFrame) -> np.ndarray:
     elif samples.shape[1] == 1:
         mono = samples[:, 0]
     else:
-        mono = np.mean(samples[:, : min(samples.shape[1], 2)], axis=1, dtype=np.float32)
+        mono = _collapse_for_asr(samples[:, : min(samples.shape[1], 2)])
     return resample_audio(mono, sample_rate=int(frame.sample_rate), target_rate=ASR_SAMPLE_RATE).astype(np.float32, copy=False)
+
+
+def _collapse_for_asr(samples: np.ndarray) -> np.ndarray:
+    payload = np.asarray(samples, dtype=np.float32)
+    if payload.ndim != 2 or payload.shape[1] <= 1:
+        return payload.reshape(-1).astype(np.float32, copy=False)
+
+    channel_energy = np.sqrt(np.mean(np.square(payload), axis=0, dtype=np.float32))
+    strongest = int(np.argmax(channel_energy)) if channel_energy.size else 0
+    strongest_energy = float(channel_energy[strongest]) if channel_energy.size else 0.0
+    weakest_energy = float(np.min(channel_energy)) if channel_energy.size else 0.0
+    if strongest_energy >= max(0.01, weakest_energy * 2.5):
+        return payload[:, strongest].astype(np.float32, copy=False)
+
+    left = payload[:, 0].astype(np.float32, copy=False)
+    right = payload[:, 1].astype(np.float32, copy=False)
+    left_std = float(np.std(left))
+    right_std = float(np.std(right))
+    if left_std > 1e-6 and right_std > 1e-6:
+        corr = float(np.corrcoef(left, right)[0, 1])
+        if corr >= 0.3:
+            return ((left + right) * 0.5).astype(np.float32, copy=False)
+        if corr <= -0.3:
+            return payload[:, strongest].astype(np.float32, copy=False)
+    return payload[:, strongest].astype(np.float32, copy=False)
 
 
 def soft_limiter(audio: np.ndarray, threshold: float = 0.95) -> np.ndarray:

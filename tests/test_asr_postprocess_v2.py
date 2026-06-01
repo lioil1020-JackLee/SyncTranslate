@@ -49,6 +49,24 @@ class AsrPostprocessV2Tests(unittest.TestCase):
         self.assertFalse(result.accepted)
         self.assertEqual(result.reason, "looped-phrase")
 
+    def test_validator_rejects_repeated_three_char_hallucination_phrase(self) -> None:
+        validator = AsrTranscriptValidatorV2(enabled=True)
+        audio = np.full((16000,), 0.02, dtype=np.float32)
+
+        result = validator.validate("我愛你，我愛你，我愛你。", audio=audio, sample_rate=16000, language="zh-TW")
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.reason, "looped-phrase")
+
+    def test_validator_rejects_song_credit_overlay(self) -> None:
+        validator = AsrTranscriptValidatorV2(enabled=True)
+        audio = np.full((16000,), 0.02, dtype=np.float32)
+
+        result = validator.validate("詞、曲、編曲", audio=audio, sample_rate=16000, language="zh-TW")
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.reason, "song-credit-overlay")
+
     def test_validator_can_use_frontend_speech_ratio_hint(self) -> None:
         validator = AsrTranscriptValidatorV2(enabled=True, min_speech_ratio_for_long_text=0.2)
         audio = np.zeros((32000,), dtype=np.float32)

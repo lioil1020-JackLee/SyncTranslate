@@ -7,9 +7,10 @@ from types import SimpleNamespace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QLabel
+from PySide6.QtWidgets import QApplication, QLabel, QFormLayout
 
 from app.infra.config.schema import AppConfig
+from app.infra.config.schema import DeviceInfo
 from app.ui.main_window import MainWindow
 from app.ui.pages.audio_routing_page import AudioRoutingPage
 from app.ui.pages.live_caption_page import LiveCaptionPage
@@ -74,6 +75,93 @@ class LiveCaptionPageUiTests(_QtTestCase):
                 "SyncTranslate Virtual Microphone",
             ],
         )
+
+    def test_meeting_device_menu_prefers_wasapi_selectors_when_hostapi_is_known(self) -> None:
+        names = MainWindow._meeting_device_names(
+            [
+                DeviceInfo(0, "Voicemeeter Input (VB-Audio Voi", 0, "MME", "MME", 0, 2, 48000),
+                DeviceInfo(
+                    1,
+                    "Voicemeeter Input (VB-Audio Voicemeeter VAIO)",
+                    1,
+                    "Windows WASAPI",
+                    "WDM (WASAPI)",
+                    0,
+                    2,
+                    48000,
+                ),
+            ]
+        )
+
+        self.assertEqual(names[0], "Windows WASAPI::Voicemeeter Input (VB-Audio Voicemeeter VAIO)")
+
+    def test_meeting_device_combo_displays_hostapi_selector_readably(self) -> None:
+        page = LiveCaptionPage()
+
+        page.set_meeting_devices(["Windows WASAPI::Voicemeeter Input (VB-Audio Voicemeeter VAIO)"], [])
+
+        self.assertEqual(
+            page.meeting_device_combo.itemText(1),
+            "Voicemeeter Input (VB-Audio Voicemeeter VAIO) [WDM (WASAPI)]",
+        )
+        self.assertEqual(
+            page.meeting_device_combo.itemData(1),
+            "Windows WASAPI::Voicemeeter Input (VB-Audio Voicemeeter VAIO)",
+        )
+
+    def test_meeting_device_selector_normalization_repairs_truncated_config_value(self) -> None:
+        devices = [
+            DeviceInfo(0, "Voicemeeter Input (VB-Audio Voi", 0, "MME", "MME", 0, 2, 48000),
+            DeviceInfo(
+                1,
+                "Voicemeeter Input (VB-Audio Voicemeeter VAIO)",
+                1,
+                "Windows WASAPI",
+                "WDM (WASAPI)",
+                0,
+                2,
+                48000,
+            ),
+        ]
+
+        selector = MainWindow._normalize_device_selector(
+            "Voicemeeter Input (VB-Audio Voi",
+            devices,
+            fallback="Voicemeeter Input (VB-Audio Voicemeeter VAIO)",
+        )
+
+        self.assertEqual(selector, "Windows WASAPI::Voicemeeter Input (VB-Audio Voicemeeter VAIO)")
+
+    def test_meeting_device_selector_normalization_prefers_wasapi_over_directsound(self) -> None:
+        devices = [
+            DeviceInfo(
+                0,
+                "Voicemeeter Input (VB-Audio Voicemeeter VAIO)",
+                0,
+                "Windows DirectSound",
+                "DirectSound",
+                0,
+                2,
+                48000,
+            ),
+            DeviceInfo(
+                1,
+                "Voicemeeter Input (VB-Audio Voicemeeter VAIO)",
+                1,
+                "Windows WASAPI",
+                "WDM (WASAPI)",
+                0,
+                2,
+                48000,
+            ),
+        ]
+
+        selector = MainWindow._normalize_device_selector(
+            "Windows DirectSound::Voicemeeter Input (VB-Audio Voicemeeter VAIO)",
+            devices,
+        )
+
+        self.assertEqual(selector, "Windows WASAPI::Voicemeeter Input (VB-Audio Voicemeeter VAIO)")
 
     def test_session_mode_selector_lives_in_main_menu_bar(self) -> None:
         window = MainWindow("config.yaml", device_volume_controller=_DummyDeviceVolumeController())
@@ -743,6 +831,21 @@ class AudioRoutingPageUiTests(_QtTestCase):
 
 
 class LocalAiPageUiTests(_QtTestCase):
+    def test_tts_advanced_labels_are_readable_chinese(self) -> None:
+        page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
+
+        labels = [page.base_tts.group.title()]
+        for row in range(page.base_tts.form.rowCount()):
+            item = page.base_tts.form.itemAt(row, QFormLayout.ItemRole.LabelRole)
+            if item is not None and item.widget() is not None:
+                labels.append(item.widget().text())
+        joined = "\n".join(labels)
+
+        self.assertIn("TTS 基礎設定", joined)
+        self.assertIn("語音風格", joined)
+        self.assertIn("TTS 最大等待(ms)", joined)
+        self.assertNotIn("�", joined)
+
     def test_local_ai_page_hides_quick_tuning_combos(self) -> None:
         page = LocalAiPage(on_settings_changed=None, on_health_check=lambda: None, on_save_config=lambda: None)
 
