@@ -66,6 +66,7 @@ if (-not $SkipValidation) {
     Assert-RuntimeFile -Path (Join-Path $DevRuntimesPath "faster_whisper") -Label "faster-whisper runtime"
     Assert-RuntimeFile -Path (Join-Path $DevRuntimesPath "shared\Lib\site-packages\llama_cpp\__init__.py") -Label "llama-cpp-python package"
     Assert-RuntimeFile -Path (Join-Path $DevRuntimesPath "shared\Lib\site-packages\llama_cpp\lib\llama.dll") -Label "llama.cpp DLL"
+    Assert-RuntimeFile -Path (Join-Path $DevRuntimesPath "models\asr\large-v3-turbo") -Label "faster-whisper ASR model"
     Assert-RuntimeFile -Path (Join-Path $DevRuntimesPath "models\belle-zh-ct2\config.json") -Label "Belle ASR model"
     Assert-RuntimeFile -Path (Join-Path $DevRuntimesPath "models\llm\hy-mt1.5-7b.gguf") -Label "HY-MT1.5 GGUF model"
     Assert-LlamaRuntime -PythonExe (Join-Path $DevRuntimesPath "shared\Scripts\python.exe") -Label "Shared runtime"
@@ -90,7 +91,7 @@ foreach ($runtimeName in @("shared", "faster_whisper")) {
 $modelsDest = Join-Path $runtimesDestRoot "models"
 New-Item -ItemType Directory -Path $modelsDest -Force | Out-Null
 
-foreach ($modelName in @("belle-zh-ct2", "llm")) {
+foreach ($modelName in @("asr", "belle-zh-ct2", "llm")) {
     $src = Join-Path (Join-Path $DevRuntimesPath "models") $modelName
     $dst = Join-Path $modelsDest $modelName
     Write-Host "Copying model assets: models/$modelName"
@@ -101,6 +102,7 @@ $runtimesInDist = Get-ChildItem $runtimesDestRoot -Directory | Select-Object -Ex
 Write-Host "Copied runtimes: $($runtimesInDist -join ', ')"
 
 if (-not $SkipValidation) {
+    Assert-RuntimeFile -Path (Join-Path $runtimesDestRoot "models\asr\large-v3-turbo") -Label "Packaged faster-whisper ASR model"
     Assert-RuntimeFile -Path (Join-Path $runtimesDestRoot "models\llm\hy-mt1.5-7b.gguf") -Label "Packaged HY-MT1.5 GGUF model"
     Assert-RuntimeFile -Path (Join-Path $runtimesDestRoot "shared\Lib\site-packages\llama_cpp\__init__.py") -Label "Packaged llama-cpp-python package"
     Assert-RuntimeFile -Path (Join-Path $runtimesDestRoot "shared\Lib\site-packages\llama_cpp\lib\llama.dll") -Label "Packaged llama.cpp DLL"

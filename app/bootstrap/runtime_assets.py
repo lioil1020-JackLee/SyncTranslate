@@ -7,8 +7,29 @@ import sys
 
 
 DEFAULT_ASR_MODEL = "large-v3-turbo"
-DEFAULT_ASR_MODEL_REPO = "Systran/faster-whisper-large-v3-turbo"
+DEFAULT_ASR_MODEL_REPO = "h2oai/faster-whisper-large-v3-turbo"
 DEFAULT_LLM_MODEL = "hy-mt1.5-7b.gguf"
+
+_ASR_MODEL_REPO_ALIASES: dict[str, tuple[str, ...]] = {
+    # Public CTranslate2 conversion of openai/whisper-large-v3-turbo.
+    # The old Systran large-v3-turbo repo id is not publicly available.
+    DEFAULT_ASR_MODEL: (
+        DEFAULT_ASR_MODEL_REPO,
+        "dropbox-dash/faster-whisper-large-v3-turbo",
+        "deepdml/faster-whisper-large-v3-turbo-ct2",
+    ),
+    "faster-whisper-large-v3-turbo": (
+        DEFAULT_ASR_MODEL_REPO,
+        "dropbox-dash/faster-whisper-large-v3-turbo",
+        "deepdml/faster-whisper-large-v3-turbo-ct2",
+    ),
+    "Systran/faster-whisper-large-v3-turbo": (
+        "Systran/faster-whisper-large-v3-turbo",
+        DEFAULT_ASR_MODEL_REPO,
+        "dropbox-dash/faster-whisper-large-v3-turbo",
+        "deepdml/faster-whisper-large-v3-turbo-ct2",
+    ),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +136,14 @@ def resolve_asr_model_path(
     )
 
 
+def asr_model_repo_candidates(repo_id_or_alias: str | None = None) -> tuple[str, ...]:
+    raw = str(repo_id_or_alias or os.environ.get("SYNC_TRANSLATE_ASR_MODEL_REPO") or DEFAULT_ASR_MODEL_REPO).strip()
+    if not raw:
+        raw = DEFAULT_ASR_MODEL_REPO
+    candidates = _ASR_MODEL_REPO_ALIASES.get(raw, (raw,))
+    return tuple(dict.fromkeys(candidates))
+
+
 def resolve_llm_model_path(
     model_path: str,
     *,
@@ -186,6 +215,7 @@ __all__ = [
     "DEFAULT_ASR_MODEL_REPO",
     "DEFAULT_LLM_MODEL",
     "ResolvedAsset",
+    "asr_model_repo_candidates",
     "resolve_asr_model_path",
     "resolve_llm_model_path",
     "resolve_runtime_dir",

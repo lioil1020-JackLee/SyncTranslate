@@ -81,6 +81,9 @@ jobs:
       - name: Verify packaged external runtimes
         shell: pwsh
         run: |
+          if (!(Test-Path ".\dist\SyncTranslate-onedir\runtimes\models\asr\large-v3-turbo")) {
+            throw "Packaged faster-whisper ASR model is missing"
+          }
           if (!(Test-Path ".\dist\SyncTranslate-onedir\runtimes\models\llm\hy-mt1.5-7b.gguf")) {
             throw "Packaged HY-MT1.5 GGUF model is missing"
           }

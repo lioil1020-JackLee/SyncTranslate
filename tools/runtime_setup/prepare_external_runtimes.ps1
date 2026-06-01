@@ -2,7 +2,7 @@ param(
     [string]$RuntimeRoot = "runtimes",
     [switch]$CpuOnly,
     [string]$BelleModelRepo = "",
-    [string]$AsrModelRepo = "Systran/faster-whisper-large-v3-turbo",
+    [string]$AsrModelRepo = "h2oai/faster-whisper-large-v3-turbo",
     [string]$LlmModelPath = "",
     [string]$LlmModelRepo = "tencent/HY-MT1.5-7B-GGUF",
     [string]$LlmModelFile = "HY-MT1.5-7B-Q4_K_M.gguf",
